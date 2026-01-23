@@ -28,17 +28,59 @@ cargo clippy -- -D warnings
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    subgraph Client["Your Applications"]
+        App["Any OpenAI Client"]
+    end
+
+    subgraph Arbstr["arbstr"]
+        Proxy["Proxy Server"]
+        Policy["Policy Engine"]
+        Router["Router"]
+        DB[(SQLite)]
+    end
+
+    subgraph Providers["Routstr Marketplace"]
+        P1["Provider A"]
+        P2["Provider B"]
+        P3["Provider C"]
+    end
+
+    App --> Proxy
+    Proxy --> Policy
+    Policy --> Router
+    Router --> P1
+    Router --> P2
+    Router --> P3
+    Proxy --> DB
 ```
-┌─────────────┐     ┌─────────────┐     ┌──────────────────┐
-│ Your App    │────▶│   arbstr    │────▶│ Routstr Provider │
-│ (OpenAI API)│     │   (proxy)   │     │    (cheapest)    │
-└─────────────┘     └─────────────┘     └──────────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │ Policy      │
-                    │ Engine      │
-                    │ + SQLite    │
-                    └─────────────┘
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant App as Your App
+    participant Proxy as arbstr
+    participant Policy as Policy Engine
+    participant Router as Router
+    participant DB as SQLite
+    participant Provider as Cheapest Provider
+
+    App->>Proxy: POST /v1/chat/completions
+    Proxy->>Policy: Match policy
+    Policy-->>Policy: Check X-Arbstr-Policy header
+    Policy-->>Policy: Fall back to keyword heuristics
+    Policy->>Router: Policy constraints
+    Router->>Router: Filter providers by model/cost
+    Router->>Router: Select cheapest
+    Router->>Provider: Forward request
+    Provider-->>Router: Stream response
+    Router-->>Proxy: Stream response
+    Proxy->>DB: Log request metrics
+    Proxy-->>App: Stream response
+
+    Note over DB: Learn token ratios<br/>over time
 ```
 
 ### Key Components
