@@ -6,11 +6,32 @@ Intelligent LLM routing and cost arbitrage for the [Routstr](https://routstr.com
 
 arbstr is a local proxy that sits between your applications and LLM providers on the Routstr marketplace. It automatically selects the cheapest provider for each request while respecting your quality constraints.
 
-```
-Your App  ──▶  arbstr (local)  ──▶  Cheapest Routstr Provider
-                   │
-            Policy Engine
-         (constraints + learning)
+```mermaid
+flowchart LR
+    subgraph Client["Your Applications"]
+        App["Any OpenAI Client"]
+    end
+
+    subgraph Arbstr["arbstr"]
+        Proxy["Proxy Server"]
+        Policy["Policy Engine"]
+        Router["Router"]
+        DB[(SQLite)]
+    end
+
+    subgraph Providers["Routstr Marketplace"]
+        P1["Provider A\n10/30 sats"]
+        P2["Provider B\n8/35 sats"]
+        P3["Provider C\n12/25 sats"]
+    end
+
+    App --> Proxy
+    Proxy --> Policy
+    Policy --> Router
+    Router --> P2
+    Router -.-> P1
+    Router -.-> P3
+    Proxy --> DB
 ```
 
 **Why?** Routstr is a decentralized LLM marketplace where multiple providers offer the same models at different rates. arbstr exploits these price spreads automatically.
@@ -111,6 +132,60 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 ## How Routing Works
+
+```mermaid
+flowchart TB
+    subgraph Client["Your Applications"]
+        App1["App 1<br/>(OpenAI SDK)"]
+        App2["App 2<br/>(curl/HTTP)"]
+        App3["App N<br/>(Any OpenAI client)"]
+    end
+
+    subgraph Arbstr["arbstr (local proxy)"]
+        Server["axum HTTP Server<br/>/v1/chat/completions"]
+
+        subgraph PolicyEngine["Policy Engine"]
+            Header["Header Check<br/>X-Arbstr-Policy"]
+            Heuristics["Keyword Heuristics<br/>(code, summarize, etc)"]
+            Constraints["Constraint Filter<br/>(models, max cost)"]
+        end
+
+        subgraph Router["Router"]
+            Selector["Provider Selector<br/>(cheapest/fastest)"]
+            CostCalc["Cost Calculator<br/>(sats estimation)"]
+        end
+
+        subgraph Storage["SQLite"]
+            RequestLog["Request Log<br/>(cost tracking)"]
+            TokenRatios["Token Ratios<br/>(learned patterns)"]
+        end
+    end
+
+    subgraph Providers["Routstr Marketplace"]
+        P1["Provider A<br/>gpt-4o: 10/30 sats"]
+        P2["Provider B<br/>gpt-4o: 8/35 sats"]
+        P3["Provider C<br/>claude-3.5: 12/25 sats"]
+    end
+
+    App1 --> Server
+    App2 --> Server
+    App3 --> Server
+
+    Server --> Header
+    Header --> Heuristics
+    Heuristics --> Constraints
+    Constraints --> Selector
+    Selector --> CostCalc
+    CostCalc --> P1
+    CostCalc --> P2
+    CostCalc --> P3
+
+    Server -.-> RequestLog
+    RequestLog -.-> TokenRatios
+    TokenRatios -.-> CostCalc
+```
+
+**Step by step:**
 
 1. **Request arrives** at arbstr proxy
 2. **Policy matched** via header or heuristics
