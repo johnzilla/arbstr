@@ -1,0 +1,57 @@
+[package]
+name = "arbstr"
+version = "0.1.0"
+edition = "2021"
+description = "Intelligent LLM routing and cost arbitrage for Routstr"
+license = "MIT"
+repository = "https://github.com/johnzilla/arbstr"
+keywords = ["llm", "bitcoin", "lightning", "routing", "proxy"]
+categories = ["command-line-utilities", "web-programming"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Configuration
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"
+tempfile = "3"
+
+[[bin]]
+name = "arbstr"
+path = "src/main.rs"
