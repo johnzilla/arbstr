@@ -1,0 +1,70 @@
+# arbstr configuration example
+# Copy to config.toml and customize
+
+[server]
+# Address to listen on
+listen = "127.0.0.1:8080"
+
+[database]
+# SQLite database path for logging and learning
+path = "./arbstr.db"
+
+# Provider configuration
+# Add your Routstr providers here
+# Rates are in satoshis per 1000 tokens
+
+[[providers]]
+name = "example-provider-1"
+url = "https://provider1.example.com/v1"
+# Optional: API key if required by provider
+# api_key = "your-api-key"
+models = ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet"]
+input_rate = 10   # sats per 1k input tokens
+output_rate = 30  # sats per 1k output tokens
+# Optional: base fee per request
+base_fee = 1
+
+[[providers]]
+name = "example-provider-2"
+url = "https://provider2.example.com/v1"
+models = ["gpt-4o", "claude-3.5-sonnet", "claude-3-haiku"]
+input_rate = 8
+output_rate = 35
+base_fee = 0
+
+# Routing policies
+[policies]
+# Default strategy when no policy matched
+# Options: "cheapest", "lowest_latency", "round_robin"
+default_strategy = "cheapest"
+
+# Policy rules - matched by X-Arbstr-Policy header or heuristics
+[[policies.rules]]
+name = "code_generation"
+# Only route to these models
+allowed_models = ["claude-3.5-sonnet", "gpt-4o", "deepseek-coder"]
+# Routing strategy for this policy
+strategy = "lowest_cost"
+# Maximum cost constraint (optional)
+max_sats_per_1k_output = 50
+# Heuristic keywords for automatic classification (optional)
+keywords = ["code", "function", "implement", "debug", "fix bug"]
+
+[[policies.rules]]
+name = "quick_tasks"
+allowed_models = ["gpt-4o-mini", "claude-3-haiku", "llama-3-8b"]
+strategy = "lowest_latency"
+keywords = ["classify", "summarize", "extract", "quick"]
+
+[[policies.rules]]
+name = "analysis"
+allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
+strategy = "lowest_cost"
+# No keywords - must be explicitly requested via header
+
+# Logging configuration
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+# Log requests to database for analytics
+log_requests = true
