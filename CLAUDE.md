@@ -13,11 +13,20 @@ cargo build --release
 # Run tests
 cargo test
 
-# Run with debug logging
-RUST_LOG=arbstr=debug cargo run
+# Run with mock providers (no real API calls)
+cargo run -- serve --mock
 
-# Run the proxy server
-cargo run -- serve --config config.toml
+# Run with config file
+cargo run -- serve -c config.toml
+
+# Run with debug logging
+RUST_LOG=arbstr=debug cargo run -- serve --mock
+
+# Validate config
+cargo run -- check -c config.toml
+
+# List providers
+cargo run -- providers -c config.toml
 
 # Format code
 cargo fmt
@@ -87,9 +96,12 @@ sequenceDiagram
 
 - **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum
 - **Router** (`src/router/`): Provider selection logic, cost optimization
-- **Providers** (`src/providers/`): Backend adapters for Routstr providers
-- **Policy Engine** (`src/policy/`): Constraint matching and heuristics
+- **Config** (`src/config.rs`): TOML configuration parsing
+- **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
+
+**Planned (not yet implemented):**
 - **Storage** (`src/storage/`): SQLite for logging, costs, learned patterns
+- **Policy Engine** (`src/policy/`): Advanced constraint matching (currently in router)
 
 ## Tech Stack
 
@@ -112,26 +124,41 @@ sequenceDiagram
 
 ## Configuration
 
-Config file: `config.toml`
+Config file: `config.toml` (see `config.example.toml` for full example)
 
 ```toml
 [server]
 listen = "127.0.0.1:8080"
 
-[providers]
-# Providers loaded from routstr or manually configured
-endpoints = [
-    { name = "provider-a", url = "https://...", priority = 1 },
-]
+[database]
+path = "./arbstr.db"
+
+# Provider configuration (rates in sats per 1000 tokens)
+[[providers]]
+name = "provider-alpha"
+url = "https://api.routstr.com/v1"
+api_key = "cashuA..."  # Cashu token
+models = ["gpt-4o", "claude-3.5-sonnet"]
+input_rate = 10
+output_rate = 30
+base_fee = 1
+
+[[providers]]
+name = "provider-beta"
+url = "https://other-provider.com/v1"
+models = ["gpt-4o", "gpt-4o-mini"]
+input_rate = 8
+output_rate = 35
 
 [policies]
-default = "cheapest"
+default_strategy = "cheapest"
 
 [[policies.rules]]
 name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
 strategy = "lowest_cost"
 max_sats_per_1k_output = 50
+keywords = ["code", "function", "implement"]
 ```
 
 ## Database Schema (SQLite)
@@ -168,38 +195,34 @@ CREATE TABLE token_ratios (
 
 ## MVP Milestones
 
-1. **M1**: Basic proxy pass-through to single hardcoded provider
-2. **M2**: Multiple providers, cheapest selection based on advertised rates
-3. **M3**: Policy constraints (allowed models, max cost per request)
+1. **M1**: Basic proxy pass-through to single hardcoded provider ✅
+2. **M2**: Multiple providers, cheapest selection based on advertised rates ✅
+3. **M3**: Policy constraints (allowed models, max cost per request) ✅
 4. **M4**: Request logging and cost tracking dashboard
-5. **M5**: Heuristic-based automatic policy classification
+5. **M5**: Heuristic-based automatic policy classification ✅ (basic keyword matching)
 
 ## Key Files
 
 ```
 src/
-├── main.rs           # CLI entry point
+├── main.rs           # CLI entry point (serve, check, providers commands)
 ├── lib.rs            # Library root, re-exports
-├── config.rs         # Configuration structs
+├── config.rs         # Configuration parsing from TOML
+├── error.rs          # Error types with OpenAI-compatible responses
 ├── proxy/
 │   ├── mod.rs
-│   ├── server.rs     # axum server setup
-│   └── handlers.rs   # /v1/chat/completions, etc.
-├── router/
-│   ├── mod.rs
-│   ├── selector.rs   # Provider selection algorithm
-│   └── cost.rs       # Cost calculation
-├── providers/
-│   ├── mod.rs
-│   ├── provider.rs   # Provider trait
-│   └── routstr.rs    # Routstr-specific adapter
-├── policy/
-│   ├── mod.rs
-│   ├── engine.rs     # Policy matching
-│   └── heuristics.rs # Keyword-based classification
-└── storage/
+│   ├── server.rs     # axum server setup, AppState
+│   ├── handlers.rs   # /v1/chat/completions, /v1/models, /health, /providers
+│   └── types.rs      # OpenAI-compatible request/response types
+└── router/
     ├── mod.rs
-    └── sqlite.rs     # Database operations
+    └── selector.rs   # Provider selection (cheapest, policy constraints)
+```
+
+**Planned directories:**
+```
+├── storage/          # SQLite logging (not yet implemented)
+└── policy/           # Advanced policy engine (currently in router)
 ```
 
 ## Environment Variables

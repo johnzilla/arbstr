@@ -39,14 +39,14 @@ flowchart LR
 ## Features
 
 ### Current (MVP)
-- [ ] OpenAI-compatible API proxy
-- [ ] Multi-provider routing (cheapest available)
-- [ ] Policy-based constraints (allowed models, max cost)
-- [ ] Request logging and cost tracking
+- [x] OpenAI-compatible API proxy (`/v1/chat/completions`, `/v1/models`)
+- [x] Multi-provider routing (cheapest available)
+- [x] Policy-based constraints (allowed models, max cost)
+- [x] Keyword heuristics for automatic policy matching
+- [ ] Request logging and cost tracking (SQLite)
 
 ### Planned
 - [ ] Learned input/output token ratio prediction
-- [ ] Heuristic-based automatic policy classification
 - [ ] Temporal arbitrage (batch requests when BTC/USD favorable)
 - [ ] Provider discovery via Nostr
 - [ ] Quality monitoring and automatic escalation
@@ -59,11 +59,12 @@ git clone https://github.com/johnzilla/arbstr.git
 cd arbstr
 cargo build --release
 
-# Configure providers
-cp config.example.toml config.toml
-# Edit config.toml with your providers
+# Quick test with mock providers (no real API calls)
+./target/release/arbstr serve --mock
 
-# Run the proxy
+# Or configure real providers
+cp config.example.toml config.toml
+# Edit config.toml with your Routstr providers
 ./target/release/arbstr serve
 
 # Point your apps to http://localhost:8080
@@ -209,15 +210,19 @@ flowchart TB
 ```
 arbstr/
 ├── src/
-│   ├── main.rs         # CLI entry point
+│   ├── main.rs         # CLI (serve, check, providers)
+│   ├── lib.rs          # Library exports
+│   ├── config.rs       # TOML config parsing
+│   ├── error.rs        # Error types
 │   ├── proxy/          # HTTP server (axum)
-│   ├── router/         # Provider selection
-│   ├── providers/      # Backend adapters
-│   ├── policy/         # Constraint engine
-│   └── storage/        # SQLite logging
-├── tests/              # Integration tests
+│   │   ├── server.rs   # Server setup
+│   │   ├── handlers.rs # Request handlers
+│   │   └── types.rs    # OpenAI types
+│   └── router/         # Provider selection
+│       └── selector.rs # Routing logic
 ├── config.example.toml
-└── CLAUDE.md           # Development guide
+├── CLAUDE.md           # Development guide
+└── LICENSE             # MIT
 ```
 
 ## Development
@@ -226,8 +231,17 @@ arbstr/
 # Run tests
 cargo test
 
+# Run with mock providers
+cargo run -- serve --mock
+
 # Run with debug logging
-RUST_LOG=arbstr=debug cargo run -- serve
+RUST_LOG=arbstr=debug cargo run -- serve --mock
+
+# Validate config file
+cargo run -- check -c config.toml
+
+# List configured providers
+cargo run -- providers -c config.toml
 
 # Format and lint
 cargo fmt && cargo clippy
@@ -237,15 +251,16 @@ See [CLAUDE.md](./CLAUDE.md) for detailed development documentation.
 
 ## Roadmap
 
-**Phase 1: Foundation**
+**Phase 1: Foundation** ✅
 - Basic proxy with single provider
 - Multi-provider cheapest selection
 - Policy constraints
+- Keyword heuristics
 
-**Phase 2: Intelligence**
+**Phase 2: Intelligence** (current)
 - Request logging and analytics
 - Token ratio learning
-- Heuristic classification
+- Cost tracking dashboard
 
 **Phase 3: Advanced**
 - Nostr provider discovery
