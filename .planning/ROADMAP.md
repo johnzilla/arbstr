@@ -27,11 +27,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. Cost selection uses the full formula (input_tokens * input_rate + output_tokens * output_rate) / 1000 + base_fee, not just output_rate
   2. Every proxied request generates a unique correlation ID visible in structured logs
   3. Existing routing tests pass with the corrected cost formula (no regressions)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md — Fix routing cost ranking (output_rate + base_fee) and add actual_cost_sats function (TDD)
+- [ ] 01-02-PLAN.md — Add per-request correlation IDs via TraceLayer make_span_with
 
 ### Phase 2: Request Logging
 **Goal**: Every completed request is persistently logged with accurate token counts, costs, and latency
@@ -88,7 +88,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/2 | Not started | - |
 | 2. Request Logging | 0/TBD | Not started | - |
 | 3. Response Metadata | 0/TBD | Not started | - |
 | 4. Retry and Fallback | 0/TBD | Not started | - |
