@@ -8,6 +8,7 @@ use reqwest::Client;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
 
 use super::handlers;
 use crate::config::Config;
@@ -32,7 +33,19 @@ pub fn create_router(state: AppState) -> Router {
         .route("/providers", get(handlers::list_providers))
         // State and middleware
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(
+                |request: &axum::http::Request<axum::body::Body>| {
+                    let request_id = Uuid::new_v4();
+                    tracing::info_span!(
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        request_id = %request_id,
+                    )
+                },
+            ),
+        )
 }
 
 /// Run the HTTP server.
