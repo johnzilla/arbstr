@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-02)
 ## Current Position
 
 Phase: 1 of 4 (Foundation)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-02-02 -- Completed 01-01-PLAN.md (fix cost ranking + actual_cost_sats)
+Plan: 2 of 2 in current phase
+Status: Phase complete
+Last activity: 2026-02-02 -- Completed 01-02-PLAN.md (per-request UUID correlation ID)
 
-Progress: [█░░░░░░░░░] 10%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
+- Total plans completed: 2
 - Average duration: 3 min
-- Total execution time: 0.05 hours
+- Total execution time: 0.1 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1. Foundation | 1/2 | 3 min | 3 min |
+| 1. Foundation | 2/2 | 6 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (3 min)
-- Trend: N/A (first plan)
+- Last 5 plans: 01-01 (3 min), 01-02 (3 min)
+- Trend: Consistent
 
 *Updated after each plan completion*
 
@@ -47,6 +47,8 @@ Recent decisions affecting current work:
 - Roadmap: 4 phases derived from 3 requirement categories with observability split into logging + headers
 - 01-01: Routing heuristic uses output_rate + base_fee (not full formula) since token counts unknown at selection time
 - 01-01: actual_cost_sats returns f64 for sub-satoshi precision
+- 01-02: UUID v4 generated internally by arbstr, not read from client headers
+- 01-02: info_span used (not debug_span) so correlation ID visible at default log level
 
 ### Pending Todos
 
@@ -59,6 +61,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-02T22:43:00-05:00
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-02-03T03:44:00Z
+Stopped at: Completed 01-02-PLAN.md (Phase 1 complete)
 Resume file: None
