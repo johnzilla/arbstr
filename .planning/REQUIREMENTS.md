@@ -61,26 +61,26 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FNDTN-01 | | Pending |
-| FNDTN-02 | | Pending |
-| OBSRV-01 | | Pending |
-| OBSRV-02 | | Pending |
-| OBSRV-03 | | Pending |
-| OBSRV-04 | | Pending |
-| OBSRV-05 | | Pending |
-| OBSRV-06 | | Pending |
-| OBSRV-07 | | Pending |
-| RLBTY-01 | | Pending |
-| RLBTY-02 | | Pending |
-| RLBTY-03 | | Pending |
-| RLBTY-04 | | Pending |
-| RLBTY-05 | | Pending |
+| FNDTN-01 | Phase 1: Foundation | Pending |
+| FNDTN-02 | Phase 1: Foundation | Pending |
+| OBSRV-01 | Phase 2: Request Logging | Pending |
+| OBSRV-02 | Phase 2: Request Logging | Pending |
+| OBSRV-03 | Phase 2: Request Logging | Pending |
+| OBSRV-04 | Phase 2: Request Logging | Pending |
+| OBSRV-05 | Phase 3: Response Metadata | Pending |
+| OBSRV-06 | Phase 3: Response Metadata | Pending |
+| OBSRV-07 | Phase 3: Response Metadata | Pending |
+| RLBTY-01 | Phase 4: Retry and Fallback | Pending |
+| RLBTY-02 | Phase 4: Retry and Fallback | Pending |
+| RLBTY-03 | Phase 4: Retry and Fallback | Pending |
+| RLBTY-04 | Phase 4: Retry and Fallback | Pending |
+| RLBTY-05 | Phase 4: Retry and Fallback | Pending |
 
 **Coverage:**
 - v1 requirements: 14 total
-- Mapped to phases: 0
-- Unmapped: 14
+- Mapped to phases: 14
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-02*
-*Last updated: 2026-02-02 after initial definition*
+*Last updated: 2026-02-02 after roadmap creation*
