@@ -2,54 +2,29 @@
 
 Intelligent LLM routing and cost arbitrage for the [Routstr](https://routstr.com) decentralized marketplace.
 
-## What is this?
+arbstr is a local proxy that sits between your applications and LLM providers on the Routstr marketplace. It automatically selects the cheapest provider for each request while respecting your quality and policy constraints.
 
-arbstr is a local proxy that sits between your applications and LLM providers on the Routstr marketplace. It automatically selects the cheapest provider for each request while respecting your quality constraints.
-
-```mermaid
-flowchart LR
-    subgraph Client["Your Applications"]
-        App["Any OpenAI Client"]
-    end
-
-    subgraph Arbstr["arbstr"]
-        Proxy["Proxy Server"]
-        Policy["Policy Engine"]
-        Router["Router"]
-        DB[(SQLite)]
-    end
-
-    subgraph Providers["Routstr Marketplace"]
-        P1["Provider A\n10/30 sats"]
-        P2["Provider B\n8/35 sats"]
-        P3["Provider C\n12/25 sats"]
-    end
-
-    App --> Proxy
-    Proxy --> Policy
-    Policy --> Router
-    Router --> P2
-    Router -.-> P1
-    Router -.-> P3
-    Proxy --> DB
+```
+┌─────────────┐     ┌──────────────────────────────┐     ┌────────────────────┐
+│  Your Apps   │     │           arbstr              │     │ Routstr Marketplace│
+│              │     │                              │     │                    │
+│  OpenAI SDK  │────▶│  Policy ──▶ Router ──▶ Best  │────▶│  Provider A  8 sat │
+│  curl / HTTP │     │  Engine     (cheapest)       │     │  Provider B 12 sat │
+│  Any client  │     │                              │     │  Provider C 10 sat │
+└─────────────┘     └──────────────────────────────┘     └────────────────────┘
 ```
 
-**Why?** Routstr is a decentralized LLM marketplace where multiple providers offer the same models at different rates. arbstr exploits these price spreads automatically.
+Routstr is a decentralized LLM marketplace where multiple providers offer the same models at different rates (priced in satoshis). arbstr exploits these price spreads automatically.
 
 ## Features
 
-### Current (MVP)
-- [x] OpenAI-compatible API proxy (`/v1/chat/completions`, `/v1/models`)
-- [x] Multi-provider routing (cheapest available)
-- [x] Policy-based constraints (allowed models, max cost)
-- [x] Keyword heuristics for automatic policy matching
-- [ ] Request logging and cost tracking (SQLite)
-
-### Planned
-- [ ] Learned input/output token ratio prediction
-- [ ] Temporal arbitrage (batch requests when BTC/USD favorable)
-- [ ] Provider discovery via Nostr
-- [ ] Quality monitoring and automatic escalation
+- **OpenAI-compatible API** -- drop-in replacement proxy (`/v1/chat/completions`, `/v1/models`)
+- **Multi-provider routing** -- automatically selects the cheapest available provider
+- **Streaming support** -- full SSE streaming pass-through
+- **Policy engine** -- constrain routing by allowed models, max cost, and strategy
+- **Keyword heuristics** -- automatic policy matching based on message content
+- **Per-request correlation IDs** -- UUID tracing for every request through the system
+- **Mock mode** -- test locally without real provider API calls
 
 ## Quick Start
 
@@ -66,50 +41,9 @@ cargo build --release
 cp config.example.toml config.toml
 # Edit config.toml with your Routstr providers
 ./target/release/arbstr serve
-
-# Point your apps to http://localhost:8080
-# Use any OpenAI-compatible client
 ```
 
-## Configuration
-
-```toml
-[server]
-listen = "127.0.0.1:8080"
-
-# Providers (manual config until Nostr discovery)
-[[providers]]
-name = "provider-alpha"
-url = "https://alpha.routstr.example/v1"
-# Rates in sats per 1000 tokens
-input_rate = 10
-output_rate = 30
-
-[[providers]]
-name = "provider-beta"
-url = "https://beta.routstr.example/v1"
-input_rate = 8
-output_rate = 35
-
-# Routing policies
-[policies]
-default = "cheapest"
-
-[[policies.rules]]
-name = "code_generation"
-allowed_models = ["claude-3.5-sonnet", "gpt-4o", "deepseek-coder"]
-strategy = "lowest_cost"
-max_sats_per_1k_output = 50
-
-[[policies.rules]]
-name = "quick_tasks"
-allowed_models = ["gpt-4o-mini", "claude-3-haiku"]
-strategy = "lowest_latency"
-```
-
-## Usage
-
-### Basic (cheapest available)
+arbstr listens on `http://localhost:8080` by default. Point any OpenAI-compatible client at it:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -120,162 +54,137 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-### With explicit policy
+## Configuration
 
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "X-Arbstr-Policy: code_generation" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Write a function..."}]
-  }'
+Copy `config.example.toml` to `config.toml` and customize:
+
+```toml
+[server]
+listen = "127.0.0.1:8080"
+
+# Providers -- rates in satoshis per 1000 tokens
+[[providers]]
+name = "provider-alpha"
+url = "https://alpha.routstr.example/v1"
+api_key = "cashuA..."          # optional
+models = ["gpt-4o", "claude-3.5-sonnet"]
+input_rate = 10                # sats per 1k input tokens
+output_rate = 30               # sats per 1k output tokens
+base_fee = 1                   # per-request base fee in sats
+
+[[providers]]
+name = "provider-beta"
+url = "https://beta.routstr.example/v1"
+models = ["gpt-4o", "gpt-4o-mini"]
+input_rate = 8
+output_rate = 35
+
+# Routing policies
+[policies]
+default_strategy = "cheapest"
+
+[[policies.rules]]
+name = "code_generation"
+allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
+strategy = "lowest_cost"
+max_sats_per_1k_output = 50
+keywords = ["code", "function", "implement", "debug"]
 ```
+
+See [`config.example.toml`](./config.example.toml) for a full annotated example.
+
+### Policy Matching
+
+Policies are matched in two ways:
+
+1. **Explicit** -- set the `X-Arbstr-Policy` header on your request:
+   ```bash
+   curl http://localhost:8080/v1/chat/completions \
+     -H "X-Arbstr-Policy: code_generation" \
+     -H "Content-Type: application/json" \
+     -d '{"model": "gpt-4o", "messages": [...]}'
+   ```
+2. **Heuristic** -- arbstr scans message content for keywords defined in each policy rule and picks the first match.
 
 ## How Routing Works
 
-```mermaid
-flowchart TB
-    subgraph Client["Your Applications"]
-        App1["App 1<br/>(OpenAI SDK)"]
-        App2["App 2<br/>(curl/HTTP)"]
-        App3["App N<br/>(Any OpenAI client)"]
-    end
-
-    subgraph Arbstr["arbstr (local proxy)"]
-        Server["axum HTTP Server<br/>/v1/chat/completions"]
-
-        subgraph PolicyEngine["Policy Engine"]
-            Header["Header Check<br/>X-Arbstr-Policy"]
-            Heuristics["Keyword Heuristics<br/>(code, summarize, etc)"]
-            Constraints["Constraint Filter<br/>(models, max cost)"]
-        end
-
-        subgraph Router["Router"]
-            Selector["Provider Selector<br/>(cheapest/fastest)"]
-            CostCalc["Cost Calculator<br/>(sats estimation)"]
-        end
-
-        subgraph Storage["SQLite"]
-            RequestLog["Request Log<br/>(cost tracking)"]
-            TokenRatios["Token Ratios<br/>(learned patterns)"]
-        end
-    end
-
-    subgraph Providers["Routstr Marketplace"]
-        P1["Provider A<br/>gpt-4o: 10/30 sats"]
-        P2["Provider B<br/>gpt-4o: 8/35 sats"]
-        P3["Provider C<br/>claude-3.5: 12/25 sats"]
-    end
-
-    App1 --> Server
-    App2 --> Server
-    App3 --> Server
-
-    Server --> Header
-    Header --> Heuristics
-    Heuristics --> Constraints
-    Constraints --> Selector
-    Selector --> CostCalc
-    CostCalc --> P1
-    CostCalc --> P2
-    CostCalc --> P3
-
-    Server -.-> RequestLog
-    RequestLog -.-> TokenRatios
-    TokenRatios -.-> CostCalc
-```
-
-**Step by step:**
-
-1. **Request arrives** at arbstr proxy
-2. **Policy matched** via header or heuristics
+1. **Request arrives** at the arbstr proxy
+2. **Policy matched** via `X-Arbstr-Policy` header or keyword heuristics
 3. **Providers filtered** by policy constraints (allowed models, max cost)
-4. **Cheapest selected** from remaining providers
-5. **Request forwarded** and response streamed back
-6. **Metrics logged** for learning and cost tracking
+4. **Cheapest selected** from remaining providers (considering output rate + base fee)
+5. **Request forwarded** and response streamed back to the client
 
-## The Arbitrage Opportunity
-
-| Type | Description | Status |
-|------|-------------|--------|
-| Cross-provider spread | Same model, different rates | MVP |
-| Policy constraints | Quality bounds, not just cheapest | MVP |
-| Input/output ratio | Predict costs, route verbose tasks to cheaper providers | Planned |
-| Temporal | Batch when BTC/USD favorable | Planned |
-| Quality-adjusted | Escalate if confidence low | Future |
-
-## Project Structure
+## CLI
 
 ```
-arbstr/
-├── src/
-│   ├── main.rs         # CLI (serve, check, providers)
-│   ├── lib.rs          # Library exports
-│   ├── config.rs       # TOML config parsing
-│   ├── error.rs        # Error types
-│   ├── proxy/          # HTTP server (axum)
-│   │   ├── server.rs   # Server setup
-│   │   ├── handlers.rs # Request handlers
-│   │   └── types.rs    # OpenAI types
-│   └── router/         # Provider selection
-│       └── selector.rs # Routing logic
-├── config.example.toml
-├── CLAUDE.md           # Development guide
-└── LICENSE             # MIT
+arbstr serve [OPTIONS]          Start the proxy server
+  -c, --config <PATH>           Config file path [default: config.toml]
+  -l, --listen <ADDR>           Override listen address
+      --mock                    Use mock providers (no real API calls)
+
+arbstr check [OPTIONS]          Validate configuration
+  -c, --config <PATH>           Config file path [default: config.toml]
+
+arbstr providers [OPTIONS]      List configured providers
+  -c, --config <PATH>           Config file path [default: config.toml]
 ```
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/chat/completions` | OpenAI-compatible chat completions (streaming and non-streaming) |
+| `GET /v1/models` | List available models across all providers |
+| `GET /health` | Health check |
+| `GET /providers` | List configured providers with rates |
 
 ## Development
 
 ```bash
-# Run tests
-cargo test
-
-# Run with mock providers
-cargo run -- serve --mock
-
-# Run with debug logging
-RUST_LOG=arbstr=debug cargo run -- serve --mock
-
-# Validate config file
-cargo run -- check -c config.toml
-
-# List configured providers
-cargo run -- providers -c config.toml
-
-# Format and lint
-cargo fmt && cargo clippy
+cargo test                                    # Run tests
+cargo run -- serve --mock                     # Run with mock providers
+RUST_LOG=arbstr=debug cargo run -- serve --mock  # Debug logging
+cargo run -- check -c config.toml             # Validate config
+cargo fmt && cargo clippy -- -D warnings      # Format and lint
 ```
 
-See [CLAUDE.md](./CLAUDE.md) for detailed development documentation.
+See [CLAUDE.md](./CLAUDE.md) for detailed development documentation including architecture, database schema, and testing strategy.
+
+## Project Structure
+
+```
+src/
+├── main.rs           # CLI entry point (serve, check, providers)
+├── lib.rs            # Library root
+├── config.rs         # TOML configuration parsing
+├── error.rs          # Error types (OpenAI-compatible responses)
+├── proxy/
+│   ├── server.rs     # axum server setup and middleware
+│   ├── handlers.rs   # Request handlers
+│   └── types.rs      # OpenAI-compatible request/response types
+└── router/
+    └── selector.rs   # Provider selection and cost calculation
+```
 
 ## Roadmap
 
-**Phase 1: Foundation** ✅
-- Basic proxy with single provider
-- Multi-provider cheapest selection
-- Policy constraints
-- Keyword heuristics
-
-**Phase 2: Intelligence** (current)
-- Request logging and analytics
-- Token ratio learning
-- Cost tracking dashboard
-
-**Phase 3: Advanced**
-- Nostr provider discovery
-- Temporal arbitrage
-- Quality monitoring
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **Foundation** | Proxy, multi-provider routing, policies, heuristics, correlation IDs | Done |
+| **Intelligence** | Request logging, token ratio learning, cost tracking | Current |
+| **Advanced** | Nostr provider discovery, temporal arbitrage, quality monitoring | Planned |
 
 ## Related Projects
 
-- [Routstr](https://routstr.com) - Decentralized LLM marketplace
-- [routstr-core](https://github.com/Routstr/routstr-core) - Core Routstr implementation
-
-## License
-
-MIT
+- [Routstr](https://routstr.com) -- Decentralized LLM marketplace
+- [routstr-core](https://github.com/Routstr/routstr-core) -- Core Routstr implementation
 
 ## Contributing
 
 This project is being built in public. Issues and PRs welcome.
+
+## License
+
+Copyright (c) 2026 arbstr contributors
+
+Licensed under the [MIT License](./LICENSE). You are free to use, modify, and distribute this software. See the LICENSE file for full terms.
