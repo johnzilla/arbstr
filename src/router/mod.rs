@@ -7,4 +7,4 @@
 
 mod selector;
 
-pub use selector::{Router, SelectedProvider};
+pub use selector::{actual_cost_sats, Router, SelectedProvider};

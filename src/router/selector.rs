@@ -166,9 +166,13 @@ impl Router {
         Ok(filtered)
     }
 
-    /// Select the cheapest provider (by output rate, since that dominates cost).
+    /// Select the cheapest provider by `output_rate + base_fee` (the two cost
+    /// components visible at routing time, before token counts are known).
     fn select_cheapest<'a>(&self, candidates: &[&'a ProviderConfig]) -> Option<&'a ProviderConfig> {
-        candidates.iter().min_by_key(|p| p.output_rate).copied()
+        candidates
+            .iter()
+            .min_by_key(|p| p.output_rate + p.base_fee)
+            .copied()
     }
 
     /// Select the first provider (placeholder for latency-based selection).
@@ -180,6 +184,25 @@ impl Router {
     pub fn providers(&self) -> &[ProviderConfig] {
         &self.providers
     }
+}
+
+/// Calculate the actual cost in satoshis for a completed request.
+///
+/// # Formula
+/// `(input_tokens * input_rate + output_tokens * output_rate) / 1000.0 + base_fee`
+///
+/// Rates are in sats per 1000 tokens. The result is an `f64` to preserve
+/// sub-satoshi precision (important for cheap models with small token counts).
+pub fn actual_cost_sats(
+    input_tokens: u32,
+    output_tokens: u32,
+    input_rate: u64,
+    output_rate: u64,
+    base_fee: u64,
+) -> f64 {
+    let input_cost = input_tokens as f64 * input_rate as f64;
+    let output_cost = output_tokens as f64 * output_rate as f64;
+    (input_cost + output_cost) / 1000.0 + base_fee as f64
 }
 
 #[cfg(test)]
