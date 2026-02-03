@@ -7,8 +7,8 @@
 
 ### Foundation
 
-- [ ] **FNDTN-01**: Cost calculation uses full formula: (input_tokens * input_rate + output_tokens * output_rate) / 1000 + base_fee
-- [ ] **FNDTN-02**: Each request assigned a unique correlation ID for tracing
+- [x] **FNDTN-01**: Cost calculation uses full formula: (input_tokens * input_rate + output_tokens * output_rate) / 1000 + base_fee
+- [x] **FNDTN-02**: Each request assigned a unique correlation ID for tracing
 
 ### Observability
 
@@ -61,8 +61,8 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FNDTN-01 | Phase 1: Foundation | Pending |
-| FNDTN-02 | Phase 1: Foundation | Pending |
+| FNDTN-01 | Phase 1: Foundation | Complete |
+| FNDTN-02 | Phase 1: Foundation | Complete |
 | OBSRV-01 | Phase 2: Request Logging | Pending |
 | OBSRV-02 | Phase 2: Request Logging | Pending |
 | OBSRV-03 | Phase 2: Request Logging | Pending |
