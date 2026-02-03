@@ -226,6 +226,67 @@ mod tests {
     }
 
     #[test]
+    fn test_base_fee_affects_cheapest_selection() {
+        // Case 2 from behavior spec:
+        // low-rate-high-fee(output_rate=10, base_fee=8) vs high-rate-no-fee(output_rate=15, base_fee=0)
+        // Routing cost: 10+8=18 vs 15+0=15 -> "high-rate-no-fee" wins
+        let providers = vec![
+            ProviderConfig {
+                name: "low-rate-high-fee".to_string(),
+                url: "https://a.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 5,
+                output_rate: 10,
+                base_fee: 8,
+            },
+            ProviderConfig {
+                name: "high-rate-no-fee".to_string(),
+                url: "https://b.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 8,
+                output_rate: 15,
+                base_fee: 0,
+            },
+        ];
+
+        let router = Router::new(providers, vec![], "cheapest".to_string());
+        let selected = router.select("gpt-4o", None, None).unwrap();
+        assert_eq!(
+            selected.name, "high-rate-no-fee",
+            "Provider with lower output_rate+base_fee (15+0=15) should beat (10+8=18)"
+        );
+    }
+
+    #[test]
+    fn test_actual_cost_calculation() {
+        // Case 1: (100*10 + 200*30)/1000.0 + 1 = 8.0
+        let cost1 = actual_cost_sats(100, 200, 10, 30, 1);
+        assert!((cost1 - 8.0).abs() < f64::EPSILON, "Case 1: expected 8.0, got {cost1}");
+
+        // Case 2: (10*5 + 5*15)/1000.0 + 0 = 0.125
+        let cost2 = actual_cost_sats(10, 5, 5, 15, 0);
+        assert!((cost2 - 0.125).abs() < f64::EPSILON, "Case 2: expected 0.125, got {cost2}");
+
+        // Case 3: (0*10 + 0*30)/1000.0 + 5 = 5.0 (base_fee only)
+        let cost3 = actual_cost_sats(0, 0, 10, 30, 5);
+        assert!((cost3 - 5.0).abs() < f64::EPSILON, "Case 3: expected 5.0, got {cost3}");
+
+        // Case 4: (1000*10 + 1000*30)/1000.0 + 0 = 40.0
+        let cost4 = actual_cost_sats(1000, 1000, 10, 30, 0);
+        assert!((cost4 - 40.0).abs() < f64::EPSILON, "Case 4: expected 40.0, got {cost4}");
+    }
+
+    #[test]
+    fn test_actual_cost_fractional_sats() {
+        // Verify sub-sat precision: (10*5 + 5*15)/1000.0 = 0.125, not 0
+        let cost = actual_cost_sats(10, 5, 5, 15, 0);
+        assert!(cost > 0.0, "Fractional sats must be preserved, got {cost}");
+        assert!((cost - 0.125).abs() < f64::EPSILON, "Expected 0.125, got {cost}");
+    }
+
+    #[test]
     fn test_policy_keyword_matching() {
         let policies = vec![PolicyRule {
             name: "code".to_string(),
