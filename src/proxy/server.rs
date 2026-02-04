@@ -5,6 +5,7 @@ use axum::{
     Router,
 };
 use reqwest::Client;
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::trace::TraceLayer;
@@ -20,6 +21,7 @@ pub struct AppState {
     pub router: Arc<ProviderRouter>,
     pub http_client: Client,
     pub config: Arc<Config>,
+    pub db: Option<SqlitePool>,
 }
 
 /// Create the axum router with all endpoints.
@@ -65,10 +67,26 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         .connect_timeout(Duration::from_secs(10))
         .build()?;
 
+    // Initialize database pool if configured
+    let db = {
+        let db_config = config.database();
+        match crate::storage::init_pool(&db_config.path).await {
+            Ok(pool) => {
+                tracing::info!(path = %db_config.path, "Database initialized");
+                Some(pool)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize database, logging disabled");
+                None
+            }
+        }
+    };
+
     let state = AppState {
         router: Arc::new(provider_router),
         http_client,
         config: Arc::new(config),
+        db,
     };
 
     let app = create_router(state);
