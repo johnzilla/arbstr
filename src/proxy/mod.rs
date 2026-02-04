@@ -7,5 +7,5 @@ mod handlers;
 mod server;
 mod types;
 
-pub use server::{run_server, AppState};
+pub use server::{run_server, AppState, RequestId};
 pub use types::{ChatCompletionRequest, ChatCompletionResponse, Message};
