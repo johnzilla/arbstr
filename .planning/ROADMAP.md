@@ -60,10 +60,10 @@ Plans:
   2. Non-streaming responses include an x-arbstr-latency-ms header with wall-clock latency
   3. All responses (streaming and non-streaming) include an x-arbstr-request-id header with the correlation ID
   4. Headers are visible to standard HTTP clients (curl, OpenAI SDK) without special configuration
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md — Add response metadata headers (constants, helper, restructured response paths, unit tests)
 
 ### Phase 4: Retry and Fallback
 **Goal**: Failed requests are automatically retried and fall back to alternate providers without breaking API compatibility
@@ -91,5 +91,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete ✓ | 2026-02-02 |
 | 2. Request Logging | 4/4 | Complete ✓ | 2026-02-04 |
-| 3. Response Metadata | 0/TBD | Not started | - |
+| 3. Response Metadata | 0/1 | Not started | - |
 | 4. Retry and Fallback | 0/TBD | Not started | - |
