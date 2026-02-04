@@ -75,12 +75,12 @@ Plans:
   3. The x-arbstr-retries header shows the number of attempts and which providers were tried
   4. Error responses through all retry and fallback paths remain valid OpenAI-compatible JSON with appropriate HTTP status codes
   5. Successful fallback requests are logged with the actual provider used, not the originally selected one
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
-- [ ] 04-03: TBD
+- [ ] 04-01-PLAN.md — Add select_candidates to Router for ordered provider list (RLBTY-03)
+- [ ] 04-02-PLAN.md — Create retry module with retry_with_fallback, backoff, and attempt tracking (RLBTY-01, RLBTY-02)
+- [ ] 04-03-PLAN.md — Wire retry into handler: timeout, idempotency key, x-arbstr-retries header (RLBTY-04, RLBTY-05)
 
 ## Progress
 
@@ -92,4 +92,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 1. Foundation | 2/2 | Complete ✓ | 2026-02-02 |
 | 2. Request Logging | 4/4 | Complete ✓ | 2026-02-04 |
 | 3. Response Metadata | 1/1 | Complete ✓ | 2026-02-04 |
-| 4. Retry and Fallback | 0/TBD | Not started | - |
+| 4. Retry and Fallback | 0/3 | Not started | - |
