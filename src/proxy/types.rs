@@ -74,6 +74,7 @@ pub struct Usage {
 }
 
 /// Streaming chunk response.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatCompletionChunk {
     pub id: String,
@@ -84,6 +85,7 @@ pub struct ChatCompletionChunk {
 }
 
 /// A streaming choice delta.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChunkChoice {
     pub index: u32,
@@ -92,6 +94,7 @@ pub struct ChunkChoice {
 }
 
 /// Delta content in streaming response.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -89,7 +89,7 @@ pub async fn chat_completions(
         let stream = upstream_response.bytes_stream().map(move |chunk| {
             chunk.map_err(|e| {
                 tracing::error!(error = %e, "Error streaming from provider");
-                std::io::Error::new(std::io::ErrorKind::Other, e)
+                std::io::Error::other(e)
             })
         });
 

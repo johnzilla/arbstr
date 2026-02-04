@@ -1,6 +1,8 @@
 //! HTTP server setup and configuration.
 
 use axum::{
+    middleware,
+    response::Response,
     routing::{get, post},
     Router,
 };
@@ -15,6 +17,10 @@ use super::handlers;
 use crate::config::Config;
 use crate::router::Router as ProviderRouter;
 
+/// Per-request correlation ID stored in request extensions.
+#[derive(Clone, Debug)]
+pub struct RequestId(pub Uuid);
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +28,16 @@ pub struct AppState {
     pub http_client: Client,
     pub config: Arc<Config>,
     pub db: Option<SqlitePool>,
+}
+
+/// Middleware that generates a correlation ID and stores it in request extensions.
+async fn inject_request_id(
+    mut request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Response {
+    let request_id = Uuid::new_v4();
+    request.extensions_mut().insert(RequestId(request_id));
+    next.run(request).await
 }
 
 /// Create the axum router with all endpoints.
@@ -38,7 +54,11 @@ pub fn create_router(state: AppState) -> Router {
         .layer(
             TraceLayer::new_for_http().make_span_with(
                 |request: &axum::http::Request<axum::body::Body>| {
-                    let request_id = Uuid::new_v4();
+                    let request_id = request
+                        .extensions()
+                        .get::<RequestId>()
+                        .map(|r| r.0)
+                        .unwrap_or_else(Uuid::new_v4);
                     tracing::info_span!(
                         "request",
                         method = %request.method(),
@@ -48,6 +68,7 @@ pub fn create_router(state: AppState) -> Router {
                 },
             ),
         )
+        .layer(middleware::from_fn(inject_request_id))
 }
 
 /// Run the HTTP server.

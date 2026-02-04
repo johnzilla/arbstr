@@ -140,11 +140,11 @@ impl Config {
             source: e,
         })?;
 
-        Self::from_str(&content)
+        Self::parse_str(&content)
     }
 
     /// Parse configuration from a TOML string.
-    pub fn from_str(content: &str) -> Result<Self, ConfigError> {
+    pub fn parse_str(content: &str) -> Result<Self, ConfigError> {
         let config: Config = toml::from_str(content).map_err(ConfigError::Parse)?;
         config.validate()?;
         Ok(config)
@@ -202,7 +202,7 @@ mod tests {
             listen = "127.0.0.1:9000"
         "#;
 
-        let config = Config::from_str(toml).unwrap();
+        let config = Config::parse_str(toml).unwrap();
         assert_eq!(config.server.listen, "127.0.0.1:9000");
         assert!(config.providers.is_empty());
     }
@@ -239,7 +239,7 @@ mod tests {
             log_requests = true
         "#;
 
-        let config = Config::from_str(toml).unwrap();
+        let config = Config::parse_str(toml).unwrap();
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].name, "test-provider");
         assert_eq!(config.providers[0].input_rate, 10);

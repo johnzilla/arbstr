@@ -137,26 +137,23 @@ impl Router {
         let mut filtered = candidates;
 
         // Filter by allowed models
-        if !policy.allowed_models.is_empty() {
-            if !policy.allowed_models.iter().any(|m| m == model) {
-                tracing::warn!(
-                    model = %model,
-                    policy = %policy.name,
-                    "Model not allowed by policy"
-                );
-                return Err(Error::BadRequest(format!(
-                    "Model '{}' not allowed by policy '{}'",
-                    model, policy.name
-                )));
-            }
+        if !policy.allowed_models.is_empty()
+            && !policy.allowed_models.iter().any(|m| m == model)
+        {
+            tracing::warn!(
+                model = %model,
+                policy = %policy.name,
+                "Model not allowed by policy"
+            );
+            return Err(Error::BadRequest(format!(
+                "Model '{}' not allowed by policy '{}'",
+                model, policy.name
+            )));
         }
 
         // Filter by max cost
         if let Some(max_sats) = policy.max_sats_per_1k_output {
-            filtered = filtered
-                .into_iter()
-                .filter(|p| p.output_rate <= max_sats)
-                .collect();
+            filtered.retain(|p| p.output_rate <= max_sats);
         }
 
         if filtered.is_empty() {
