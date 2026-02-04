@@ -13,7 +13,7 @@ This milestone adds reliability and observability to arbstr's existing proxy. Th
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Fix cost calculation and add request correlation IDs
-- [ ] **Phase 2: Request Logging** - SQLite storage with async request logging, token extraction, and latency tracking
+- [x] **Phase 2: Request Logging** - SQLite storage with async request logging, token extraction, and latency tracking
 - [ ] **Phase 3: Response Metadata** - Expose cost, latency, and correlation ID to clients via response headers
 - [ ] **Phase 4: Retry and Fallback** - Retry failed requests with backoff and fall back to alternate providers
 
@@ -48,8 +48,8 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Storage infrastructure: migration SQL, storage module, pool init, RequestLog
 - [x] 02-02-PLAN.md — Integration: register storage module, Database error variant, AppState.db (depends on 02-01)
-- [ ] 02-03-PLAN.md — Correlation ID in request extensions for handler access (depends on 02-02)
-- [ ] 02-04-PLAN.md — Request logging integration in chat_completions handler (depends on 02-02 + 02-03)
+- [x] 02-03-PLAN.md — Correlation ID in request extensions for handler access (depends on 02-02)
+- [x] 02-04-PLAN.md — Request logging integration in chat_completions handler (depends on 02-02 + 02-03)
 
 ### Phase 3: Response Metadata
 **Goal**: Clients can see per-request cost, latency, and correlation ID on every response
@@ -90,6 +90,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete ✓ | 2026-02-02 |
-| 2. Request Logging | 2/4 | In progress | - |
+| 2. Request Logging | 4/4 | Complete | 2026-02-04 |
 | 3. Response Metadata | 0/TBD | Not started | - |
 | 4. Retry and Fallback | 0/TBD | Not started | - |
