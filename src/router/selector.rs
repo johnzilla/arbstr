@@ -1,5 +1,7 @@
 //! Provider selection logic.
 
+use std::collections::HashSet;
+
 use crate::config::{PolicyRule, ProviderConfig};
 use crate::error::{Error, Result};
 
@@ -32,6 +34,7 @@ impl From<&ProviderConfig> for SelectedProvider {
 pub struct Router {
     providers: Vec<ProviderConfig>,
     policy_rules: Vec<PolicyRule>,
+    #[allow(dead_code)] // Preserved for future strategy-based dispatch (lowest_latency, round_robin)
     default_strategy: String,
 }
 
@@ -51,6 +54,10 @@ impl Router {
 
     /// Select the best provider for a request.
     ///
+    /// Returns the cheapest single provider that matches the model and policy
+    /// constraints. Delegates to [`select_candidates`] and returns the first
+    /// (cheapest) candidate.
+    ///
     /// # Arguments
     /// * `model` - The requested model name
     /// * `policy_name` - Optional policy name from X-Arbstr-Policy header
@@ -61,6 +68,27 @@ impl Router {
         policy_name: Option<&str>,
         prompt: Option<&str>,
     ) -> Result<SelectedProvider> {
+        self.select_candidates(model, policy_name, prompt)
+            .map(|mut v| v.remove(0))
+    }
+
+    /// Select all candidate providers for a request, sorted cheapest-first.
+    ///
+    /// Returns a `Vec<SelectedProvider>` filtered by model and policy
+    /// constraints, sorted by routing cost (`output_rate + base_fee`
+    /// ascending), and deduplicated by provider name (keeping the cheapest
+    /// entry for each name).
+    ///
+    /// # Arguments
+    /// * `model` - The requested model name
+    /// * `policy_name` - Optional policy name from X-Arbstr-Policy header
+    /// * `prompt` - The user's prompt (for heuristic matching)
+    pub fn select_candidates(
+        &self,
+        model: &str,
+        policy_name: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Result<Vec<SelectedProvider>> {
         // Find matching policy
         let policy = self.find_policy(policy_name, prompt);
 
@@ -82,21 +110,22 @@ impl Router {
             candidates = self.apply_policy_constraints(candidates, policy, model)?;
         }
 
-        // Select based on strategy
-        let strategy = policy
-            .map(|p| p.strategy.as_str())
-            .unwrap_or(&self.default_strategy);
+        // Sort by routing cost (output_rate + base_fee), cheapest first
+        candidates.sort_by_key(|p| p.output_rate + p.base_fee);
 
-        let selected = match strategy {
-            "lowest_cost" | "cheapest" => self.select_cheapest(&candidates),
-            "lowest_latency" => self.select_first(&candidates), // TODO: track latency
-            "round_robin" => self.select_first(&candidates),    // TODO: implement
-            _ => self.select_cheapest(&candidates),
-        };
-
-        selected
+        // Deduplicate by provider name (keep first occurrence = cheapest)
+        let mut seen = HashSet::new();
+        let unique: Vec<SelectedProvider> = candidates
+            .into_iter()
+            .filter(|p| seen.insert(p.name.clone()))
             .map(SelectedProvider::from)
-            .ok_or(Error::NoPolicyMatch)
+            .collect();
+
+        if unique.is_empty() {
+            return Err(Error::NoPolicyMatch);
+        }
+
+        Ok(unique)
     }
 
     /// Find a matching policy by name or heuristics.
@@ -161,20 +190,6 @@ impl Router {
         }
 
         Ok(filtered)
-    }
-
-    /// Select the cheapest provider by `output_rate + base_fee` (the two cost
-    /// components visible at routing time, before token counts are known).
-    fn select_cheapest<'a>(&self, candidates: &[&'a ProviderConfig]) -> Option<&'a ProviderConfig> {
-        candidates
-            .iter()
-            .min_by_key(|p| p.output_rate + p.base_fee)
-            .copied()
-    }
-
-    /// Select the first provider (placeholder for latency-based selection).
-    fn select_first<'a>(&self, candidates: &[&'a ProviderConfig]) -> Option<&'a ProviderConfig> {
-        candidates.first().copied()
     }
 
     /// Get all configured providers.
@@ -323,5 +338,142 @@ mod tests {
             .select("gpt-4o", None, Some("Write a function to sort"))
             .unwrap();
         assert_eq!(selected.name, "cheap");
+    }
+
+    #[test]
+    fn test_select_candidates_returns_ordered_list() {
+        // Three providers at different costs for gpt-4o
+        let providers = vec![
+            ProviderConfig {
+                name: "medium".to_string(),
+                url: "https://medium.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 8,
+                output_rate: 20,
+                base_fee: 5, // routing cost: 25
+            },
+            ProviderConfig {
+                name: "cheapest".to_string(),
+                url: "https://cheapest.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 3,
+                output_rate: 10,
+                base_fee: 0, // routing cost: 10
+            },
+            ProviderConfig {
+                name: "pricey".to_string(),
+                url: "https://pricey.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 15,
+                output_rate: 40,
+                base_fee: 10, // routing cost: 50
+            },
+        ];
+
+        let router = Router::new(providers, vec![], "cheapest".to_string());
+        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].name, "cheapest");
+        assert_eq!(candidates[1].name, "medium");
+        assert_eq!(candidates[2].name, "pricey");
+    }
+
+    #[test]
+    fn test_select_candidates_deduplicates_by_name() {
+        // Two providers with the same name but different rates
+        let providers = vec![
+            ProviderConfig {
+                name: "alpha".to_string(),
+                url: "https://alpha-expensive.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 10,
+                output_rate: 30,
+                base_fee: 5, // routing cost: 35
+            },
+            ProviderConfig {
+                name: "alpha".to_string(),
+                url: "https://alpha-cheap.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 3,
+                output_rate: 10,
+                base_fee: 0, // routing cost: 10
+            },
+            ProviderConfig {
+                name: "beta".to_string(),
+                url: "https://beta.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 5,
+                output_rate: 15,
+                base_fee: 2, // routing cost: 17
+            },
+        ];
+
+        let router = Router::new(providers, vec![], "cheapest".to_string());
+        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+
+        // alpha appears twice in config but should only appear once in results
+        assert_eq!(candidates.len(), 2);
+        // cheapest alpha (cost 10) kept, expensive alpha (cost 35) removed
+        assert_eq!(candidates[0].name, "alpha");
+        assert_eq!(candidates[0].output_rate, 10);
+        assert_eq!(candidates[1].name, "beta");
+    }
+
+    #[test]
+    fn test_select_delegates_to_candidates() {
+        let router = Router::new(test_providers(), vec![], "cheapest".to_string());
+
+        let selected = router.select("gpt-4o", None, None).unwrap();
+        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+
+        assert_eq!(selected.name, candidates[0].name);
+        assert_eq!(selected.url, candidates[0].url);
+        assert_eq!(selected.output_rate, candidates[0].output_rate);
+        assert_eq!(selected.base_fee, candidates[0].base_fee);
+    }
+
+    #[test]
+    fn test_select_candidates_filters_by_model() {
+        let providers = vec![
+            ProviderConfig {
+                name: "has-model".to_string(),
+                url: "https://a.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 5,
+                output_rate: 15,
+                base_fee: 0,
+            },
+            ProviderConfig {
+                name: "no-model".to_string(),
+                url: "https://b.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["claude-3.5-sonnet".to_string()],
+                input_rate: 3,
+                output_rate: 10,
+                base_fee: 0,
+            },
+        ];
+
+        let router = Router::new(providers, vec![], "cheapest".to_string());
+        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "has-model");
+    }
+
+    #[test]
+    fn test_select_candidates_empty_returns_error() {
+        let router = Router::new(test_providers(), vec![], "cheapest".to_string());
+
+        let result = router.select_candidates("nonexistent-model", None, None);
+        assert!(matches!(result, Err(Error::NoProviders { .. })));
     }
 }
