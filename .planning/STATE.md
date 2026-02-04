@@ -5,21 +5,21 @@
 See: .planning/PROJECT.md (updated 2026-02-02)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 2 complete; ready for Phase 3 - Response Metadata
+**Current focus:** Phase 3 complete; ready for Phase 4 - Retry and Fallback
 
 ## Current Position
 
-Phase: 2 of 4 (Request Logging) -- COMPLETE
-Plan: 4 of 4 in current phase
+Phase: 3 of 4 (Response Metadata) -- COMPLETE
+Plan: 1 of 1 in current phase
 Status: Phase complete
-Last activity: 2026-02-04 -- Completed 02-04-PLAN.md (request logging integration)
+Last activity: 2026-02-04 -- Completed 03-01-PLAN.md (response metadata headers)
 
-Progress: [██████░░░░] 60%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
+- Total plans completed: 7
 - Average duration: 2 min
 - Total execution time: 0.2 hours
 
@@ -29,9 +29,10 @@ Progress: [██████░░░░] 60%
 |-------|-------|-------|----------|
 | 1. Foundation | 2/2 | 6 min | 3 min |
 | 2. Request Logging | 4/4 | 7 min | 2 min |
+| 3. Response Metadata | 1/1 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (3 min), 02-01 (2 min), 02-02 (1 min), 02-03 (2 min), 02-04 (2 min)
+- Last 5 plans: 02-01 (2 min), 02-02 (1 min), 02-03 (2 min), 02-04 (2 min), 03-01 (2 min)
 - Trend: Consistent, stable at ~2 min
 
 *Updated after each plan completion*
@@ -56,6 +57,9 @@ Recent decisions affecting current work:
 - 02-03: Config::from_str renamed to Config::parse_str to satisfy clippy should_implement_trait
 - 02-04: Streaming requests logged with None tokens/cost (stream not consumed at log time)
 - 02-04: Core logic extracted into execute_request returning Result<RequestOutcome, RequestError> for unified logging
+- 03-01: Error path returns Ok(error_response) with arbstr headers instead of Err(Error)
+- 03-01: Streaming responses omit cost and latency headers, include streaming flag
+- 03-01: Cost formatted with 2 decimal places (e.g. 0.10 not 0.1)
 
 ### Pending Todos
 
@@ -69,5 +73,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-04
-Stopped at: Completed 02-04-PLAN.md, Phase 2 complete. Ready for Phase 3.
+Stopped at: Completed 03-01-PLAN.md, Phase 3 complete. Ready for Phase 4.
 Resume file: None
