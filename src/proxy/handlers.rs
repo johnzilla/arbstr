@@ -1,5 +1,7 @@
 //! HTTP request handlers.
 
+use std::sync::{Arc, Mutex};
+
 use axum::{
     body::Body,
     extract::{Extension, State},
@@ -8,7 +10,9 @@ use axum::{
     Json,
 };
 use futures::StreamExt;
+use tokio::time::{timeout_at, Duration, Instant};
 
+use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
 use crate::error::Error;
@@ -27,6 +31,11 @@ pub const ARBSTR_LATENCY_MS_HEADER: &str = "x-arbstr-latency-ms";
 pub const ARBSTR_PROVIDER_HEADER: &str = "x-arbstr-provider";
 /// Response header: present with value "true" on streaming responses.
 pub const ARBSTR_STREAMING_HEADER: &str = "x-arbstr-streaming";
+/// Response header: retry attempt history (e.g. "2/provider-alpha, 1/provider-beta").
+pub const ARBSTR_RETRIES_HEADER: &str = "x-arbstr-retries";
+
+/// Total timeout for the retry+fallback chain (30 seconds).
+const RETRY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Outcome of a successful request, containing the response and metadata for logging.
 pub(crate) struct RequestOutcome {
@@ -140,82 +149,324 @@ pub async fn chat_completions(
         "Received chat completion request"
     );
 
-    // Execute the core request logic, capturing the outcome for logging
-    let result = execute_request(
-        &state,
-        &request,
-        policy_name.as_deref(),
-        user_prompt,
-        &correlation_id,
-        is_streaming,
-    )
-    .await;
+    if is_streaming {
+        // Streaming path: no retry, fail fast (existing behavior)
+        let result = execute_request(
+            &state,
+            &request,
+            policy_name.as_deref(),
+            user_prompt,
+            &correlation_id,
+            true,
+        )
+        .await;
 
-    // Log the outcome (fire-and-forget)
-    let latency_ms = start.elapsed().as_millis() as i64;
-    if let Some(pool) = &state.db {
-        let log_entry = match &result {
-            Ok(outcome) => RequestLog {
-                correlation_id: correlation_id.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                model: model.clone(),
-                provider: Some(outcome.provider_name.clone()),
-                policy: policy_name.clone(),
-                streaming: is_streaming,
-                input_tokens: outcome.input_tokens,
-                output_tokens: outcome.output_tokens,
-                cost_sats: outcome.cost_sats,
-                provider_cost_sats: outcome.provider_cost_sats,
-                latency_ms,
-                success: true,
-                error_status: None,
-                error_message: None,
-            },
-            Err(outcome_err) => RequestLog {
-                correlation_id: correlation_id.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                model: model.clone(),
-                provider: outcome_err.provider_name.clone(),
-                policy: policy_name.clone(),
-                streaming: is_streaming,
-                input_tokens: None,
-                output_tokens: None,
-                cost_sats: None,
-                provider_cost_sats: None,
-                latency_ms,
-                success: false,
-                error_status: Some(outcome_err.status_code),
-                error_message: Some(outcome_err.message.clone()),
-            },
-        };
-        spawn_log_write(pool, log_entry);
-    }
+        let latency_ms = start.elapsed().as_millis() as i64;
 
-    // Convert outcome to HTTP response, attaching arbstr metadata headers
-    match result {
-        Ok(outcome) => {
-            let mut response = outcome.response;
-            attach_arbstr_headers(
-                &mut response,
-                &correlation_id,
-                latency_ms,
-                Some(&outcome.provider_name),
-                outcome.cost_sats,
-                is_streaming,
-            );
-            Ok(response)
+        // Log the outcome (fire-and-forget)
+        if let Some(pool) = &state.db {
+            let log_entry = match &result {
+                Ok(outcome) => RequestLog {
+                    correlation_id: correlation_id.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    model: model.clone(),
+                    provider: Some(outcome.provider_name.clone()),
+                    policy: policy_name.clone(),
+                    streaming: true,
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    cost_sats: outcome.cost_sats,
+                    provider_cost_sats: outcome.provider_cost_sats,
+                    latency_ms,
+                    success: true,
+                    error_status: None,
+                    error_message: None,
+                },
+                Err(outcome_err) => RequestLog {
+                    correlation_id: correlation_id.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    model: model.clone(),
+                    provider: outcome_err.provider_name.clone(),
+                    policy: policy_name.clone(),
+                    streaming: true,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_sats: None,
+                    provider_cost_sats: None,
+                    latency_ms,
+                    success: false,
+                    error_status: Some(outcome_err.status_code),
+                    error_message: Some(outcome_err.message.clone()),
+                },
+            };
+            spawn_log_write(pool, log_entry);
         }
-        Err(outcome_err) => {
-            let mut error_response = outcome_err.error.into_response();
-            attach_arbstr_headers(
-                &mut error_response,
-                &correlation_id,
-                latency_ms,
-                outcome_err.provider_name.as_deref(),
-                None, // cost not known for errors
-                is_streaming,
-            );
-            Ok(error_response)
+
+        // Build response with arbstr headers
+        match result {
+            Ok(outcome) => {
+                let mut response = outcome.response;
+                attach_arbstr_headers(
+                    &mut response,
+                    &correlation_id,
+                    latency_ms,
+                    Some(&outcome.provider_name),
+                    outcome.cost_sats,
+                    true,
+                );
+                Ok(response)
+            }
+            Err(outcome_err) => {
+                let mut error_response = outcome_err.error.into_response();
+                attach_arbstr_headers(
+                    &mut error_response,
+                    &correlation_id,
+                    latency_ms,
+                    outcome_err.provider_name.as_deref(),
+                    None,
+                    true,
+                );
+                Ok(error_response)
+            }
+        }
+    } else {
+        // Non-streaming path: retry with fallback and 30-second deadline
+
+        // Get ordered candidate list
+        let candidates = match state
+            .router
+            .select_candidates(&request.model, policy_name.as_deref(), user_prompt)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let latency_ms = start.elapsed().as_millis() as i64;
+                let (status_code, message) = match &e {
+                    Error::NoProviders { .. } => (400u16, e.to_string()),
+                    Error::NoPolicyMatch => (400, e.to_string()),
+                    Error::BadRequest(_) => (400, e.to_string()),
+                    _ => (500, e.to_string()),
+                };
+
+                // Log the routing error
+                if let Some(pool) = &state.db {
+                    spawn_log_write(
+                        pool,
+                        RequestLog {
+                            correlation_id: correlation_id.clone(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            model: model.clone(),
+                            provider: None,
+                            policy: policy_name.clone(),
+                            streaming: false,
+                            input_tokens: None,
+                            output_tokens: None,
+                            cost_sats: None,
+                            provider_cost_sats: None,
+                            latency_ms,
+                            success: false,
+                            error_status: Some(status_code),
+                            error_message: Some(message),
+                        },
+                    );
+                }
+
+                let mut error_response = e.into_response();
+                attach_arbstr_headers(
+                    &mut error_response,
+                    &correlation_id,
+                    latency_ms,
+                    None,
+                    None,
+                    false,
+                );
+                return Ok(error_response);
+            }
+        };
+
+        // Build CandidateInfo list for retry module
+        let candidate_infos: Vec<CandidateInfo> = candidates
+            .iter()
+            .map(|c| CandidateInfo {
+                name: c.name.clone(),
+            })
+            .collect();
+
+        // Shared attempt tracking -- created before timeout so it survives cancellation
+        let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
+        let deadline = Instant::now() + RETRY_TIMEOUT;
+
+        // Run retry+fallback within the timeout deadline
+        let timeout_result = timeout_at(
+            deadline,
+            retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
+                let provider = candidates
+                    .iter()
+                    .find(|c| c.name == info.name)
+                    .expect("candidate info must match a provider");
+                send_to_provider(&state, &request, provider, &correlation_id, false)
+            }),
+        )
+        .await;
+
+        let latency_ms = start.elapsed().as_millis() as i64;
+
+        // Read attempt history (available even after timeout)
+        let recorded_attempts = attempts.lock().unwrap().clone();
+        let retries_header = format_retries_header(&recorded_attempts);
+
+        match timeout_result {
+            Err(_elapsed) => {
+                // Timeout: return 504 Gateway Timeout
+                tracing::error!(
+                    latency_ms = latency_ms,
+                    attempts = recorded_attempts.len(),
+                    "Retry+fallback timed out after 30 seconds"
+                );
+
+                // Log timeout as failed request
+                if let Some(pool) = &state.db {
+                    let last_provider = recorded_attempts.last().map(|a| a.provider_name.clone());
+                    spawn_log_write(
+                        pool,
+                        RequestLog {
+                            correlation_id: correlation_id.clone(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            model: model.clone(),
+                            provider: last_provider,
+                            policy: policy_name.clone(),
+                            streaming: false,
+                            input_tokens: None,
+                            output_tokens: None,
+                            cost_sats: None,
+                            provider_cost_sats: None,
+                            latency_ms,
+                            success: false,
+                            error_status: Some(504),
+                            error_message: Some(
+                                "Request timed out after 30 seconds (retry budget exhausted)"
+                                    .to_string(),
+                            ),
+                        },
+                    );
+                }
+
+                let timeout_error = Error::Provider(
+                    "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
+                );
+                let mut error_response = timeout_error.into_response();
+
+                // Override status to 504 Gateway Timeout (Error::Provider maps to 502)
+                *error_response.status_mut() = StatusCode::GATEWAY_TIMEOUT;
+
+                attach_arbstr_headers(
+                    &mut error_response,
+                    &correlation_id,
+                    latency_ms,
+                    None,
+                    None,
+                    false,
+                );
+
+                if let Some(retries_val) = &retries_header {
+                    error_response.headers_mut().insert(
+                        HeaderName::from_static(ARBSTR_RETRIES_HEADER),
+                        HeaderValue::from_str(retries_val).unwrap(),
+                    );
+                }
+
+                Ok(error_response)
+            }
+            Ok(retry_outcome) => {
+                // Retry completed within deadline
+                match retry_outcome.result {
+                    Ok(outcome) => {
+                        // Log success
+                        if let Some(pool) = &state.db {
+                            spawn_log_write(
+                                pool,
+                                RequestLog {
+                                    correlation_id: correlation_id.clone(),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    model: model.clone(),
+                                    provider: Some(outcome.provider_name.clone()),
+                                    policy: policy_name.clone(),
+                                    streaming: false,
+                                    input_tokens: outcome.input_tokens,
+                                    output_tokens: outcome.output_tokens,
+                                    cost_sats: outcome.cost_sats,
+                                    provider_cost_sats: outcome.provider_cost_sats,
+                                    latency_ms,
+                                    success: true,
+                                    error_status: None,
+                                    error_message: None,
+                                },
+                            );
+                        }
+
+                        let mut response = outcome.response;
+                        attach_arbstr_headers(
+                            &mut response,
+                            &correlation_id,
+                            latency_ms,
+                            Some(&outcome.provider_name),
+                            outcome.cost_sats,
+                            false,
+                        );
+
+                        if let Some(retries_val) = &retries_header {
+                            response.headers_mut().insert(
+                                HeaderName::from_static(ARBSTR_RETRIES_HEADER),
+                                HeaderValue::from_str(retries_val).unwrap(),
+                            );
+                        }
+
+                        Ok(response)
+                    }
+                    Err(outcome_err) => {
+                        // Log final failure
+                        if let Some(pool) = &state.db {
+                            spawn_log_write(
+                                pool,
+                                RequestLog {
+                                    correlation_id: correlation_id.clone(),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    model: model.clone(),
+                                    provider: outcome_err.provider_name.clone(),
+                                    policy: policy_name.clone(),
+                                    streaming: false,
+                                    input_tokens: None,
+                                    output_tokens: None,
+                                    cost_sats: None,
+                                    provider_cost_sats: None,
+                                    latency_ms,
+                                    success: false,
+                                    error_status: Some(outcome_err.status_code),
+                                    error_message: Some(outcome_err.message.clone()),
+                                },
+                            );
+                        }
+
+                        let mut error_response = outcome_err.error.into_response();
+                        attach_arbstr_headers(
+                            &mut error_response,
+                            &correlation_id,
+                            latency_ms,
+                            outcome_err.provider_name.as_deref(),
+                            None,
+                            false,
+                        );
+
+                        if let Some(retries_val) = &retries_header {
+                            error_response.headers_mut().insert(
+                                HeaderName::from_static(ARBSTR_RETRIES_HEADER),
+                                HeaderValue::from_str(retries_val).unwrap(),
+                            );
+                        }
+
+                        Ok(error_response)
+                    }
+                }
+            }
         }
     }
 }
