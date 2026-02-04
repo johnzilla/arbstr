@@ -12,10 +12,10 @@
 
 ### Observability
 
-- [ ] **OBSRV-01**: Every completed request logged to SQLite with timestamp, model, provider, input_tokens, output_tokens, cost_sats, latency_ms, success, policy name, correlation ID
-- [ ] **OBSRV-02**: Token counts extracted from non-streaming provider responses (usage object)
-- [ ] **OBSRV-03**: Latency measured as wall-clock time from request receipt to response completion
-- [ ] **OBSRV-04**: SQLite writes are async (fire-and-forget via tokio::spawn), never blocking the response path
+- [x] **OBSRV-01**: Every completed request logged to SQLite with timestamp, model, provider, input_tokens, output_tokens, cost_sats, latency_ms, success, policy name, correlation ID
+- [x] **OBSRV-02**: Token counts extracted from non-streaming provider responses (usage object)
+- [x] **OBSRV-03**: Latency measured as wall-clock time from request receipt to response completion
+- [x] **OBSRV-04**: SQLite writes are async (fire-and-forget via tokio::spawn), never blocking the response path
 - [ ] **OBSRV-05**: Non-streaming responses include x-arbstr-cost-sats header with actual cost
 - [ ] **OBSRV-06**: Non-streaming responses include x-arbstr-latency-ms header
 - [ ] **OBSRV-07**: Responses include x-arbstr-request-id header with correlation ID
@@ -63,10 +63,10 @@
 |-------------|-------|--------|
 | FNDTN-01 | Phase 1: Foundation | Complete |
 | FNDTN-02 | Phase 1: Foundation | Complete |
-| OBSRV-01 | Phase 2: Request Logging | Pending |
-| OBSRV-02 | Phase 2: Request Logging | Pending |
-| OBSRV-03 | Phase 2: Request Logging | Pending |
-| OBSRV-04 | Phase 2: Request Logging | Pending |
+| OBSRV-01 | Phase 2: Request Logging | Complete |
+| OBSRV-02 | Phase 2: Request Logging | Complete |
+| OBSRV-03 | Phase 2: Request Logging | Complete |
+| OBSRV-04 | Phase 2: Request Logging | Complete |
 | OBSRV-05 | Phase 3: Response Metadata | Pending |
 | OBSRV-06 | Phase 3: Response Metadata | Pending |
 | OBSRV-07 | Phase 3: Response Metadata | Pending |
@@ -83,4 +83,4 @@
 
 ---
 *Requirements defined: 2026-02-02*
-*Last updated: 2026-02-02 after roadmap creation*
+*Last updated: 2026-02-04 after Phase 2 completion*
