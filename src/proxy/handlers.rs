@@ -557,4 +557,124 @@ mod tests {
         let usage = extract_usage(&response);
         assert_eq!(usage, None);
     }
+
+    #[test]
+    fn test_attach_headers_non_streaming() {
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        attach_arbstr_headers(
+            &mut response,
+            "550e8400-e29b-41d4-a716-446655440000",
+            1523,
+            Some("provider-alpha"),
+            Some(42.35),
+            false,
+        );
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("x-arbstr-request-id").unwrap(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(headers.get("x-arbstr-latency-ms").unwrap(), "1523");
+        assert_eq!(headers.get("x-arbstr-cost-sats").unwrap(), "42.35");
+        assert_eq!(headers.get("x-arbstr-provider").unwrap(), "provider-alpha");
+        assert!(headers.get("x-arbstr-streaming").is_none());
+    }
+
+    #[test]
+    fn test_attach_headers_streaming() {
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        attach_arbstr_headers(
+            &mut response,
+            "550e8400-e29b-41d4-a716-446655440000",
+            500,
+            Some("provider-beta"),
+            Some(10.00), // cost provided but should be ignored for streaming
+            true,
+        );
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("x-arbstr-request-id").unwrap(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(headers.get("x-arbstr-streaming").unwrap(), "true");
+        assert_eq!(headers.get("x-arbstr-provider").unwrap(), "provider-beta");
+        // Streaming omits cost and latency
+        assert!(headers.get("x-arbstr-cost-sats").is_none());
+        assert!(headers.get("x-arbstr-latency-ms").is_none());
+    }
+
+    #[test]
+    fn test_attach_headers_error_no_provider() {
+        let mut response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::empty())
+            .unwrap();
+        attach_arbstr_headers(
+            &mut response,
+            "abcd1234-0000-0000-0000-000000000000",
+            50,
+            None,  // no provider (pre-route error)
+            None,  // no cost
+            false,
+        );
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("x-arbstr-request-id").unwrap(),
+            "abcd1234-0000-0000-0000-000000000000"
+        );
+        assert_eq!(headers.get("x-arbstr-latency-ms").unwrap(), "50");
+        assert!(headers.get("x-arbstr-provider").is_none());
+        assert!(headers.get("x-arbstr-cost-sats").is_none());
+        assert!(headers.get("x-arbstr-streaming").is_none());
+    }
+
+    #[test]
+    fn test_attach_headers_no_cost() {
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        attach_arbstr_headers(
+            &mut response,
+            "11111111-2222-3333-4444-555555555555",
+            200,
+            Some("provider-gamma"),
+            None, // cost unknown
+            false,
+        );
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("x-arbstr-request-id").unwrap(),
+            "11111111-2222-3333-4444-555555555555"
+        );
+        assert_eq!(headers.get("x-arbstr-latency-ms").unwrap(), "200");
+        assert_eq!(headers.get("x-arbstr-provider").unwrap(), "provider-gamma");
+        assert!(headers.get("x-arbstr-cost-sats").is_none());
+    }
+
+    #[test]
+    fn test_attach_headers_cost_formatting() {
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        attach_arbstr_headers(
+            &mut response,
+            "00000000-0000-0000-0000-000000000000",
+            100,
+            Some("provider"),
+            Some(0.10), // should format as "0.10" not "0.1"
+            false,
+        );
+        assert_eq!(
+            response.headers().get("x-arbstr-cost-sats").unwrap(),
+            "0.10"
+        );
+    }
 }
