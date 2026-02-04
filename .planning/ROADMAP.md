@@ -43,12 +43,13 @@ Plans:
   3. Latency recorded reflects wall-clock time from request receipt to response completion
   4. SQLite writes never block the response to the client (async fire-and-forget)
   5. Database schema is applied automatically via embedded migrations on startup
-**Plans**: TBD
+**Plans**: 4 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md — Storage infrastructure: migration SQL, storage module, pool init, RequestLog
+- [ ] 02-02-PLAN.md — Integration: register storage module, Database error variant, AppState.db (depends on 02-01)
+- [ ] 02-03-PLAN.md — Correlation ID in request extensions for handler access (depends on 02-02)
+- [ ] 02-04-PLAN.md — Request logging integration in chat_completions handler (depends on 02-02 + 02-03)
 
 ### Phase 3: Response Metadata
 **Goal**: Clients can see per-request cost, latency, and correlation ID on every response
@@ -89,6 +90,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete ✓ | 2026-02-02 |
-| 2. Request Logging | 0/TBD | Not started | - |
+| 2. Request Logging | 0/4 | Not started | - |
 | 3. Response Metadata | 0/TBD | Not started | - |
 | 4. Retry and Fallback | 0/TBD | Not started | - |
