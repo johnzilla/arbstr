@@ -29,21 +29,27 @@ pub const ARBSTR_PROVIDER_HEADER: &str = "x-arbstr-provider";
 pub const ARBSTR_STREAMING_HEADER: &str = "x-arbstr-streaming";
 
 /// Outcome of a successful request, containing the response and metadata for logging.
-struct RequestOutcome {
-    response: Response,
-    provider_name: String,
-    input_tokens: Option<u32>,
-    output_tokens: Option<u32>,
-    cost_sats: Option<f64>,
-    provider_cost_sats: Option<f64>,
+pub(crate) struct RequestOutcome {
+    pub(crate) response: Response,
+    pub(crate) provider_name: String,
+    pub(crate) input_tokens: Option<u32>,
+    pub(crate) output_tokens: Option<u32>,
+    pub(crate) cost_sats: Option<f64>,
+    pub(crate) provider_cost_sats: Option<f64>,
 }
 
 /// Outcome of a failed request, containing the error and metadata for logging.
-struct RequestError {
-    error: Error,
-    provider_name: Option<String>,
-    status_code: u16,
-    message: String,
+pub(crate) struct RequestError {
+    pub(crate) error: Error,
+    pub(crate) provider_name: Option<String>,
+    pub(crate) status_code: u16,
+    pub(crate) message: String,
+}
+
+impl super::retry::HasStatusCode for RequestError {
+    fn status_code(&self) -> u16 {
+        self.status_code
+    }
 }
 
 /// Extract token usage from a provider response.
@@ -140,6 +146,7 @@ pub async fn chat_completions(
         &request,
         policy_name.as_deref(),
         user_prompt,
+        &correlation_id,
         is_streaming,
     )
     .await;
@@ -213,43 +220,19 @@ pub async fn chat_completions(
     }
 }
 
-/// Execute the core request logic (provider selection, forwarding, response handling).
+/// Send a request to a specific provider and handle the response.
 ///
-/// Returns Ok(RequestOutcome) on success or Err(RequestError) on any failure.
-/// This separation allows the caller to log both outcomes before returning.
-async fn execute_request(
+/// This is the core provider-calling logic extracted for reuse by both
+/// the streaming path (via `execute_request`) and the retry path.
+/// Adds an `Idempotency-Key` header with the correlation ID to allow
+/// providers to deduplicate retried requests.
+async fn send_to_provider(
     state: &AppState,
     request: &ChatCompletionRequest,
-    policy_name: Option<&str>,
-    user_prompt: Option<&str>,
+    provider: &crate::router::SelectedProvider,
+    correlation_id: &str,
     is_streaming: bool,
 ) -> std::result::Result<RequestOutcome, RequestError> {
-    // Select provider
-    let provider = state
-        .router
-        .select(&request.model, policy_name, user_prompt)
-        .map_err(|e| {
-            let (status_code, message) = match &e {
-                Error::NoProviders { .. } => (400u16, e.to_string()),
-                Error::NoPolicyMatch => (400, e.to_string()),
-                Error::BadRequest(_) => (400, e.to_string()),
-                _ => (500, e.to_string()),
-            };
-            RequestError {
-                error: e,
-                provider_name: None,
-                status_code,
-                message,
-            }
-        })?;
-
-    tracing::info!(
-        provider = %provider.name,
-        url = %provider.url,
-        output_rate = %provider.output_rate,
-        "Selected provider"
-    );
-
     // Build upstream URL
     let upstream_url = format!("{}/chat/completions", provider.url.trim_end_matches('/'));
 
@@ -258,6 +241,7 @@ async fn execute_request(
         .http_client
         .post(&upstream_url)
         .header(header::CONTENT_TYPE, "application/json")
+        .header("Idempotency-Key", correlation_id)
         .json(request);
 
     if let Some(api_key) = &provider.api_key {
@@ -299,10 +283,53 @@ async fn execute_request(
     }
 
     if is_streaming {
-        handle_streaming_response(upstream_response, &provider).await
+        handle_streaming_response(upstream_response, provider).await
     } else {
-        handle_non_streaming_response(upstream_response, &provider).await
+        handle_non_streaming_response(upstream_response, provider).await
     }
+}
+
+/// Execute the core request logic (provider selection, forwarding, response handling).
+///
+/// Returns Ok(RequestOutcome) on success or Err(RequestError) on any failure.
+/// This separation allows the caller to log both outcomes before returning.
+/// Used by the streaming path (no retry). The non-streaming path uses
+/// `retry_with_fallback` + `send_to_provider` directly.
+async fn execute_request(
+    state: &AppState,
+    request: &ChatCompletionRequest,
+    policy_name: Option<&str>,
+    user_prompt: Option<&str>,
+    correlation_id: &str,
+    is_streaming: bool,
+) -> std::result::Result<RequestOutcome, RequestError> {
+    // Select provider
+    let provider = state
+        .router
+        .select(&request.model, policy_name, user_prompt)
+        .map_err(|e| {
+            let (status_code, message) = match &e {
+                Error::NoProviders { .. } => (400u16, e.to_string()),
+                Error::NoPolicyMatch => (400, e.to_string()),
+                Error::BadRequest(_) => (400, e.to_string()),
+                _ => (500, e.to_string()),
+            };
+            RequestError {
+                error: e,
+                provider_name: None,
+                status_code,
+                message,
+            }
+        })?;
+
+    tracing::info!(
+        provider = %provider.name,
+        url = %provider.url,
+        output_rate = %provider.output_rate,
+        "Selected provider"
+    );
+
+    send_to_provider(state, request, &provider, correlation_id, is_streaming).await
 }
 
 /// Handle a non-streaming provider response.
