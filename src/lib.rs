@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod proxy;
 pub mod router;
+pub mod storage;
 
 pub use config::Config;
 pub use error::{Error, Result};
