@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-02)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 4 - Retry and Fallback (Plan 02 of 03 complete)
+**Current focus:** All phases complete
 
 ## Current Position
 
 Phase: 4 of 4 (Retry and Fallback)
-Plan: 2 of 3 in current phase
-Status: In progress
-Last activity: 2026-02-04 -- Completed 04-02-PLAN.md (retry module with retry-with-fallback logic)
+Plan: 3 of 3 in current phase
+Status: Phase complete
+Last activity: 2026-02-04 -- Completed 04-03-PLAN.md (handler integration with retry/fallback)
 
-Progress: [█████████░] 90%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
+- Total plans completed: 10
 - Average duration: 2 min
-- Total execution time: 0.3 hours
+- Total execution time: 0.4 hours
 
 **By Phase:**
 
@@ -30,10 +30,10 @@ Progress: [█████████░] 90%
 | 1. Foundation | 2/2 | 6 min | 3 min |
 | 2. Request Logging | 4/4 | 7 min | 2 min |
 | 3. Response Metadata | 1/1 | 2 min | 2 min |
-| 4. Retry and Fallback | 2/3 | 4 min | 2 min |
+| 4. Retry and Fallback | 3/3 | 7 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-03 (2 min), 02-04 (2 min), 03-01 (2 min), 04-01 (2 min), 04-02 (2 min)
+- Last 5 plans: 02-04 (2 min), 03-01 (2 min), 04-01 (2 min), 04-02 (2 min), 04-03 (3 min)
 - Trend: Consistent, stable at ~2 min
 
 *Updated after each plan completion*
@@ -67,18 +67,21 @@ Recent decisions affecting current work:
 - 04-02: retry_with_fallback is generic over T/E with HasStatusCode trait, not coupled to handler types
 - 04-02: Attempts tracked via Arc<Mutex<Vec<AttemptRecord>>> parameter for timeout-safe tracking
 - 04-02: Non-retryable errors (4xx) skip fallback entirely
+- 04-03: Error::Provider maps to 502; timeout overrides status to 504 via status_mut()
+- 04-03: Routing errors handled before retry loop (permanent, not retryable)
+- 04-03: Streaming uses execute_request (no retry); non-streaming uses select_candidates + retry_with_fallback + send_to_provider
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-- Research flag: Cashu token double-spend semantics during retry need verification before Phase 4 planning
+- Research flag: Cashu token double-spend semantics during retry need verification before production use
 - Research flag: Routstr SSE streaming format (usage field in final chunk) affects future v2 streaming work
 
 ## Session Continuity
 
 Last session: 2026-02-04
-Stopped at: Completed 04-02-PLAN.md. Ready for 04-03 (handler integration with retry/fallback).
+Stopped at: Completed 04-03-PLAN.md. All 4 phases complete (10/10 plans).
 Resume file: None
