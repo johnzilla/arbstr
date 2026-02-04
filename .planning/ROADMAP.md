@@ -46,8 +46,8 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Storage infrastructure: migration SQL, storage module, pool init, RequestLog
-- [ ] 02-02-PLAN.md — Integration: register storage module, Database error variant, AppState.db (depends on 02-01)
+- [x] 02-01-PLAN.md — Storage infrastructure: migration SQL, storage module, pool init, RequestLog
+- [x] 02-02-PLAN.md — Integration: register storage module, Database error variant, AppState.db (depends on 02-01)
 - [ ] 02-03-PLAN.md — Correlation ID in request extensions for handler access (depends on 02-02)
 - [ ] 02-04-PLAN.md — Request logging integration in chat_completions handler (depends on 02-02 + 02-03)
 
@@ -90,6 +90,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete ✓ | 2026-02-02 |
-| 2. Request Logging | 0/4 | Not started | - |
+| 2. Request Logging | 2/4 | In progress | - |
 | 3. Response Metadata | 0/TBD | Not started | - |
 | 4. Retry and Fallback | 0/TBD | Not started | - |
