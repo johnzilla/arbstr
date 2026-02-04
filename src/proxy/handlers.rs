@@ -422,3 +422,57 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
         "providers": providers
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_usage_present() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-123",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 200,
+                "total_tokens": 300
+            }
+        });
+        let usage = extract_usage(&response);
+        assert_eq!(usage, Some((100, 200)));
+    }
+
+    #[test]
+    fn test_extract_usage_missing() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-123",
+            "choices": []
+        });
+        let usage = extract_usage(&response);
+        assert_eq!(usage, None);
+    }
+
+    #[test]
+    fn test_extract_usage_partial() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-123",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100
+            }
+        });
+        let usage = extract_usage(&response);
+        assert_eq!(usage, None);
+    }
+
+    #[test]
+    fn test_extract_usage_null() {
+        let response = serde_json::json!({
+            "id": "chatcmpl-123",
+            "choices": [],
+            "usage": null
+        });
+        let usage = extract_usage(&response);
+        assert_eq!(usage, None);
+    }
+}
