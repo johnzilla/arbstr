@@ -22,11 +22,11 @@
 
 ### Reliability
 
-- [ ] **RLBTY-01**: Failed requests (429, 500, 502, 503, 504) retried with exponential backoff, max 2 retries
-- [ ] **RLBTY-02**: After retries exhausted on primary provider, request falls back to next cheapest provider for same model
-- [ ] **RLBTY-03**: Router returns an ordered list of candidate providers, not just the top pick
-- [ ] **RLBTY-04**: Retry/fallback metadata (attempts, providers tried) included in response headers (x-arbstr-retries)
-- [ ] **RLBTY-05**: Error responses remain OpenAI-compatible through all retry/fallback paths
+- [x] **RLBTY-01**: Failed requests (429, 500, 502, 503, 504) retried with exponential backoff, max 2 retries
+- [x] **RLBTY-02**: After retries exhausted on primary provider, request falls back to next cheapest provider for same model
+- [x] **RLBTY-03**: Router returns an ordered list of candidate providers, not just the top pick
+- [x] **RLBTY-04**: Retry/fallback metadata (attempts, providers tried) included in response headers (x-arbstr-retries)
+- [x] **RLBTY-05**: Error responses remain OpenAI-compatible through all retry/fallback paths
 
 ## v2 Requirements
 
@@ -70,11 +70,11 @@
 | OBSRV-05 | Phase 3: Response Metadata | Complete |
 | OBSRV-06 | Phase 3: Response Metadata | Complete |
 | OBSRV-07 | Phase 3: Response Metadata | Complete |
-| RLBTY-01 | Phase 4: Retry and Fallback | Pending |
-| RLBTY-02 | Phase 4: Retry and Fallback | Pending |
-| RLBTY-03 | Phase 4: Retry and Fallback | Pending |
-| RLBTY-04 | Phase 4: Retry and Fallback | Pending |
-| RLBTY-05 | Phase 4: Retry and Fallback | Pending |
+| RLBTY-01 | Phase 4: Retry and Fallback | Complete |
+| RLBTY-02 | Phase 4: Retry and Fallback | Complete |
+| RLBTY-03 | Phase 4: Retry and Fallback | Complete |
+| RLBTY-04 | Phase 4: Retry and Fallback | Complete |
+| RLBTY-05 | Phase 4: Retry and Fallback | Complete |
 
 **Coverage:**
 - v1 requirements: 14 total
@@ -83,4 +83,4 @@
 
 ---
 *Requirements defined: 2026-02-02*
-*Last updated: 2026-02-04 after Phase 3 completion*
+*Last updated: 2026-02-04 after Phase 4 completion*

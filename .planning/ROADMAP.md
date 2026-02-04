@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation** - Fix cost calculation and add request correlation IDs
 - [x] **Phase 2: Request Logging** - SQLite storage with async request logging, token extraction, and latency tracking
 - [x] **Phase 3: Response Metadata** - Expose cost, latency, and correlation ID to clients via response headers
-- [ ] **Phase 4: Retry and Fallback** - Retry failed requests with backoff and fall back to alternate providers
+- [x] **Phase 4: Retry and Fallback** - Retry failed requests with backoff and fall back to alternate providers
 
 ## Phase Details
 
@@ -78,9 +78,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Add select_candidates to Router for ordered provider list (RLBTY-03)
-- [ ] 04-02-PLAN.md — Create retry module with retry_with_fallback, backoff, and attempt tracking (RLBTY-01, RLBTY-02)
-- [ ] 04-03-PLAN.md — Wire retry into handler: timeout, idempotency key, x-arbstr-retries header (RLBTY-04, RLBTY-05)
+- [x] 04-01-PLAN.md — Add select_candidates to Router for ordered provider list (RLBTY-03)
+- [x] 04-02-PLAN.md — Create retry module with retry_with_fallback, backoff, and attempt tracking (RLBTY-01, RLBTY-02)
+- [x] 04-03-PLAN.md — Wire retry into handler: timeout, idempotency key, x-arbstr-retries header (RLBTY-04, RLBTY-05)
 
 ## Progress
 
@@ -92,4 +92,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 1. Foundation | 2/2 | Complete ✓ | 2026-02-02 |
 | 2. Request Logging | 4/4 | Complete ✓ | 2026-02-04 |
 | 3. Response Metadata | 1/1 | Complete ✓ | 2026-02-04 |
-| 4. Retry and Fallback | 0/3 | Not started | - |
+| 4. Retry and Fallback | 3/3 | Complete ✓ | 2026-02-04 |
