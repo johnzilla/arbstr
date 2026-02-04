@@ -16,9 +16,9 @@
 - [x] **OBSRV-02**: Token counts extracted from non-streaming provider responses (usage object)
 - [x] **OBSRV-03**: Latency measured as wall-clock time from request receipt to response completion
 - [x] **OBSRV-04**: SQLite writes are async (fire-and-forget via tokio::spawn), never blocking the response path
-- [ ] **OBSRV-05**: Non-streaming responses include x-arbstr-cost-sats header with actual cost
-- [ ] **OBSRV-06**: Non-streaming responses include x-arbstr-latency-ms header
-- [ ] **OBSRV-07**: Responses include x-arbstr-request-id header with correlation ID
+- [x] **OBSRV-05**: Non-streaming responses include x-arbstr-cost-sats header with actual cost
+- [x] **OBSRV-06**: Non-streaming responses include x-arbstr-latency-ms header
+- [x] **OBSRV-07**: Responses include x-arbstr-request-id header with correlation ID
 
 ### Reliability
 
@@ -67,9 +67,9 @@
 | OBSRV-02 | Phase 2: Request Logging | Complete |
 | OBSRV-03 | Phase 2: Request Logging | Complete |
 | OBSRV-04 | Phase 2: Request Logging | Complete |
-| OBSRV-05 | Phase 3: Response Metadata | Pending |
-| OBSRV-06 | Phase 3: Response Metadata | Pending |
-| OBSRV-07 | Phase 3: Response Metadata | Pending |
+| OBSRV-05 | Phase 3: Response Metadata | Complete |
+| OBSRV-06 | Phase 3: Response Metadata | Complete |
+| OBSRV-07 | Phase 3: Response Metadata | Complete |
 | RLBTY-01 | Phase 4: Retry and Fallback | Pending |
 | RLBTY-02 | Phase 4: Retry and Fallback | Pending |
 | RLBTY-03 | Phase 4: Retry and Fallback | Pending |
@@ -83,4 +83,4 @@
 
 ---
 *Requirements defined: 2026-02-02*
-*Last updated: 2026-02-04 after Phase 2 completion*
+*Last updated: 2026-02-04 after Phase 3 completion*
