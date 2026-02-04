@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-02)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 3 complete; ready for Phase 4 - Retry and Fallback
+**Current focus:** Phase 4 - Retry and Fallback (Plan 01 of 03 complete)
 
 ## Current Position
 
-Phase: 3 of 4 (Response Metadata) -- COMPLETE
-Plan: 1 of 1 in current phase
-Status: Phase complete
-Last activity: 2026-02-04 -- Completed 03-01-PLAN.md (response metadata headers)
+Phase: 4 of 4 (Retry and Fallback)
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-04 -- Completed 04-01-PLAN.md (candidate list for retry/fallback)
 
-Progress: [███████░░░] 70%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
+- Total plans completed: 8
 - Average duration: 2 min
-- Total execution time: 0.2 hours
+- Total execution time: 0.3 hours
 
 **By Phase:**
 
@@ -30,9 +30,10 @@ Progress: [███████░░░] 70%
 | 1. Foundation | 2/2 | 6 min | 3 min |
 | 2. Request Logging | 4/4 | 7 min | 2 min |
 | 3. Response Metadata | 1/1 | 2 min | 2 min |
+| 4. Retry and Fallback | 1/3 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (2 min), 02-02 (1 min), 02-03 (2 min), 02-04 (2 min), 03-01 (2 min)
+- Last 5 plans: 02-02 (1 min), 02-03 (2 min), 02-04 (2 min), 03-01 (2 min), 04-01 (2 min)
 - Trend: Consistent, stable at ~2 min
 
 *Updated after each plan completion*
@@ -60,6 +61,8 @@ Recent decisions affecting current work:
 - 03-01: Error path returns Ok(error_response) with arbstr headers instead of Err(Error)
 - 03-01: Streaming responses omit cost and latency headers, include streaming flag
 - 03-01: Cost formatted with 2 decimal places (e.g. 0.10 not 0.1)
+- 04-01: select_candidates returns Vec<SelectedProvider> sorted by routing cost, select delegates to it
+- 04-01: Removed dead select_cheapest/select_first methods; default_strategy retained with allow(dead_code)
 
 ### Pending Todos
 
@@ -73,5 +76,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-04
-Stopped at: Completed 03-01-PLAN.md, Phase 3 complete. Ready for Phase 4.
+Stopped at: Completed 04-01-PLAN.md. Ready for 04-02 (retry/fallback loop).
 Resume file: None
