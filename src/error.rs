@@ -29,6 +29,9 @@ pub enum Error {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 impl IntoResponse for Error {
@@ -41,6 +44,7 @@ impl IntoResponse for Error {
             Error::Upstream(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Error::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Error::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 
         // Return OpenAI-compatible error format
