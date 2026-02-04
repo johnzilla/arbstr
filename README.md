@@ -4,14 +4,24 @@ Intelligent LLM routing and cost arbitrage for the [Routstr](https://routstr.com
 
 arbstr is a local proxy that sits between your applications and LLM providers on the Routstr marketplace. It automatically selects the cheapest provider for each request while respecting your quality and policy constraints.
 
-```
-┌─────────────┐     ┌──────────────────────────────┐     ┌────────────────────┐
-│  Your Apps   │     │           arbstr              │     │ Routstr Marketplace│
-│              │     │                              │     │                    │
-│  OpenAI SDK  │────▶│  Policy ──▶ Router ──▶ Best  │────▶│  Provider A  8 sat │
-│  curl / HTTP │     │  Engine     (cheapest)       │     │  Provider B 12 sat │
-│  Any client  │     │                              │     │  Provider C 10 sat │
-└─────────────┘     └──────────────────────────────┘     └────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Apps["Your Apps"]
+        direction TB
+        A1["OpenAI SDK<br>curl / HTTP<br>Any client"]
+    end
+
+    subgraph Arbstr["arbstr"]
+        direction TB
+        B1["Policy Engine → Router → Best<br>(cheapest)"]
+    end
+
+    subgraph Routstr["Routstr Marketplace"]
+        direction TB
+        C1["Provider A  8 sat<br>Provider B 12 sat<br>Provider C 10 sat"]
+    end
+
+    Apps --> Arbstr --> Routstr
 ```
 
 Routstr is a decentralized LLM marketplace where multiple providers offer the same models at different rates (priced in satoshis). arbstr exploits these price spreads automatically.
