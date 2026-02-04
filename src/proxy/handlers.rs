@@ -3,7 +3,7 @@
 use axum::{
     body::Body,
     extract::{Extension, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -16,6 +16,17 @@ use crate::storage::logging::{spawn_log_write, RequestLog};
 
 /// Custom header for policy selection.
 pub const ARBSTR_POLICY_HEADER: &str = "x-arbstr-policy";
+
+/// Response header: correlation ID (UUID v4).
+pub const ARBSTR_REQUEST_ID_HEADER: &str = "x-arbstr-request-id";
+/// Response header: actual cost in satoshis (decimal, e.g. "42.35").
+pub const ARBSTR_COST_SATS_HEADER: &str = "x-arbstr-cost-sats";
+/// Response header: wall-clock latency in milliseconds (integer).
+pub const ARBSTR_LATENCY_MS_HEADER: &str = "x-arbstr-latency-ms";
+/// Response header: provider name that handled the request.
+pub const ARBSTR_PROVIDER_HEADER: &str = "x-arbstr-provider";
+/// Response header: present with value "true" on streaming responses.
+pub const ARBSTR_STREAMING_HEADER: &str = "x-arbstr-streaming";
 
 /// Outcome of a successful request, containing the response and metadata for logging.
 struct RequestOutcome {
@@ -44,6 +55,57 @@ fn extract_usage(response: &serde_json::Value) -> Option<(u32, u32)> {
     let input = usage.get("prompt_tokens")?.as_u64()? as u32;
     let output = usage.get("completion_tokens")?.as_u64()? as u32;
     Some((input, output))
+}
+
+/// Attach arbstr metadata headers to a response.
+///
+/// For non-streaming responses: sets request-id, latency, provider, and cost.
+/// For streaming responses: sets request-id, provider, and streaming flag.
+/// Cost and latency are omitted on streaming responses (not known at header-send time).
+fn attach_arbstr_headers(
+    response: &mut Response,
+    request_id: &str,
+    latency_ms: i64,
+    provider: Option<&str>,
+    cost_sats: Option<f64>,
+    is_streaming: bool,
+) {
+    let headers = response.headers_mut();
+
+    // Always present
+    headers.insert(
+        HeaderName::from_static(ARBSTR_REQUEST_ID_HEADER),
+        HeaderValue::from_str(request_id).unwrap(),
+    );
+
+    if is_streaming {
+        headers.insert(
+            HeaderName::from_static(ARBSTR_STREAMING_HEADER),
+            HeaderValue::from_static("true"),
+        );
+        // Streaming: omit cost and latency (not known at header-send time)
+    } else {
+        // Non-streaming: always include latency
+        headers.insert(
+            HeaderName::from_static(ARBSTR_LATENCY_MS_HEADER),
+            HeaderValue::from(latency_ms as u64),
+        );
+        // Non-streaming: include cost if known
+        if let Some(cost) = cost_sats {
+            headers.insert(
+                HeaderName::from_static(ARBSTR_COST_SATS_HEADER),
+                HeaderValue::from_str(&format!("{:.2}", cost)).unwrap(),
+            );
+        }
+    }
+
+    // Provider: present when known
+    if let Some(provider_name) = provider {
+        headers.insert(
+            HeaderName::from_static(ARBSTR_PROVIDER_HEADER),
+            HeaderValue::from_str(provider_name).unwrap(),
+        );
+    }
 }
 
 /// Handle POST /v1/chat/completions
@@ -122,10 +184,32 @@ pub async fn chat_completions(
         spawn_log_write(pool, log_entry);
     }
 
-    // Convert outcome to HTTP response
+    // Convert outcome to HTTP response, attaching arbstr metadata headers
     match result {
-        Ok(outcome) => Ok(outcome.response),
-        Err(outcome_err) => Err(outcome_err.error),
+        Ok(outcome) => {
+            let mut response = outcome.response;
+            attach_arbstr_headers(
+                &mut response,
+                &correlation_id,
+                latency_ms,
+                Some(&outcome.provider_name),
+                outcome.cost_sats,
+                is_streaming,
+            );
+            Ok(response)
+        }
+        Err(outcome_err) => {
+            let mut error_response = outcome_err.error.into_response();
+            attach_arbstr_headers(
+                &mut error_response,
+                &correlation_id,
+                latency_ms,
+                outcome_err.provider_name.as_deref(),
+                None, // cost not known for errors
+                is_streaming,
+            );
+            Ok(error_response)
+        }
     }
 }
 
@@ -277,7 +361,6 @@ async fn handle_non_streaming_response(
     let http_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-arbstr-provider", &provider.name)
         .body(Body::from(serde_json::to_vec(&response).unwrap()))
         .unwrap();
 
@@ -353,7 +436,6 @@ async fn handle_streaming_response(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
-        .header("x-arbstr-provider", &provider_name)
         .body(body)
         .unwrap();
 
