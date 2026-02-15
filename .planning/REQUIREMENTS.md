@@ -1,0 +1,90 @@
+# Requirements: arbstr v1.1 Secrets Hardening
+
+**Defined:** 2026-02-15
+**Core Value:** Smart model selection that minimizes sats spent per request without sacrificing quality
+
+## v1.1 Requirements
+
+Requirements for secrets hardening milestone. Each maps to roadmap phases.
+
+### Secret Type Safety
+
+- [ ] **SEC-01**: API key fields use SecretString wrapper that redacts value in Debug/Display output
+- [ ] **SEC-02**: Secret values are zeroized in memory when dropped
+
+### Environment Variable Injection
+
+- [ ] **ENV-01**: User can reference environment variables in config values using `${VAR}` syntax
+- [ ] **ENV-02**: Config loading fails with clear error when referenced env var is not set
+- [ ] **ENV-03**: When api_key is omitted, arbstr auto-checks `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY` env var
+- [ ] **ENV-04**: Startup logs report per-provider key source (config/env-expanded/convention/none) without revealing key
+- [ ] **ENV-05**: `check` command validates that all env var references resolve and reports key availability per provider
+
+### Output Redaction
+
+- [ ] **RED-01**: Startup warns when config file permissions are more permissive than 0600 (Unix only)
+- [ ] **RED-02**: `/providers` endpoint, `providers` CLI, error messages, and tracing output do not leak API keys
+- [ ] **RED-03**: `providers` CLI and endpoint show masked key prefix (`cashuA...***`) so user can verify which key is loaded
+- [ ] **RED-04**: Startup warns when a literal plaintext key is in config without `${}` expansion
+
+## Future Requirements
+
+### Cost Observability
+
+- **COST-01**: Basic cost query endpoint (total spend, per-model breakdown)
+- **COST-02**: Per-model and per-policy cost breakdown queries
+
+### Streaming
+
+- **STRM-01**: Stream error handling (detect mid-stream failures, signal client cleanly)
+- **STRM-02**: Token counts extracted from streaming responses (SSE parsing or stream_options)
+
+### Resilience
+
+- **RESIL-01**: Circuit breaker per provider (stop sending after N consecutive failures)
+- **RESIL-02**: Per-provider timeout configuration (replace global 30s)
+
+### Health
+
+- **HLTH-01**: Enhanced /health endpoint with per-provider status and success rates
+
+### Intelligence
+
+- **INTL-01**: Learned token ratios per policy (predict cost before seeing response)
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| External secrets manager (Vault, AWS SM) | Over-engineering for single-user local proxy; env vars are the universal interface |
+| Encrypted config file (ansible-vault, sops) | Adds key-management-for-the-key problem; file permissions + env vars sufficient |
+| Secret rotation / auto-refresh | Cashu tokens are pre-funded, no refresh semantics; user updates env var manually |
+| OS keyring integration | Platform-specific build complexity for marginal benefit over env vars |
+| Runtime secret injection via API | Adds mutable state and auth complexity; restart is <1 second |
+| Audit logging of secret access | Single user — no unauthorized access to log |
+| `${VAR:-default}` syntax | Keep parser simple for v1.1; just `${VAR}` |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| SEC-01 | — | Pending |
+| SEC-02 | — | Pending |
+| ENV-01 | — | Pending |
+| ENV-02 | — | Pending |
+| ENV-03 | — | Pending |
+| ENV-04 | — | Pending |
+| ENV-05 | — | Pending |
+| RED-01 | — | Pending |
+| RED-02 | — | Pending |
+| RED-03 | — | Pending |
+| RED-04 | — | Pending |
+
+**Coverage:**
+- v1.1 requirements: 11 total
+- Mapped to phases: 0
+- Unmapped: 11 ⚠️
+
+---
+*Requirements defined: 2026-02-15*
+*Last updated: 2026-02-15 after initial definition*
