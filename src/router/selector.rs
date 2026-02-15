@@ -34,7 +34,8 @@ impl From<&ProviderConfig> for SelectedProvider {
 pub struct Router {
     providers: Vec<ProviderConfig>,
     policy_rules: Vec<PolicyRule>,
-    #[allow(dead_code)] // Preserved for future strategy-based dispatch (lowest_latency, round_robin)
+    #[allow(dead_code)]
+    // Preserved for future strategy-based dispatch (lowest_latency, round_robin)
     default_strategy: String,
 }
 
@@ -166,9 +167,7 @@ impl Router {
         let mut filtered = candidates;
 
         // Filter by allowed models
-        if !policy.allowed_models.is_empty()
-            && !policy.allowed_models.iter().any(|m| m == model)
-        {
+        if !policy.allowed_models.is_empty() && !policy.allowed_models.iter().any(|m| m == model) {
             tracing::warn!(
                 model = %model,
                 policy = %policy.name,
@@ -298,19 +297,31 @@ mod tests {
     fn test_actual_cost_calculation() {
         // Case 1: (100*10 + 200*30)/1000.0 + 1 = 8.0
         let cost1 = actual_cost_sats(100, 200, 10, 30, 1);
-        assert!((cost1 - 8.0).abs() < f64::EPSILON, "Case 1: expected 8.0, got {cost1}");
+        assert!(
+            (cost1 - 8.0).abs() < f64::EPSILON,
+            "Case 1: expected 8.0, got {cost1}"
+        );
 
         // Case 2: (10*5 + 5*15)/1000.0 + 0 = 0.125
         let cost2 = actual_cost_sats(10, 5, 5, 15, 0);
-        assert!((cost2 - 0.125).abs() < f64::EPSILON, "Case 2: expected 0.125, got {cost2}");
+        assert!(
+            (cost2 - 0.125).abs() < f64::EPSILON,
+            "Case 2: expected 0.125, got {cost2}"
+        );
 
         // Case 3: (0*10 + 0*30)/1000.0 + 5 = 5.0 (base_fee only)
         let cost3 = actual_cost_sats(0, 0, 10, 30, 5);
-        assert!((cost3 - 5.0).abs() < f64::EPSILON, "Case 3: expected 5.0, got {cost3}");
+        assert!(
+            (cost3 - 5.0).abs() < f64::EPSILON,
+            "Case 3: expected 5.0, got {cost3}"
+        );
 
         // Case 4: (1000*10 + 1000*30)/1000.0 + 0 = 40.0
         let cost4 = actual_cost_sats(1000, 1000, 10, 30, 0);
-        assert!((cost4 - 40.0).abs() < f64::EPSILON, "Case 4: expected 40.0, got {cost4}");
+        assert!(
+            (cost4 - 40.0).abs() < f64::EPSILON,
+            "Case 4: expected 40.0, got {cost4}"
+        );
     }
 
     #[test]
@@ -318,7 +329,10 @@ mod tests {
         // Verify sub-sat precision: (10*5 + 5*15)/1000.0 = 0.125, not 0
         let cost = actual_cost_sats(10, 5, 5, 15, 0);
         assert!(cost > 0.0, "Fractional sats must be preserved, got {cost}");
-        assert!((cost - 0.125).abs() < f64::EPSILON, "Expected 0.125, got {cost}");
+        assert!(
+            (cost - 0.125).abs() < f64::EPSILON,
+            "Expected 0.125, got {cost}"
+        );
     }
 
     #[test]

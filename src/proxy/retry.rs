@@ -283,18 +283,15 @@ mod tests {
         let call_count_inner = call_count.clone();
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |_info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |_info| {
                 let cc = call_count_inner.clone();
                 async move {
                     cc.fetch_add(1, Ordering::Relaxed);
                     Ok("success".to_string())
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_ok());
         assert_eq!(outcome.result.unwrap(), "success");
@@ -311,10 +308,8 @@ mod tests {
         let call_count_inner = call_count.clone();
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |_info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |_info| {
                 let cc = call_count_inner.clone();
                 async move {
                     let n = cc.fetch_add(1, Ordering::Relaxed);
@@ -324,9 +319,8 @@ mod tests {
                         Ok("recovered".to_string())
                     }
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_ok());
         assert_eq!(outcome.result.unwrap(), "recovered");
@@ -346,18 +340,15 @@ mod tests {
         let call_count_inner = call_count.clone();
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |_info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |_info| {
                 let cc = call_count_inner.clone();
                 async move {
                     cc.fetch_add(1, Ordering::Relaxed);
                     Err(MockError { code: 503 })
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_err());
         assert_eq!(outcome.result.unwrap_err().code, 503);
@@ -385,10 +376,8 @@ mod tests {
         let call_count_inner = call_count.clone();
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |info| {
                 let cc = call_count_inner.clone();
                 let name = info.name.clone();
                 async move {
@@ -399,9 +388,8 @@ mod tests {
                         Ok("fallback-success".to_string())
                     }
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_ok());
         assert_eq!(outcome.result.unwrap(), "fallback-success");
@@ -429,18 +417,15 @@ mod tests {
         let call_count_inner = call_count.clone();
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |_info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |_info| {
                 let cc = call_count_inner.clone();
                 async move {
                     cc.fetch_add(1, Ordering::Relaxed);
                     Err(MockError { code: 500 })
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_err());
         // 3 primary + 1 fallback = 4 total calls
@@ -468,18 +453,15 @@ mod tests {
         let call_count_inner = call_count.clone();
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |_info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |_info| {
                 let cc = call_count_inner.clone();
                 async move {
                     cc.fetch_add(1, Ordering::Relaxed);
                     Err(MockError { code: 400 })
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_err());
         assert_eq!(outcome.result.unwrap_err().code, 400);
@@ -502,18 +484,15 @@ mod tests {
 
         let start = tokio::time::Instant::now();
 
-        let outcome: RetryOutcome<String, MockError> = retry_with_fallback(
-            &candidates,
-            attempts.clone(),
-            |_info| {
+        let outcome: RetryOutcome<String, MockError> =
+            retry_with_fallback(&candidates, attempts.clone(), |_info| {
                 let cc = call_count_inner.clone();
                 async move {
                     cc.fetch_add(1, Ordering::Relaxed);
                     Err(MockError { code: 503 })
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert!(outcome.result.is_err());
         assert_eq!(call_count.load(Ordering::Relaxed), 3);

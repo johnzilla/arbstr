@@ -94,23 +94,25 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Commands::Check { config: config_path } => {
-            match Config::from_file(&config_path) {
-                Ok(config) => {
-                    println!("Configuration is valid!");
-                    println!("  Listen: {}", config.server.listen);
-                    println!("  Providers: {}", config.providers.len());
-                    println!("  Policy rules: {}", config.policies.rules.len());
-                    Ok(())
-                }
-                Err(e) => {
-                    eprintln!("Configuration error: {}", e);
-                    std::process::exit(1);
-                }
+        Commands::Check {
+            config: config_path,
+        } => match Config::from_file(&config_path) {
+            Ok(config) => {
+                println!("Configuration is valid!");
+                println!("  Listen: {}", config.server.listen);
+                println!("  Providers: {}", config.providers.len());
+                println!("  Policy rules: {}", config.policies.rules.len());
+                Ok(())
             }
-        }
+            Err(e) => {
+                eprintln!("Configuration error: {}", e);
+                std::process::exit(1);
+            }
+        },
 
-        Commands::Providers { config: config_path } => {
+        Commands::Providers {
+            config: config_path,
+        } => {
             let config = Config::from_file(&config_path)?;
 
             if config.providers.is_empty() {

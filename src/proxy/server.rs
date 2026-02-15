@@ -51,23 +51,21 @@ pub fn create_router(state: AppState) -> Router {
         .route("/providers", get(handlers::list_providers))
         // State and middleware
         .with_state(state)
-        .layer(
-            TraceLayer::new_for_http().make_span_with(
-                |request: &axum::http::Request<axum::body::Body>| {
-                    let request_id = request
-                        .extensions()
-                        .get::<RequestId>()
-                        .map(|r| r.0)
-                        .unwrap_or_else(Uuid::new_v4);
-                    tracing::info_span!(
-                        "request",
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        request_id = %request_id,
-                    )
-                },
-            ),
-        )
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                let request_id = request
+                    .extensions()
+                    .get::<RequestId>()
+                    .map(|r| r.0)
+                    .unwrap_or_else(Uuid::new_v4);
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    request_id = %request_id,
+                )
+            },
+        ))
         .layer(middleware::from_fn(inject_request_id))
 }
 

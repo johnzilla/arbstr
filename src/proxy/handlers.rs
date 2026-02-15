@@ -233,10 +233,11 @@ pub async fn chat_completions(
         // Non-streaming path: retry with fallback and 30-second deadline
 
         // Get ordered candidate list
-        let candidates = match state
-            .router
-            .select_candidates(&request.model, policy_name.as_deref(), user_prompt)
-        {
+        let candidates = match state.router.select_candidates(
+            &request.model,
+            policy_name.as_deref(),
+            user_prompt,
+        ) {
             Ok(c) => c,
             Err(e) => {
                 let latency_ms = start.elapsed().as_millis() as i64;
@@ -496,8 +497,10 @@ async fn send_to_provider(
         .json(request);
 
     if let Some(api_key) = &provider.api_key {
-        upstream_request = upstream_request
-            .header(header::AUTHORIZATION, format!("Bearer {}", api_key.expose_secret()));
+        upstream_request = upstream_request.header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", api_key.expose_secret()),
+        );
     }
 
     let upstream_response = upstream_request.send().await.map_err(|e| {
@@ -674,19 +677,14 @@ async fn handle_streaming_response(
                     for line in text.lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
                             if data != "[DONE]" {
-                                if let Ok(parsed) =
-                                    serde_json::from_str::<serde_json::Value>(data)
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data)
                                 {
                                     if let Some(usage) =
                                         parsed.get("usage").filter(|u| !u.is_null())
                                     {
                                         if let (Some(input), Some(output)) = (
-                                            usage
-                                                .get("prompt_tokens")
-                                                .and_then(|v| v.as_u64()),
-                                            usage
-                                                .get("completion_tokens")
-                                                .and_then(|v| v.as_u64()),
+                                            usage.get("prompt_tokens").and_then(|v| v.as_u64()),
+                                            usage.get("completion_tokens").and_then(|v| v.as_u64()),
                                         ) {
                                             tracing::debug!(
                                                 input_tokens = input,
@@ -902,8 +900,8 @@ mod tests {
             &mut response,
             "abcd1234-0000-0000-0000-000000000000",
             50,
-            None,  // no provider (pre-route error)
-            None,  // no cost
+            None, // no provider (pre-route error)
+            None, // no cost
             false,
         );
         let headers = response.headers();

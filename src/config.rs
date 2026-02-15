@@ -299,4 +299,109 @@ mod tests {
         assert_eq!(config.policies.rules.len(), 1);
         assert_eq!(config.policies.rules[0].name, "code");
     }
+
+    #[test]
+    fn test_api_key_debug_redaction() {
+        let key = ApiKey::from("super-secret-cashu-token");
+        let debug_output = format!("{:?}", key);
+        assert_eq!(debug_output, "[REDACTED]");
+        assert!(!debug_output.contains("super-secret"));
+    }
+
+    #[test]
+    fn test_api_key_display_redaction() {
+        let key = ApiKey::from("super-secret-cashu-token");
+        let display_output = format!("{}", key);
+        assert_eq!(display_output, "[REDACTED]");
+        assert!(!display_output.contains("super-secret"));
+    }
+
+    #[test]
+    fn test_api_key_serialize_redaction() {
+        let key = ApiKey::from("real-secret-value");
+        let json = serde_json::to_string(&key).unwrap();
+        assert_eq!(json, "\"[REDACTED]\"");
+        assert!(!json.contains("real-secret"));
+    }
+
+    #[test]
+    fn test_api_key_deserialize_from_string() {
+        let key: ApiKey = serde_json::from_str("\"my-secret-key\"").unwrap();
+        assert_eq!(key.expose_secret(), "my-secret-key");
+    }
+
+    #[test]
+    fn test_api_key_expose_secret() {
+        let key = ApiKey::from("the-actual-value");
+        assert_eq!(key.expose_secret(), "the-actual-value");
+    }
+
+    #[test]
+    fn test_provider_config_debug_redaction() {
+        let config = ProviderConfig {
+            name: "test".to_string(),
+            url: "https://example.com/v1".to_string(),
+            api_key: Some(ApiKey::from("cashuABCD1234secret")),
+            models: vec![],
+            input_rate: 10,
+            output_rate: 30,
+            base_fee: 1,
+        };
+        let debug_output = format!("{:?}", config);
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output should contain [REDACTED]"
+        );
+        assert!(
+            !debug_output.contains("cashuABCD1234secret"),
+            "Debug output must not contain actual key"
+        );
+    }
+
+    #[test]
+    fn test_api_key_toml_deserialization() {
+        let toml = r#"
+            [server]
+            listen = "127.0.0.1:9000"
+
+            [[providers]]
+            name = "test-provider"
+            url = "https://example.com/v1"
+            api_key = "cashuABCD1234secret"
+            models = ["gpt-4o"]
+            input_rate = 10
+            output_rate = 30
+            base_fee = 1
+        "#;
+
+        let config = Config::parse_str(toml).unwrap();
+        assert_eq!(
+            config.providers[0]
+                .api_key
+                .as_ref()
+                .unwrap()
+                .expose_secret(),
+            "cashuABCD1234secret"
+        );
+        // Verify Debug doesn't leak
+        let debug = format!("{:?}", config.providers[0]);
+        assert!(!debug.contains("cashuABCD1234secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_provider_config_without_api_key() {
+        let toml = r#"
+            [server]
+            listen = "127.0.0.1:9000"
+
+            [[providers]]
+            name = "no-key-provider"
+            url = "https://example.com/v1"
+            models = ["gpt-4o"]
+        "#;
+
+        let config = Config::parse_str(toml).unwrap();
+        assert!(config.providers[0].api_key.is_none());
+    }
 }
