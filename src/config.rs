@@ -63,6 +63,19 @@ impl ApiKey {
     pub fn expose_secret(&self) -> &str {
         self.0.expose_secret()
     }
+
+    /// Return a masked representation showing a recognizable prefix.
+    ///
+    /// Format: first 6 characters + "...***" for keys >= 10 chars.
+    /// For keys shorter than 10 characters, returns "[REDACTED]" to avoid
+    /// revealing a significant portion.
+    pub fn masked_prefix(&self) -> String {
+        let secret = self.expose_secret();
+        if secret.len() < 10 {
+            return "[REDACTED]".to_string();
+        }
+        format!("{}...***", &secret[..6])
+    }
 }
 
 impl std::fmt::Debug for ApiKey {
@@ -207,6 +220,27 @@ impl Default for LoggingConfig {
             log_requests: true,
         }
     }
+}
+
+/// Check if a config file has permissions more permissive than 0600.
+///
+/// Returns `Some((path_display, mode))` if overly permissive, `None` if OK.
+/// On non-Unix platforms, always returns `None`.
+#[cfg(unix)]
+pub fn check_file_permissions(path: &std::path::Path) -> Option<(String, u32)> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o177 != 0 {
+        Some((path.display().to_string(), mode))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+pub fn check_file_permissions(_path: &std::path::Path) -> Option<(String, u32)> {
+    None
 }
 
 impl Config {
@@ -853,5 +887,74 @@ mod tests {
             "Error should name the provider: {}",
             err
         );
+    }
+
+    // ── Masked prefix tests ──
+
+    #[test]
+    fn test_masked_prefix_normal_key() {
+        let key = ApiKey::from("cashuAbcdefghijklmnop");
+        assert_eq!(key.masked_prefix(), "cashuA...***");
+    }
+
+    #[test]
+    fn test_masked_prefix_short_key_redacted() {
+        let key = ApiKey::from("short");
+        assert_eq!(key.masked_prefix(), "[REDACTED]");
+    }
+
+    #[test]
+    fn test_masked_prefix_boundary_key() {
+        let key = ApiKey::from("1234567890"); // exactly 10 chars
+        assert_eq!(key.masked_prefix(), "123456...***");
+    }
+
+    #[test]
+    fn test_masked_prefix_does_not_expose_full_key() {
+        let key = ApiKey::from("cashuABCD1234secrettoken");
+        let masked = key.masked_prefix();
+        assert!(masked.contains("cashuA"));
+        assert!(!masked.contains("secrettoken"));
+        assert!(masked.ends_with("...***"));
+    }
+
+    // ── File permission tests ──
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_permissions_too_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-config.toml");
+        std::fs::write(&path, "[server]\nlisten = \"127.0.0.1:8080\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let result = check_file_permissions(&path);
+        assert!(result.is_some(), "0644 should trigger warning");
+        let (_, mode) = result.unwrap();
+        assert_eq!(mode, 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_permissions_correct() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-config.toml");
+        std::fs::write(&path, "[server]\nlisten = \"127.0.0.1:8080\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = check_file_permissions(&path);
+        assert!(result.is_none(), "0600 should not trigger warning");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_permissions_read_only_ok() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-config.toml");
+        std::fs::write(&path, "[server]\nlisten = \"127.0.0.1:8080\"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let result = check_file_permissions(&path);
+        assert!(result.is_none(), "0400 should not trigger warning");
     }
 }
