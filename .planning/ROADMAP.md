@@ -38,11 +38,10 @@ See: .planning/milestones/v1-ROADMAP.md for full details.
   2. The `/providers` JSON endpoint returns redacted key information, never plaintext keys
   3. Debug-logging the config (RUST_LOG=arbstr=debug) produces output with `[REDACTED]` where keys would appear
   4. All existing tests pass with the new SecretString type (no regressions)
-**Plans**: TBD
+**Plans:** 1 plan
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md -- Define ApiKey newtype, propagate through all layers, add redaction tests
 
 ### Phase 6: Environment Variable Expansion
 **Goal**: Users can keep API keys out of config files entirely, using environment variables with explicit references or convention-based auto-discovery
@@ -84,6 +83,6 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. Request Logging | v1 | 4/4 | Complete | 2026-02-04 |
 | 3. Response Metadata | v1 | 1/1 | Complete | 2026-02-04 |
 | 4. Retry and Fallback | v1 | 3/3 | Complete | 2026-02-04 |
-| 5. Secret Type Foundation | v1.1 | 0/? | Not started | - |
+| 5. Secret Type Foundation | v1.1 | 0/1 | Not started | - |
 | 6. Environment Variable Expansion | v1.1 | 0/? | Not started | - |
 | 7. Output Surface Hardening | v1.1 | 0/? | Not started | - |
