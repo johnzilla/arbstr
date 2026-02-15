@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-15)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 6 complete - Ready for Phase 7 (v1.1 Secrets Hardening)
+**Current focus:** Phase 7 complete - v1.1 Secrets Hardening milestone fully satisfied
 
 ## Current Position
 
-Phase: 6 of 7 (Environment Variable Expansion) -- COMPLETE
-Plan: 2 of 2 (complete)
-Status: Phase 6 fully complete, all ENV-01 through ENV-05 requirements satisfied
-Last activity: 2026-02-15 -- Completed 06-02 CLI Integration & Key Source Reporting
+Phase: 7 of 7 (Output Surface Hardening) -- COMPLETE
+Plan: 1 of 1 (complete)
+Status: Phase 7 fully complete, all RED-01/RED-03/RED-04 requirements satisfied
+Last activity: 2026-02-15 -- Completed 07-01 Output Surface Hardening
 
-Progress: [#############░░░░░░░] 13/13 plans (v1: 10 complete, v1.1: 3/3)
+Progress: [####################] 14/14 plans (v1: 10 complete, v1.1: 4/4)
 
 ## Performance Metrics
 
@@ -24,10 +24,11 @@ Progress: [#############░░░░░░░] 13/13 plans (v1: 10 complete, v1.
 - Total execution time: 0.4 hours
 
 **v1.1 Velocity:**
-- Total plans completed: 3
+- Total plans completed: 4
 - Phase 5 Plan 1: 3 min (2 tasks, 6 files)
 - Phase 6 Plan 1: 3 min (2 tasks, 1 file)
 - Phase 6 Plan 2: 2 min (2 tasks, 2 files)
+- Phase 7 Plan 1: 3 min (2 tasks, 3 files)
 
 ## Accumulated Context
 
@@ -50,6 +51,10 @@ Recent decisions affecting current work:
 - 06-01: from_file_with_env is separate entry point; existing parse_str/from_file unchanged
 - 06-02: Mock mode returns empty key_sources vec -- no key source logging needed for mock
 - 06-02: Check command shows expected convention env var name for KeySource::None providers
+- 07-01: 6-char prefix chosen for masked_prefix() to identify cashuA tokens without revealing content
+- 07-01: Keys < 10 chars fall back to [REDACTED] to avoid exposing most of a short key
+- 07-01: Permission check returns Option so caller controls warning format (tracing vs println)
+- 07-01: Mock mode skips permission and literal key warnings (no config file, empty key_sources)
 
 ### Pending Todos
 
@@ -63,5 +68,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-15
-Stopped at: Completed 06-02-PLAN.md (CLI Integration & Key Source Reporting)
-Resume file: .planning/phases/06-environment-variable-expansion/06-02-SUMMARY.md
+Stopped at: Completed 07-01-PLAN.md (Output Surface Hardening)
+Resume file: .planning/phases/07-output-surface-hardening/07-01-SUMMARY.md
