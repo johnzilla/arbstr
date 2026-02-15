@@ -6,7 +6,7 @@
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use arbstr::config::Config;
+use arbstr::config::{Config, KeySource};
 use arbstr::proxy::run_server;
 
 #[derive(Parser)]
@@ -71,12 +71,12 @@ async fn main() -> anyhow::Result<()> {
         } => {
             tracing::info!("Starting arbstr proxy server");
 
-            let mut config = if mock {
+            let (mut config, key_sources) = if mock {
                 tracing::info!("Using mock configuration");
-                mock_config()
+                (mock_config(), vec![])
             } else {
                 tracing::info!(config = %config_path, "Loading configuration");
-                Config::from_file(&config_path)?
+                Config::from_file_with_env(&config_path)?
             };
 
             // Override listen address if specified
@@ -90,18 +90,58 @@ async fn main() -> anyhow::Result<()> {
                 "Configuration loaded"
             );
 
+            for (provider_name, source) in &key_sources {
+                match source {
+                    KeySource::Literal => {
+                        tracing::info!(provider = %provider_name, "key from config-literal")
+                    }
+                    KeySource::EnvExpanded => {
+                        tracing::info!(provider = %provider_name, "key from env-expanded")
+                    }
+                    KeySource::Convention(var) => {
+                        tracing::info!(provider = %provider_name, env_var = %var, "key from convention")
+                    }
+                    KeySource::None => {
+                        tracing::warn!(provider = %provider_name, "no api key available")
+                    }
+                }
+            }
+
             run_server(config).await?;
             Ok(())
         }
 
         Commands::Check {
             config: config_path,
-        } => match Config::from_file(&config_path) {
-            Ok(config) => {
+        } => match Config::from_file_with_env(&config_path) {
+            Ok((config, key_sources)) => {
                 println!("Configuration is valid!");
                 println!("  Listen: {}", config.server.listen);
                 println!("  Providers: {}", config.providers.len());
                 println!("  Policy rules: {}", config.policies.rules.len());
+
+                println!();
+                println!("Provider key status:");
+                for (name, source) in &key_sources {
+                    match source {
+                        KeySource::Literal => {
+                            println!("  {}: key from config-literal", name)
+                        }
+                        KeySource::EnvExpanded => {
+                            println!("  {}: key from env-expanded", name)
+                        }
+                        KeySource::Convention(var) => {
+                            println!("  {}: key from convention ({})", name, var)
+                        }
+                        KeySource::None => {
+                            let expected = arbstr::config::convention_env_var_name(name);
+                            println!(
+                                "  {}: no key (set {} or add api_key to config)",
+                                name, expected
+                            );
+                        }
+                    }
+                }
                 Ok(())
             }
             Err(e) => {
@@ -113,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Providers {
             config: config_path,
         } => {
-            let config = Config::from_file(&config_path)?;
+            let (config, _key_sources) = Config::from_file_with_env(&config_path)?;
 
             if config.providers.is_empty() {
                 println!("No providers configured.");
