@@ -772,10 +772,9 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
                 "input_rate_sats_per_1k": p.input_rate,
                 "output_rate_sats_per_1k": p.output_rate,
                 "base_fee_sats": p.base_fee,
-                "api_key": if p.api_key.is_some() {
-                    serde_json::Value::String("[REDACTED]".to_string())
-                } else {
-                    serde_json::Value::Null
+                "api_key": match &p.api_key {
+                    Some(key) => serde_json::Value::String(key.masked_prefix()),
+                    None => serde_json::Value::Null,
                 },
             })
         })

@@ -76,7 +76,19 @@ async fn main() -> anyhow::Result<()> {
                 (mock_config(), vec![])
             } else {
                 tracing::info!(config = %config_path, "Loading configuration");
-                Config::from_file_with_env(&config_path)?
+                let result = Config::from_file_with_env(&config_path)?;
+
+                // RED-01: Warn if config file permissions are too open
+                if let Some((path, mode)) = arbstr::config::check_file_permissions(std::path::Path::new(&config_path)) {
+                    tracing::warn!(
+                        file = %path,
+                        permissions = format_args!("{:04o}", mode),
+                        "Config file has permissions more open than 0600. Consider: chmod 600 {}",
+                        path
+                    );
+                }
+
+                result
             };
 
             // Override listen address if specified
@@ -93,7 +105,14 @@ async fn main() -> anyhow::Result<()> {
             for (provider_name, source) in &key_sources {
                 match source {
                     KeySource::Literal => {
-                        tracing::info!(provider = %provider_name, "key from config-literal")
+                        tracing::info!(provider = %provider_name, "key from config-literal");
+                        tracing::warn!(
+                            provider = %provider_name,
+                            "Plaintext API key in config file. Consider using environment variables: \
+                             set {} or use api_key = \"${{{}}}\"",
+                            arbstr::config::convention_env_var_name(provider_name),
+                            arbstr::config::convention_env_var_name(provider_name)
+                        );
                     }
                     KeySource::EnvExpanded => {
                         tracing::info!(provider = %provider_name, "key from env-expanded")
@@ -120,12 +139,21 @@ async fn main() -> anyhow::Result<()> {
                 println!("  Providers: {}", config.providers.len());
                 println!("  Policy rules: {}", config.policies.rules.len());
 
+                // RED-01: Check config file permissions
+                if let Some((path, mode)) = arbstr::config::check_file_permissions(std::path::Path::new(&config_path)) {
+                    println!();
+                    println!("  WARNING: Config file '{}' has permissions {:04o} (more open than 0600)", path, mode);
+                    println!("  Consider: chmod 600 {}", path);
+                }
+
                 println!();
                 println!("Provider key status:");
                 for (name, source) in &key_sources {
                     match source {
                         KeySource::Literal => {
-                            println!("  {}: key from config-literal", name)
+                            let conv_var = arbstr::config::convention_env_var_name(name);
+                            println!("  {}: key from config-literal", name);
+                            println!("    WARNING: Plaintext key. Consider: set {} or use api_key = \"${{{}}}\"", conv_var, conv_var);
                         }
                         KeySource::EnvExpanded => {
                             println!("  {}: key from env-expanded", name)
@@ -170,6 +198,9 @@ async fn main() -> anyhow::Result<()> {
                     );
                     if provider.base_fee > 0 {
                         println!("    Base fee: {} sats", provider.base_fee);
+                    }
+                    if let Some(ref api_key) = provider.api_key {
+                        println!("    Key: {}", api_key.masked_prefix());
                     }
                     println!();
                 }
