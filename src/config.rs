@@ -622,4 +622,236 @@ mod tests {
         let config = Config::parse_str(toml).unwrap();
         assert!(config.providers[0].api_key.is_none());
     }
+
+    // ── Expansion tests (using expand_env_vars_with, no global env state) ──
+
+    #[test]
+    fn test_expand_single_var() {
+        let lookup = |name: &str| match name {
+            "MY_KEY" => Some("cashuABCD".to_string()),
+            _ => None,
+        };
+        let result = expand_env_vars_with("${MY_KEY}", "test", lookup).unwrap();
+        assert_eq!(result, "cashuABCD");
+    }
+
+    #[test]
+    fn test_expand_multiple_vars() {
+        let lookup = |name: &str| match name {
+            "SCHEME" => Some("https".to_string()),
+            "HOST" => Some("example.com".to_string()),
+            _ => None,
+        };
+        let result = expand_env_vars_with("${SCHEME}://${HOST}/v1", "test", lookup).unwrap();
+        assert_eq!(result, "https://example.com/v1");
+    }
+
+    #[test]
+    fn test_expand_no_vars_passthrough() {
+        let lookup = |_: &str| -> Option<String> { panic!("should not be called") };
+        let result = expand_env_vars_with("literal-value", "test", lookup).unwrap();
+        assert_eq!(result, "literal-value");
+    }
+
+    #[test]
+    fn test_expand_mixed_literal_and_var() {
+        let lookup = |name: &str| match name {
+            "KEY" => Some("resolved".to_string()),
+            _ => None,
+        };
+        let result = expand_env_vars_with("prefix-${KEY}-suffix", "test", lookup).unwrap();
+        assert_eq!(result, "prefix-resolved-suffix");
+    }
+
+    #[test]
+    fn test_expand_missing_var_fails() {
+        let lookup = |_: &str| None;
+        let result = expand_env_vars_with("${MISSING}", "provider-alpha", lookup);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("MISSING"), "Error should name the variable");
+        assert!(
+            err.contains("provider-alpha"),
+            "Error should name the provider"
+        );
+    }
+
+    #[test]
+    fn test_expand_unclosed_brace_fails() {
+        let lookup = |_: &str| -> Option<String> { panic!("should not be called") };
+        let result = expand_env_vars_with("${UNCLOSED", "test", lookup);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string().to_lowercase();
+        assert!(
+            err.contains("unclosed"),
+            "Error should mention unclosed brace"
+        );
+    }
+
+    #[test]
+    fn test_expand_empty_var_name_fails() {
+        let lookup = |_: &str| -> Option<String> { panic!("should not be called") };
+        let result = expand_env_vars_with("${}", "test", lookup);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string().to_lowercase();
+        assert!(
+            err.contains("empty"),
+            "Error should mention empty variable name"
+        );
+    }
+
+    #[test]
+    fn test_expand_dollar_without_brace_passthrough() {
+        let lookup = |_: &str| -> Option<String> { panic!("should not be called") };
+        let result = expand_env_vars_with("$NOT_A_VAR", "test", lookup).unwrap();
+        assert_eq!(result, "$NOT_A_VAR");
+    }
+
+    // ── Convention name tests ──
+
+    #[test]
+    fn test_convention_env_var_name_simple() {
+        assert_eq!(convention_env_var_name("alpha"), "ARBSTR_ALPHA_API_KEY");
+    }
+
+    #[test]
+    fn test_convention_env_var_name_hyphen() {
+        assert_eq!(
+            convention_env_var_name("provider-beta"),
+            "ARBSTR_PROVIDER_BETA_API_KEY"
+        );
+    }
+
+    #[test]
+    fn test_convention_env_var_name_underscore() {
+        assert_eq!(
+            convention_env_var_name("my_service"),
+            "ARBSTR_MY_SERVICE_API_KEY"
+        );
+    }
+
+    // ── from_raw integration tests ──
+
+    /// Helper to construct a minimal RawConfig with a single provider.
+    fn make_raw_config(provider_name: &str, api_key: Option<String>) -> RawConfig {
+        RawConfig {
+            server: ServerConfig {
+                listen: "127.0.0.1:9000".to_string(),
+            },
+            database: None,
+            providers: vec![RawProviderConfig {
+                name: provider_name.to_string(),
+                url: "https://example.com/v1".to_string(),
+                api_key,
+                models: vec![],
+                input_rate: 0,
+                output_rate: 0,
+                base_fee: 0,
+            }],
+            policies: PoliciesConfig::default(),
+            logging: LoggingConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_from_raw_literal_key() {
+        let raw = make_raw_config("test-literal", Some("literal-key-value".to_string()));
+        let (config, key_sources) = Config::from_raw(raw).unwrap();
+
+        assert_eq!(key_sources.len(), 1);
+        assert_eq!(key_sources[0].0, "test-literal");
+        assert_eq!(key_sources[0].1, KeySource::Literal);
+        assert_eq!(
+            config.providers[0]
+                .api_key
+                .as_ref()
+                .unwrap()
+                .expose_secret(),
+            "literal-key-value"
+        );
+    }
+
+    #[test]
+    fn test_from_raw_env_expanded_key() {
+        // Use a unique env var name to avoid parallel test interference
+        let var_name = "TEST_06_01_EXPAND_KEY";
+        let var_value = "cashu-expanded-token-abc123";
+        unsafe { std::env::set_var(var_name, var_value) };
+
+        let raw = make_raw_config("test-env-expand", Some(format!("${{{}}}", var_name)));
+        let (config, key_sources) = Config::from_raw(raw).unwrap();
+
+        assert_eq!(key_sources[0].1, KeySource::EnvExpanded);
+        assert_eq!(
+            config.providers[0]
+                .api_key
+                .as_ref()
+                .unwrap()
+                .expose_secret(),
+            var_value
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn test_from_raw_convention_key() {
+        // Use a unique provider name that maps to a unique env var
+        let provider_name = "test-conv-0601";
+        let var_name = convention_env_var_name(provider_name);
+        let var_value = "cashu-convention-token-xyz789";
+        unsafe { std::env::set_var(&var_name, var_value) };
+
+        let raw = make_raw_config(provider_name, None);
+        let (config, key_sources) = Config::from_raw(raw).unwrap();
+
+        assert_eq!(key_sources[0].1, KeySource::Convention(var_name.clone()));
+        assert_eq!(
+            config.providers[0]
+                .api_key
+                .as_ref()
+                .unwrap()
+                .expose_secret(),
+            var_value
+        );
+
+        unsafe { std::env::remove_var(&var_name) };
+    }
+
+    #[test]
+    fn test_from_raw_no_key() {
+        // Ensure no convention env var is set for this provider
+        let provider_name = "test-nokey-0601-unique";
+        let var_name = convention_env_var_name(provider_name);
+        unsafe { std::env::remove_var(&var_name) };
+
+        let raw = make_raw_config(provider_name, None);
+        let (config, key_sources) = Config::from_raw(raw).unwrap();
+
+        assert_eq!(key_sources[0].1, KeySource::None);
+        assert!(config.providers[0].api_key.is_none());
+    }
+
+    #[test]
+    fn test_from_raw_missing_env_var_fails() {
+        // Ensure this env var is definitely not set
+        let var_name = "TEST_06_01_DEFINITELY_MISSING";
+        unsafe { std::env::remove_var(var_name) };
+
+        let raw = make_raw_config("test-missing-env", Some(format!("${{{}}}", var_name)));
+        let result = Config::from_raw(raw);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(var_name),
+            "Error should name the variable: {}",
+            err
+        );
+        assert!(
+            err.contains("test-missing-env"),
+            "Error should name the provider: {}",
+            err
+        );
+    }
 }
