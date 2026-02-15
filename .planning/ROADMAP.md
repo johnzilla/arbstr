@@ -53,11 +53,11 @@ Plans:
   3. Omitting `api_key` for a provider named "alpha" and exporting `ARBSTR_ALPHA_API_KEY=cashuA...` results in arbstr using that key
   4. Startup logs show per-provider key source (e.g., "provider alpha: key from env-expanded" or "provider beta: key from convention") without revealing key values
   5. Running `cargo run -- check -c config.toml` reports which env var references resolve and which providers have keys available
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 06-01: TBD
-- [ ] 06-02: TBD
+- [ ] 06-01-PLAN.md -- Core env var expansion engine (RawProviderConfig, ${VAR} expansion, convention lookup, KeySource, unit tests)
+- [ ] 06-02-PLAN.md -- Key source reporting (serve startup logging, check command reporting, end-to-end verification)
 
 ### Phase 7: Output Surface Hardening
 **Goal**: All remaining output surfaces are audited and hardened -- users get actionable warnings about config hygiene and can verify key identity without seeing full keys
@@ -84,5 +84,5 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 3. Response Metadata | v1 | 1/1 | Complete | 2026-02-04 |
 | 4. Retry and Fallback | v1 | 3/3 | Complete | 2026-02-04 |
 | 5. Secret Type Foundation | v1.1 | 0/1 | Not started | - |
-| 6. Environment Variable Expansion | v1.1 | 0/? | Not started | - |
+| 6. Environment Variable Expansion | v1.1 | 0/2 | Not started | - |
 | 7. Output Surface Hardening | v1.1 | 0/? | Not started | - |
