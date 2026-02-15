@@ -101,6 +101,30 @@ impl From<&str> for ApiKey {
     }
 }
 
+/// How a provider's API key was resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeySource {
+    /// Key was a literal string in config (no ${} references)
+    Literal,
+    /// Key contained ${VAR} references expanded from environment
+    EnvExpanded,
+    /// Key was auto-discovered from convention env var (holds var name)
+    Convention(String),
+    /// No key available
+    None,
+}
+
+impl std::fmt::Display for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeySource::Literal => write!(f, "config-literal"),
+            KeySource::EnvExpanded => write!(f, "env-expanded"),
+            KeySource::Convention(var) => write!(f, "convention ({})", var),
+            KeySource::None => write!(f, "none"),
+        }
+    }
+}
+
 /// Provider configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
@@ -242,6 +266,200 @@ pub enum ConfigError {
 
     #[error("Configuration validation error: {0}")]
     Validation(String),
+
+    #[error("Environment variable '{var}' not set for provider '{provider}': {message}")]
+    EnvVar {
+        var: String,
+        provider: String,
+        message: String,
+    },
+}
+
+/// Raw provider config deserialized directly from TOML.
+/// api_key is `Option<String>` so it may contain `${VAR}` references not yet expanded.
+#[derive(Deserialize)]
+pub struct RawProviderConfig {
+    name: String,
+    url: String,
+    api_key: Option<String>,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    input_rate: u64,
+    #[serde(default)]
+    output_rate: u64,
+    #[serde(default)]
+    base_fee: u64,
+}
+
+/// Raw configuration deserialized directly from TOML.
+/// Provider api_key values may contain `${VAR}` references not yet expanded.
+#[derive(Deserialize)]
+pub struct RawConfig {
+    server: ServerConfig,
+    database: Option<DatabaseConfig>,
+    #[serde(default)]
+    providers: Vec<RawProviderConfig>,
+    #[serde(default)]
+    policies: PoliciesConfig,
+    #[serde(default)]
+    logging: LoggingConfig,
+}
+
+/// Expand all `${VAR}` references in a string using a custom lookup function.
+///
+/// The closure-based design makes this testable without touching global env state.
+/// Supports multiple `${VAR}` in one string (e.g., `${SCHEME}://${HOST}/v1`).
+/// Fails on first missing variable, unclosed `${`, or empty variable name.
+fn expand_env_vars_with<F>(
+    input: &str,
+    provider_name: &str,
+    lookup: F,
+) -> Result<String, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !input.contains("${") {
+        return Ok(input.to_string());
+    }
+
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(start) = rest.find("${") {
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+
+        let end = after.find('}').ok_or_else(|| ConfigError::EnvVar {
+            var: "<unclosed>".to_string(),
+            provider: provider_name.to_string(),
+            message: format!("Unclosed '${{' in config value: {}", input),
+        })?;
+
+        let var_name = &after[..end];
+        if var_name.is_empty() {
+            return Err(ConfigError::EnvVar {
+                var: "".to_string(),
+                provider: provider_name.to_string(),
+                message: "Empty variable name in '${}' reference".to_string(),
+            });
+        }
+
+        let value = lookup(var_name).ok_or_else(|| ConfigError::EnvVar {
+            var: var_name.to_string(),
+            provider: provider_name.to_string(),
+            message: format!(
+                "Environment variable '{}' is not set (referenced in provider '{}')",
+                var_name, provider_name
+            ),
+        })?;
+
+        result.push_str(&value);
+        rest = &after[end + 1..];
+    }
+
+    result.push_str(rest);
+    Ok(result)
+}
+
+/// Expand all `${VAR}` references in a string using real environment variables.
+fn expand_env_vars(input: &str, provider_name: &str) -> Result<String, ConfigError> {
+    expand_env_vars_with(input, provider_name, |name| std::env::var(name).ok())
+}
+
+/// Derive the convention-based env var name for a provider.
+///
+/// Transforms provider name to `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`:
+/// - "alpha" -> "ARBSTR_ALPHA_API_KEY"
+/// - "provider-beta" -> "ARBSTR_PROVIDER_BETA_API_KEY"
+/// - "my_service" -> "ARBSTR_MY_SERVICE_API_KEY"
+pub fn convention_env_var_name(provider_name: &str) -> String {
+    let upper_snake = provider_name.to_uppercase().replace(['-', ' '], "_");
+    format!("ARBSTR_{}_API_KEY", upper_snake)
+}
+
+/// Try convention-based env var lookup for a provider's API key.
+///
+/// Returns `Some((var_name, value))` if `ARBSTR_<NAME>_API_KEY` is set.
+fn convention_key_lookup(provider_name: &str) -> Option<(String, String)> {
+    let var_name = convention_env_var_name(provider_name);
+    std::env::var(&var_name).ok().map(|value| (var_name, value))
+}
+
+impl Config {
+    /// Convert raw (deserialized) config to final config with env var expansion.
+    ///
+    /// For each provider:
+    /// - If `api_key` contains `${VAR}`: expand from environment, source = `EnvExpanded`
+    /// - If `api_key` is a literal string: wrap directly, source = `Literal`
+    /// - If `api_key` is absent: try convention lookup (`ARBSTR_<NAME>_API_KEY`),
+    ///   source = `Convention(var_name)` or `KeySource::None`
+    pub fn from_raw(raw: RawConfig) -> Result<(Self, Vec<(String, KeySource)>), ConfigError> {
+        let mut providers = Vec::with_capacity(raw.providers.len());
+        let mut key_sources = Vec::with_capacity(raw.providers.len());
+
+        for rp in raw.providers {
+            let (api_key, source) = match rp.api_key {
+                Some(ref raw_key) if raw_key.contains("${") => {
+                    let expanded = expand_env_vars(raw_key, &rp.name)?;
+                    (Some(ApiKey::from(expanded)), KeySource::EnvExpanded)
+                }
+                Some(ref raw_key) => (Some(ApiKey::from(raw_key.as_str())), KeySource::Literal),
+                None => match convention_key_lookup(&rp.name) {
+                    Some((var_name, value)) => {
+                        (Some(ApiKey::from(value)), KeySource::Convention(var_name))
+                    }
+                    None => (None, KeySource::None),
+                },
+            };
+
+            key_sources.push((rp.name.clone(), source));
+
+            providers.push(ProviderConfig {
+                name: rp.name,
+                url: rp.url,
+                api_key,
+                models: rp.models,
+                input_rate: rp.input_rate,
+                output_rate: rp.output_rate,
+                base_fee: rp.base_fee,
+            });
+        }
+
+        let config = Config {
+            server: raw.server,
+            database: raw.database,
+            providers,
+            policies: raw.policies,
+            logging: raw.logging,
+        };
+
+        Ok((config, key_sources))
+    }
+
+    /// Load configuration from a TOML file with environment variable expansion.
+    ///
+    /// This is the env-var-aware entry point. It:
+    /// 1. Reads the file
+    /// 2. Parses as `RawConfig` (api_key as plain String)
+    /// 3. Expands `${VAR}` references and applies convention lookup
+    /// 4. Validates the resulting config
+    ///
+    /// Returns the config and per-provider key source information.
+    pub fn from_file_with_env(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, Vec<(String, KeySource)>), ConfigError> {
+        let content = std::fs::read_to_string(path.as_ref()).map_err(|e| ConfigError::Io {
+            path: path.as_ref().display().to_string(),
+            source: e,
+        })?;
+
+        let raw: RawConfig = toml::from_str(&content).map_err(ConfigError::Parse)?;
+        let (config, key_sources) = Self::from_raw(raw)?;
+        config.validate()?;
+
+        Ok((config, key_sources))
+    }
 }
 
 #[cfg(test)]
