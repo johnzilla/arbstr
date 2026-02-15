@@ -152,7 +152,7 @@ fn mock_config() -> Config {
             ProviderConfig {
                 name: "mock-cheap".to_string(),
                 url: "http://localhost:9999/v1".to_string(), // Won't be called in mock mode
-                api_key: None,
+                api_key: Some(ApiKey::from("mock-test-key-cheap")),
                 models: vec![
                     "gpt-4o".to_string(),
                     "gpt-4o-mini".to_string(),
@@ -165,7 +165,7 @@ fn mock_config() -> Config {
             ProviderConfig {
                 name: "mock-expensive".to_string(),
                 url: "http://localhost:9998/v1".to_string(),
-                api_key: None,
+                api_key: Some(ApiKey::from("mock-test-key-expensive")),
                 models: vec!["gpt-4o".to_string(), "claude-3.5-sonnet".to_string()],
                 input_rate: 10,
                 output_rate: 30,

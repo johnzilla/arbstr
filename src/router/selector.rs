@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::config::{PolicyRule, ProviderConfig};
+use crate::config::{ApiKey, PolicyRule, ProviderConfig};
 use crate::error::{Error, Result};
 
 /// A provider selected for routing.
@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 pub struct SelectedProvider {
     pub name: String,
     pub url: String,
-    pub api_key: Option<String>,
+    pub api_key: Option<ApiKey>,
     pub input_rate: u64,
     pub output_rate: u64,
     pub base_fee: u64,

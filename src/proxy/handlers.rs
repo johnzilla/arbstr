@@ -496,8 +496,8 @@ async fn send_to_provider(
         .json(request);
 
     if let Some(api_key) = &provider.api_key {
-        upstream_request =
-            upstream_request.header(header::AUTHORIZATION, format!("Bearer {}", api_key));
+        upstream_request = upstream_request
+            .header(header::AUTHORIZATION, format!("Bearer {}", api_key.expose_secret()));
     }
 
     let upstream_response = upstream_request.send().await.map_err(|e| {
@@ -774,6 +774,11 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
                 "input_rate_sats_per_1k": p.input_rate,
                 "output_rate_sats_per_1k": p.output_rate,
                 "base_fee_sats": p.base_fee,
+                "api_key": if p.api_key.is_some() {
+                    serde_json::Value::String("[REDACTED]".to_string())
+                } else {
+                    serde_json::Value::Null
+                },
             })
         })
         .collect();

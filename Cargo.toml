@@ -31,8 +31,8 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Configuration
-config = "0.14"
+# Secrets
+secrecy = { version = "0.10", features = ["serde"] }
 
 # Logging
 tracing = "0.1"

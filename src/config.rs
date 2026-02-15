@@ -1,6 +1,7 @@
 //! Configuration parsing and validation for arbstr.
 
-use serde::Deserialize;
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::Path;
 
 /// Root configuration structure.
@@ -48,6 +49,58 @@ impl Default for DatabaseConfig {
     }
 }
 
+/// API key wrapper that redacts in Debug/Display/Serialize and zeroizes on drop.
+///
+/// The inner `SecretString` ensures the key value is:
+/// - Zeroized in memory when dropped (SEC-02)
+/// - Never exposed via Debug or Display (SEC-01)
+/// - Only accessible via `.expose_secret()` (grep-auditable)
+#[derive(Clone)]
+pub struct ApiKey(SecretString);
+
+impl ApiKey {
+    /// Access the raw key value. Every call site is auditable via `grep expose_secret`.
+    pub fn expose_secret(&self) -> &str {
+        self.0.expose_secret()
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl std::fmt::Display for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl Serialize for ApiKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str("[REDACTED]")
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ApiKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|s| ApiKey(SecretString::from(s)))
+    }
+}
+
+impl From<String> for ApiKey {
+    fn from(s: String) -> Self {
+        ApiKey(SecretString::from(s))
+    }
+}
+
+impl From<&str> for ApiKey {
+    fn from(s: &str) -> Self {
+        ApiKey(SecretString::from(s))
+    }
+}
+
 /// Provider configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
@@ -56,7 +109,7 @@ pub struct ProviderConfig {
     /// Base URL for the provider's API (e.g., "https://api.routstr.com/v1")
     pub url: String,
     /// Optional API key or Cashu token
-    pub api_key: Option<String>,
+    pub api_key: Option<ApiKey>,
     /// Models supported by this provider
     #[serde(default)]
     pub models: Vec<String>,
