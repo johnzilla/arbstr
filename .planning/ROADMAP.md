@@ -67,10 +67,10 @@ Plans:
   1. When config.toml has permissions more open than 0600, startup emits a warning naming the file and its actual permissions
   2. The `/providers` endpoint and `providers` CLI show a masked key prefix (e.g., `cashuA...***`) so users can verify which key is loaded without seeing it
   3. When a provider has a literal plaintext `api_key = "cashuA..."` in config (no `${}` expansion), startup emits a warning recommending environment variable usage
-**Plans**: TBD
+**Plans:** 1 plan
 
 Plans:
-- [ ] 07-01: TBD
+- [ ] 07-01-PLAN.md -- File permission warnings, masked key prefix display, plaintext literal key warnings
 
 ## Progress
 
@@ -85,4 +85,4 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 4. Retry and Fallback | v1 | 3/3 | Complete | 2026-02-04 |
 | 5. Secret Type Foundation | v1.1 | 0/1 | Not started | - |
 | 6. Environment Variable Expansion | v1.1 | 0/2 | Not started | - |
-| 7. Output Surface Hardening | v1.1 | 0/? | Not started | - |
+| 7. Output Surface Hardening | v1.1 | 0/1 | Not started | - |
