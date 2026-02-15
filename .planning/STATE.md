@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-15)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 6 - Environment Variable Expansion (v1.1 Secrets Hardening)
+**Current focus:** Phase 6 complete - Ready for Phase 7 (v1.1 Secrets Hardening)
 
 ## Current Position
 
-Phase: 6 of 7 (Environment Variable Expansion)
-Plan: 1 of 2 (complete)
-Status: Plan 06-01 complete, Plan 06-02 pending
-Last activity: 2026-02-15 -- Completed 06-01 Env Var Expansion Engine
+Phase: 6 of 7 (Environment Variable Expansion) -- COMPLETE
+Plan: 2 of 2 (complete)
+Status: Phase 6 fully complete, all ENV-01 through ENV-05 requirements satisfied
+Last activity: 2026-02-15 -- Completed 06-02 CLI Integration & Key Source Reporting
 
-Progress: [############░░░░░░░░] 12/13 plans (v1: 10 complete, v1.1: 2/3)
+Progress: [#############░░░░░░░] 13/13 plans (v1: 10 complete, v1.1: 3/3)
 
 ## Performance Metrics
 
@@ -24,9 +24,10 @@ Progress: [############░░░░░░░░] 12/13 plans (v1: 10 complete, v
 - Total execution time: 0.4 hours
 
 **v1.1 Velocity:**
-- Total plans completed: 2
+- Total plans completed: 3
 - Phase 5 Plan 1: 3 min (2 tasks, 6 files)
 - Phase 6 Plan 1: 3 min (2 tasks, 1 file)
+- Phase 6 Plan 2: 2 min (2 tasks, 2 files)
 
 ## Accumulated Context
 
@@ -47,6 +48,8 @@ Recent decisions affecting current work:
 - 06-01: Made RawProviderConfig/RawConfig pub for clippy private_interfaces lint compliance
 - 06-01: Closure-based expand_env_vars_with for testability; expand_env_vars wraps with std::env::var
 - 06-01: from_file_with_env is separate entry point; existing parse_str/from_file unchanged
+- 06-02: Mock mode returns empty key_sources vec -- no key source logging needed for mock
+- 06-02: Check command shows expected convention env var name for KeySource::None providers
 
 ### Pending Todos
 
@@ -60,5 +63,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-15
-Stopped at: Completed 06-01-PLAN.md (Env Var Expansion Engine)
-Resume file: .planning/phases/06-environment-variable-expansion/06-01-SUMMARY.md
+Stopped at: Completed 06-02-PLAN.md (CLI Integration & Key Source Reporting)
+Resume file: .planning/phases/06-environment-variable-expansion/06-02-SUMMARY.md
