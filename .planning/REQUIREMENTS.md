@@ -61,30 +61,30 @@ Requirements for secrets hardening milestone. Each maps to roadmap phases.
 | Secret rotation / auto-refresh | Cashu tokens are pre-funded, no refresh semantics; user updates env var manually |
 | OS keyring integration | Platform-specific build complexity for marginal benefit over env vars |
 | Runtime secret injection via API | Adds mutable state and auth complexity; restart is <1 second |
-| Audit logging of secret access | Single user — no unauthorized access to log |
+| Audit logging of secret access | Single user -- no unauthorized access to log |
 | `${VAR:-default}` syntax | Keep parser simple for v1.1; just `${VAR}` |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEC-01 | — | Pending |
-| SEC-02 | — | Pending |
-| ENV-01 | — | Pending |
-| ENV-02 | — | Pending |
-| ENV-03 | — | Pending |
-| ENV-04 | — | Pending |
-| ENV-05 | — | Pending |
-| RED-01 | — | Pending |
-| RED-02 | — | Pending |
-| RED-03 | — | Pending |
-| RED-04 | — | Pending |
+| SEC-01 | Phase 5 | Pending |
+| SEC-02 | Phase 5 | Pending |
+| ENV-01 | Phase 6 | Pending |
+| ENV-02 | Phase 6 | Pending |
+| ENV-03 | Phase 6 | Pending |
+| ENV-04 | Phase 6 | Pending |
+| ENV-05 | Phase 6 | Pending |
+| RED-01 | Phase 7 | Pending |
+| RED-02 | Phase 5 | Pending |
+| RED-03 | Phase 7 | Pending |
+| RED-04 | Phase 7 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 11 total
-- Mapped to phases: 0
-- Unmapped: 11 ⚠️
+- Mapped to phases: 11
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-15*
-*Last updated: 2026-02-15 after initial definition*
+*Last updated: 2026-02-15 after roadmap creation*
