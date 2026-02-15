@@ -8,6 +8,15 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
+## Current Milestone: v1.1 Secrets Hardening
+
+**Goal:** Eliminate plaintext API keys from config files by supporting environment variable injection and convention-based lookup, and redact keys from all output surfaces (logs, debug output, endpoints).
+
+**Target features:**
+- Environment variable expansion in TOML config (`api_key = "${ROUTSTR_KEY}"`)
+- Convention-based env var lookup (`ARBSTR_<PROVIDER>_API_KEY` auto-detected when api_key omitted)
+- Key redaction in logs, debug output, and API responses (/providers endpoint, error messages)
+
 ## Requirements
 
 ### Validated
@@ -90,4 +99,4 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | Streaming bypasses retry | Cannot replay stream body; fail fast is correct behavior | ✓ Good — stream error handling deferred to v2 |
 
 ---
-*Last updated: 2026-02-04 after v1 milestone*
+*Last updated: 2026-02-15 after v1.1 milestone start*

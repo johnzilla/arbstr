@@ -2,19 +2,19 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-04)
+See: .planning/PROJECT.md (updated 2026-02-15)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Planning next milestone
+**Current focus:** v1.1 Secrets Hardening
 
 ## Current Position
 
-Phase: v1 complete — next milestone not yet started
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-02-04 — v1 milestone complete
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-15 — Milestone v1.1 started
 
-Progress: [██████████] v1 complete
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -41,6 +41,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-04
-Stopped at: v1 milestone completed and archived.
+Last session: 2026-02-15
+Stopped at: Milestone v1.1 initialization in progress.
 Resume file: None
