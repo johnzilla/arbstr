@@ -1,196 +1,237 @@
 # Project Research Summary
 
-**Project:** arbstr - Reliability and observability milestone
-**Domain:** LLM routing proxy with Bitcoin/Cashu payments
-**Researched:** 2026-02-02
-**Confidence:** MEDIUM
+**Project:** arbstr v1.1 - Secrets Hardening
+**Domain:** Secrets management and configuration hardening for Rust LLM proxy
+**Researched:** 2026-02-15
+**Confidence:** HIGH
 
 ## Executive Summary
 
-arbstr is an intelligent LLM routing proxy that optimizes cost across Routstr marketplace providers. The next milestone adds reliability (retry/fallback) and observability (request logging, cost tracking) to the existing MVP. Research shows this domain has converged on standard patterns: every production LLM proxy implements provider fallback, retry with backoff, request logging to persistent storage, and token/cost tracking. arbstr's unique context (Bitcoin-native payments via Cashu tokens, single-user local deployment) means some enterprise features (web dashboards, multi-tenancy, API key management) are deliberately excluded anti-features.
+The v1.1 Secrets Hardening milestone adds environment variable expansion and API key redaction to arbstr, a Rust-based intelligent LLM routing proxy. The research reveals that secrets handling in Rust CLI tools and proxies is a well-solved problem with established patterns: the `secrecy` crate provides type-driven redaction and zeroization, environment variable expansion follows Docker Compose's `${VAR}` convention, and convention-based env var lookup (like `ARBSTR_<PROVIDER>_API_KEY`) matches cloud SDK patterns.
 
-The recommended approach builds on arbstr's existing solid foundation: the Rust/Tokio/axum/sqlx stack is already complete and requires minimal changes (just adding two sqlx feature flags). The architecture should extend, not replace, existing components - extracting retry logic into a new RequestExecutor component while keeping handlers focused on HTTP concerns, adding async request logging via SQLite with fire-and-forget pattern, and wrapping streaming responses to detect errors and extract token counts. The critical path is: fix cost calculation first (currently broken - uses only output_rate), then add observability (logging with correlation IDs), then layer reliability on top.
+The recommended approach is a two-phase config loading pipeline: deserialize TOML into internal structs with plain `String` fields, then expand env vars and wrap secrets in `SecretString` before validation. This provides excellent error messages (with provider context when vars are missing), natural integration with convention-based fallback, and type-driven protection against accidental exposure via Debug formatting or serialization. The stack addition is minimal—just the `secrecy` crate with serde support—while the unused `config` crate can be removed, resulting in net-zero dependency growth.
 
-The key risk is Cashu token double-spend during retries: if a request fails after the token is submitted to the provider, naive retry sends the same token again, causing financial loss. Prevention requires classifying failures as "safe to retry" (connection refused before request sent) versus "unsafe to retry" (timeout after token submission), and never auto-retrying the latter without explicit user confirmation. Other critical pitfalls include silent mid-stream failures in SSE responses (must inject error events) and SQLite blocking the async runtime (must use fire-and-forget logging with dedicated writer task).
+The critical risk is that arbstr's current codebase derives `Debug` on all config structs containing API keys, meaning any panic, debug log, or test assertion failure currently leaks secrets in plaintext. The SecretString type migration addresses this automatically through Rust's type system, but requires careful sequencing: type changes first (foundation), then env var expansion (configuration), then output surface audit (hardening). All research sources are official docs and established Rust ecosystem standards, giving this milestone HIGH confidence for execution.
 
 ## Key Findings
 
 ### Recommended Stack
 
-arbstr's existing stack is well-chosen and requires only minimal enhancement. The milestone needs no new dependencies - everything required for reliability and observability is already in Cargo.toml. The only change needed is adding two feature flags to sqlx: "migrate" (for embedded migration support) and "chrono" (for native DateTime mapping). This deliberate minimalism reflects good initial design.
+The existing arbstr stack requires only one addition and one removal for secrets handling. The `secrecy` crate (v0.10.3) is the de facto Rust ecosystem standard for wrapping secrets, providing `SecretString` with automatic Debug redaction (`[REDACTED]`), memory zeroing on drop via `zeroize`, and optional serde support. The unused `config` crate (v0.14) should be removed—it's declared in Cargo.toml but never imported, and the project's current TOML-based config loading works well.
+
+Environment variable expansion requires no new dependencies—a ~30-line pure function using `std::env::var` handles the `${VAR}` pattern. Available crates (shellexpand, serde-env-field, serde-with-expand-env) bring unwanted complexity or extraneous features for this focused use case.
 
 **Core technologies:**
-- **sqlx 0.8** (SQLite): Async-native database with compile-time query checking - already declared but unused, perfect for request logging with WAL mode for concurrent read/write
-- **futures 0.3**: Stream combinators for SSE parsing and error detection - already available, no new dependency needed for streaming error handling
-- **tracing + tracing-subscriber**: Structured logging with span-based correlation - already configured, just needs request ID spans for observability
-- **Custom retry logic**: Provider fallback requires switching providers on failure, which doesn't fit tower-retry's same-service retry model - 20-30 lines of custom code beats forcing a library abstraction
+- **secrecy v0.10 (serde feature)**: Wraps API keys in `SecretString` for automatic redaction and zeroize-on-drop—ecosystem standard, minimal API surface
+- **std::env + manual expansion**: 30-line pure function for `${VAR}` expansion—no crate needed, trivially testable, fail-fast on missing vars
+- **Remove: config crate**: Unused dependency—project loads config via `toml::from_str`, no code references this crate
 
-**Key decisions:**
-- NO tiktoken dependency - extract token counts from provider responses (authoritative) not local tokenization (adds 10MB+ model files)
-- NO circuit breaker crate - simple provider health tracking in DashMap/RwLock sufficient for 2-5 providers on single-user proxy
-- NO metrics crate - single-user local proxy doesn't need Prometheus exporters, SQLite queries serve the use case better
+For full details, see [STACK.md](./STACK.md).
 
 ### Expected Features
 
-Research analyzed LiteLLM, Portkey, Helicone, and BricksLLM to identify convergence patterns.
+Secrets handling for CLI tools and proxies has clear table stakes (env var expansion, Debug redaction, convention-based lookup) and useful differentiators (startup key source reporting, check command validation). The competitive analysis of LiteLLM, Docker Compose, Terraform, and kubectl confirms these patterns are universal expectations.
 
 **Must have (table stakes):**
-- Provider fallback on failure - every proxy does this; returning error on first provider failure provides no value over direct API calls
-- Retry with exponential backoff - transient errors (429, 500, 502, 503) are common; 2-3 max retries with jitter is standard
-- Request logging to SQLite - every observability product starts here; captures timestamp, model, provider, tokens, cost, latency, success
-- Token count extraction - usage data appears in OpenAI-compatible responses; streaming requests need SSE parsing for final chunk usage field
-- Cost calculation fixing - current code uses only output_rate; must use full formula: (input_tokens * input_rate + output_tokens * output_rate) / 1000 + base_fee
-- Latency measurement - wall-clock time per request, critical for validating proxy overhead
-- Stream error handling - detect mid-stream disconnects and signal cleanly to client (no transparent retry for streams - partial content already sent)
+- **SecretString for api_key field**: Users expect Debug output to not leak credentials—basic Rust security hygiene
+- **Environment variable expansion (${VAR})**: Every serious CLI tool supports this—Docker Compose, LiteLLM, Terraform all use similar syntax
+- **Convention-based env var lookup**: Cloud SDKs auto-discover credentials from well-known env vars (e.g., `ARBSTR_<PROVIDER>_API_KEY`)
+- **Redact keys from tracing/logs**: Structured logging means Debug formatting reaches stderr—automatic via SecretString type
+- **Config file permission warning**: SSH, gpg, and SSSD all warn when secret files are world-readable
 
-**Should have (differentiators):**
-- Cost tracking in satoshis with query endpoints - arbstr's unique value, enables "how much did I spend on code generation this week" queries
-- Response metadata headers - X-Arbstr-Cost-Sats, X-Arbstr-Latency-Ms, X-Arbstr-Retries on every response (Portkey/Helicone pattern)
-- Per-model and per-policy cost breakdown - simple SQL GROUP BY on logged data, high value for cost optimization
-- Enhanced health endpoint - /health should reflect provider reachability, not static "ok"
+**Should have (competitive):**
+- **Startup key source reporting**: Log which providers have keys and where each came from (config/env-expanded/convention/none)
+- **check command key validation**: Verify env vars referenced by ${VAR} are set—catches config mistakes pre-runtime
+- **Key masking in CLI output**: Show `cashuA...***` instead of omitting entirely—lets users verify key identity
 
 **Defer (v2+):**
-- Learned token ratios per policy - needs logged data to learn from, add after data collection period
-- Circuit breaker - needs operational data to tune thresholds, add after observing real failure patterns
-- Per-provider timeout configuration - global 120s works initially, refine based on observed latency profiles
+- **External secrets manager integration**: Wrong scope for local single-user proxy—env vars work with any secret manager via shell
+- **Encrypted config file**: File permissions + env vars achieve same goal without key-for-key problem
+- **Keyring/credential store**: Platform-specific complexity for marginal benefit over env vars
 
-**Anti-features (deliberately NOT building):**
-- Web dashboard UI - single-user proxy doesn't need frontend complexity, provide JSON query endpoints instead
-- API key management / client authentication - single user on local network has no abuse vector
-- Prompt caching / semantic cache - high complexity, single-user usage rarely produces exact duplicates
-- Guardrails / content filtering - personal tool doesn't need PII detection between user and their own proxy
-- Automatic model fallback - dangerous for cost optimization; silently routing gpt-4o to gpt-4o-mini changes quality
+For full feature analysis including anti-features and complexity estimates, see [FEATURES.md](./FEATURES.md).
 
 ### Architecture Approach
 
-The existing architecture is stateless and simple: Request → Handler → Router::select() → Forward → Response. The milestone extends this by extracting provider communication into separate components while preserving the handler's focus on HTTP concerns. Key pattern is "extract then enhance" - refactor provider calling into RequestExecutor as pure refactor first, then add retry logic to the focused component.
+The architecture uses a two-phase config loading pipeline to separate TOML parsing from environment resolution. Phase 1 deserializes into internal `RawProviderConfig` structs with plain `Option<String>` fields. Phase 2 expands `${VAR}` patterns, falls back to convention-based `ARBSTR_<NAME>_API_KEY` lookup when explicit keys are missing, and wraps the result in `Option<SecretString>` for the public `ProviderConfig`. This approach provides superior error messages, natural precedence ordering (explicit > expanded > convention), and compiler-driven migration.
 
 **Major components:**
-1. **RequestExecutor** (new: src/proxy/executor.rs) - Encapsulates try/retry/fallback logic; receives ordered provider list from router, attempts in sequence, tracks metadata; keeps retry logic testable without spinning up axum server
-2. **StreamWrapper** (new: src/proxy/stream.rs) - Wraps SSE byte streams to parse chunks, detect [DONE] sentinel, extract token usage from final chunk, inject error events on mid-stream failures; uses oneshot channel to send metadata back after stream completes
-3. **Storage** (new: src/storage/mod.rs) - SQLite with sqlx pool; request logging via fire-and-forget tokio::spawn pattern (never block response path); migrations embedded via sqlx::migrate!; WAL mode for concurrent read/write
-4. **HealthTracker** (new: src/router/health.rs) - In-memory provider health state (DashMap or RwLock<HashMap>); track consecutive failures and last-failure timestamp; deprioritize unhealthy providers during selection
-5. **CostCalculator** (new: src/router/cost.rs) - Pure function for cost calculation; fixes current bug (only uses output_rate); implements full formula with input_rate + output_rate + base_fee
+1. **RawProviderConfig (internal)**: Serde deserialization target with plain String fields—receives raw TOML, passes through to conversion
+2. **expand_env_vars (pure function)**: Detects `${VAR_NAME}` patterns and expands via std::env::var—fails fast on missing vars with clear errors
+3. **SecretString wrapper**: Changes `api_key` type from String to SecretString—provides automatic Debug redaction and prevents accidental Serialize
+4. **Modified config pipeline**: `TOML -> Raw -> expand -> convention fallback -> Secret-wrapped -> validate`
 
-**Critical patterns:**
-- Fire-and-forget logging: tokio::spawn(storage.log_request()) after response - never await database write in request path
-- Ordered provider list for retry: Router returns [cheapest, next_cheapest, ...], executor tries in sequence, excludes failures
-- Oneshot channel for stream metadata: streaming responses send token counts back via channel after final chunk parsed
-- No retry for streaming: once streaming starts, partial content sent to client; retry would duplicate content
+**Key patterns:**
+- Type-driven redaction via SecretString—compiler enforces safety at Debug/Display/Serialize call sites
+- Single expose_secret() call site—only handlers.rs Authorization header construction sees plaintext
+- Precedence: explicit TOML > ${VAR} expansion > ARBSTR_<NAME>_API_KEY convention > no key
+- Error messages include provider context when env vars are missing
+
+For detailed implementation guidance, component diagrams, and build order, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ### Critical Pitfalls
 
-Based on analysis of the codebase and domain patterns:
+The research identified 11 domain pitfalls, with 4 rated CRITICAL severity. All relate to the current codebase's Debug derives on secret-bearing structs and the subtleties of environment variable resolution.
 
-1. **Cashu token double-spend on retry** - If provider request fails after token submission, retrying with same token causes financial loss (token already redeemed). Prevention: classify failures as "safe to retry" (connection refused before send) vs "unsafe" (timeout/5xx after send); never auto-retry unsafe failures; use fresh token for retries or mark original as "possibly spent" for reconciliation.
+1. **Debug derive on config structs exposes API keys in logs**: `ProviderConfig`, `SelectedProvider`, `Router`, `Config`, and `AppState` all derive Debug with api_key as plain String—any panic/debug log/test assertion leaks keys. Fix: Change to `SecretString` (automatic redaction via its Debug impl).
 
-2. **Silent mid-stream SSE failures** - Current code pipes bytes directly (handlers.rs:87-104); if provider disconnects mid-stream, client gets truncated response with no error indication. Prevention: parse SSE events during streaming, track [DONE] sentinel, inject `data: {"error": ...}` event on upstream failure before closing client stream.
+2. **Error messages include provider context that leaks keys**: handlers.rs forwards reqwest errors (may contain URLs with embedded credentials) and provider error bodies (may echo back "Invalid API key: cashuA...") directly to clients. Fix: Separate internal log messages from client-facing errors.
 
-3. **SQLite blocking Tokio runtime** - Synchronous SQLite writes hold file-level lock; if logging blocks in request handler's await chain, all concurrent requests hang. Prevention: fire-and-forget pattern (tokio::spawn for writes), WAL mode (PRAGMA journal_mode=WAL), bounded channel with write batching, drop log entries if channel full rather than blocking requests.
+3. **Env var expansion that fails open (missing var = empty string)**: Common mistake is `unwrap_or_default()` which silently treats missing vars as empty—leads to confusing 401 errors. Fix: Treat missing vars as hard errors with provider context.
 
-4. **Broken cost calculation** - Current code uses only output_rate (selector.rs:170-172); ignores input_rate and base_fee; breaks cost tracking and suboptimal provider selection for high-input-token workloads. Prevention: implement full formula BEFORE adding logging (pollutes historical data); estimate input tokens from request, output from max_tokens or learned ratios.
+4. **Convention-based lookup conflicts with explicit config**: Without clear precedence, overlapping explicit `api_key = "value"` and `ARBSTR_PROVIDER_API_KEY` env var creates unpredictable behavior. Fix: Document and enforce precedence, log which source was used.
 
-5. **Retry without backoff creates thundering herd** - When provider has transient overload, immediate retries from concurrent users amplify the problem. Prevention: exponential backoff with jitter (500ms, 1s, 2s with ±25% random), circuit breaker (stop trying provider after N failures for cooldown period), respect Retry-After headers.
+5. **tracing::info! logs provider URLs (which may contain credentials)**: The execute_request function logs provider.url at info level—if URLs contain embedded credentials, they leak. Fix: Remove url from info-level logs or redact it.
+
+For all 11 pitfalls with specific code locations, prevention strategies, and phase assignments, see [PITFALLS.md](./PITFALLS.md).
 
 ## Implications for Roadmap
 
-Research reveals strong dependency ordering: observability must precede reliability because you need to see failures to handle them well. With logging in place, you can tune retry policies empirically rather than guessing.
+Based on research, the milestone should be structured in three sequential phases with clear dependency ordering. The SecretString type migration is the foundation—all other work builds on having the right type. Environment variable expansion is independent config loading work that must integrate with SecretString. Output surface audit is hardening that catches what the type system cannot enforce.
 
-### Phase 1: Foundation - Cost Calculation and Correlation
-**Rationale:** Fix cost calculation before any logging starts - if cost numbers are wrong from day one, historical data is polluted and learned token ratios will be incorrect. Add request correlation IDs before implementing other features because all subsequent debugging depends on tracing requests through logs.
-**Delivers:** Correct cost calculation with full formula (input + output + base), request ID generation and span-based tracing
-**Addresses:** Pitfall 4 (broken cost calculation), Pitfall 12 (no correlation IDs)
-**Implementation:** ~60 LOC - cost formula in src/router/cost.rs, UUID generation in handlers, tracing span wrapper
+### Phase 1: SecretString Type Migration
+**Rationale:** Foundation phase. Changes `api_key: Option<String>` to `Option<SecretString>` across all config and routing code. This is a mechanical type migration where the compiler identifies every required change. Must come first because it changes the public API of `ProviderConfig`, which every subsequent feature depends on.
 
-### Phase 2: Observability - Request Logging and Cost Tracking
-**Rationale:** Logging is the foundation for everything downstream - cost tracking, health monitoring, learned patterns all need logged data. Must implement correctly from start with fire-and-forget pattern to avoid Pitfall 3.
-**Delivers:** SQLite storage with migrations, async request logger, cost query endpoints (/stats, /stats/models), response metadata headers
-**Addresses:** Table stakes (request logging, latency measurement, cost tracking), Pitfall 3 (SQLite blocking), Pitfall 6 (logging bodies)
-**Uses:** sqlx with migrate+chrono features, fire-and-forget tokio::spawn pattern
-**Implementation:** ~300 LOC - storage module, migrations, handler integration, query endpoints
+**Delivers:**
+- Type-safe secret wrapping with automatic Debug redaction
+- Zeroize-on-drop for all API key copies
+- Compile-time prevention of accidental Serialize
+- Single expose_secret() call site in production code
 
-### Phase 3: Streaming Observability - SSE Parsing
-**Rationale:** Streaming error handling and token counting are coupled - both require parsing SSE chunks. Implement before retry logic because streaming requests cannot be retried (content already sent), so the error detection path is simpler.
-**Delivers:** StreamWrapper that parses SSE events, extracts usage field from final chunk, injects error events on failures, validates [DONE] sentinel
-**Addresses:** Pitfall 2 (silent stream failures), Pitfall 7 (streaming token counting), table stakes (stream error handling)
-**Uses:** futures::StreamExt, tokio::sync::oneshot for metadata channel
-**Implementation:** ~150 LOC - stream wrapper module, SSE parser, error injection
+**Addresses:**
+- Must-have: SecretString for api_key field (table stakes)
+- Must-have: Redact keys from Debug/tracing output (table stakes)
 
-### Phase 4: Reliability - Retry and Fallback
-**Rationale:** Comes last because it's most complex and benefits from all observability built in prior phases. Need logging to validate retry logic works correctly, need stream error handling to know when NOT to retry.
-**Delivers:** RequestExecutor with retry loop, HealthTracker for provider state, Router::select_with_fallbacks, exponential backoff with jitter
-**Addresses:** Table stakes (retry with backoff, provider fallback), Pitfall 1 (Cashu double-spend), Pitfall 5 (thundering herd), Pitfall 8 (model fallback), Pitfall 9 (timeout configuration)
-**Implements:** RequestExecutor component, HealthTracker component
-**Implementation:** ~250 LOC - executor module, health tracker, retry logic, handler refactor
+**Avoids:**
+- Pitfall 1: Debug derive leaking keys (CRITICAL)
+- Pitfall 2: Clone creating untracked copies
+- Pitfall 3: /providers serialization risk
 
-### Phase 5: Polish - Enhanced Endpoints
-**Rationale:** Nice-to-haves that leverage the infrastructure built in prior phases. Low risk, incremental value.
-**Delivers:** /health with provider status, cost breakdown endpoints, config for retry policy
-**Addresses:** Pitfall 11 (useless health check), Pitfall 10 (error format consistency)
-**Implementation:** ~100 LOC - enhanced handlers, config schema updates
+**Estimated effort:** ~60 LOC changes across config.rs, selector.rs, handlers.rs
+
+### Phase 2: Environment Variable Expansion
+**Rationale:** Configuration phase. Implements `${VAR}` syntax and convention-based `ARBSTR_<NAME>_API_KEY` lookup. Depends on Phase 1 because expanded values must produce SecretString, not String. The two-phase config loading pattern (Raw -> expand -> Secret-wrapped) provides superior error messages and natural precedence handling.
+
+**Delivers:**
+- `${VAR}` expansion with fail-fast on missing vars
+- Convention-based env var auto-discovery
+- Clear precedence: explicit > expanded > convention > none
+- Provider-context error messages ("Provider 'alpha': env var 'KEY' not set")
+
+**Addresses:**
+- Must-have: Environment variable expansion (table stakes)
+- Must-have: Convention-based env var lookup (table stakes)
+- Should-have: check command key validation
+
+**Avoids:**
+- Pitfall 6: Failing open on missing env vars
+- Pitfall 7: Convention/explicit precedence conflicts
+- Pitfall 9: Provider name normalization edge cases
+
+**Uses:**
+- std::env (no new dependencies for expansion)
+- Two-phase deserialization (Raw struct -> conversion -> Public struct)
+
+**Estimated effort:** ~80 LOC for expansion logic + ~40 LOC for convention fallback
+
+### Phase 3: Output Surface Audit
+**Rationale:** Hardening phase. Reviews all code paths where secrets or secret-adjacent data might reach external surfaces (HTTP error responses, tracing calls, endpoint JSON). Depends on Phases 1-2 because the type migration eliminates the most dangerous leak paths; this phase catches edge cases the type system cannot enforce.
+
+**Delivers:**
+- Error messages that never include provider error bodies or reqwest errors
+- Tracing audit (remove provider.url from info-level logs)
+- /providers endpoint verification (no regression in manual JSON construction)
+- Startup key source reporting (log where each key came from)
+- Config file permission warning (Unix only)
+
+**Addresses:**
+- Must-have: Config file permission warning (table stakes)
+- Should-have: Startup key source reporting (differentiator)
+- Should-have: Key masking in CLI output (differentiator)
+
+**Avoids:**
+- Pitfall 4: Error messages leaking keys (CRITICAL)
+- Pitfall 5: tracing logging URLs with credentials
+
+**Implements:**
+- Separate internal (logged) vs external (returned to client) error messages
+- Key source enum: ConfigLiteral | ConfigExpanded | ConventionEnv | None
+- File permission check via stat() with mode validation
+
+**Estimated effort:** ~30 LOC for error scrubbing + ~30 LOC for key source reporting + ~25 LOC for permission check
 
 ### Phase Ordering Rationale
 
-- **Cost calculation first** because it's a prerequisite for accurate logging - fixing it after logging starts pollutes historical data
-- **Logging before reliability** because observability informs tuning - you need to see failure patterns to design good retry policies
-- **Streaming before retry** because streaming cannot be retried (fundamental constraint) so its error path is simpler and validates patterns before tackling complex retry logic
-- **Polish last** because it's low-risk incremental improvements that leverage prior work
+- **Type changes before env var logic**: Expanding into String then wrapping in SecretString is awkward and error-prone. Expanding into SecretString directly (Phase 1 complete, Phase 2 builds on it) provides clean integration and better error handling.
 
-This order also minimizes rework: each phase builds cleanly on prior phases without needing to go back and change earlier implementations.
+- **Foundation before configuration before hardening**: Phase 1 makes secrets safe by default via the type system. Phase 2 adds user-facing config features. Phase 3 audits remaining leak surfaces that types can't catch (error messages, logs). Each layer depends on the previous.
+
+- **Compiler-driven migration**: Phase 1 intentionally breaks compilation everywhere api_key is used. The compiler errors are a checklist—you cannot miss a call site. This is Rust's type system working as intended.
+
+- **No parallelization needed**: All three phases are small (60-80 LOC each per estimates). Sequential execution with clear handoffs is simpler than parallel work with integration risk.
+
+- **Architecture supports incremental deployment**: Each phase delivers value independently. Phase 1 can ship (redaction only), then Phase 2 (env vars), then Phase 3 (hardening). This is not just a planning artifact—the phases can be deployed separately if needed.
 
 ### Research Flags
 
-**Phases likely needing deeper research during planning:**
-- **Phase 4 (Reliability):** Cashu token payment semantics need verification - specifically what happens when same token submitted twice, whether Routstr providers expose a reconciliation endpoint, and whether there's a standard way to mark tokens as "possibly spent". Training data doesn't have specific Routstr provider behavior.
-- **Phase 3 (Streaming):** Need to verify whether Routstr providers include `usage` field in final SSE chunk (OpenAI pattern) or if arbstr needs to estimate from chunk counts. Affects accuracy of streaming cost tracking.
-
 **Phases with standard patterns (skip research-phase):**
-- **Phase 1 (Cost Calculation):** Pure arithmetic, well-specified in provider config schema
-- **Phase 2 (Request Logging):** Standard sqlx + SQLite patterns, well-documented
-- **Phase 5 (Polish):** Straightforward handler additions
+- **Phase 1 (SecretString)**: Secrecy crate is well-documented on docs.rs, type migration is mechanical, compiler drives completeness. No additional research needed.
+- **Phase 2 (Env expansion)**: Stdlib work only, pattern documented in ARCHITECTURE.md, pure function is trivially testable. No additional research needed.
+- **Phase 3 (Output audit)**: Code review and security best practices, not new patterns. Error handling separation is standard. No additional research needed.
+
+**No phases need deeper research.** All patterns are established, sources are official docs, implementation is straightforward Rust. The research is comprehensive and actionable.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Existing dependencies are correct; only sqlx feature flags needed; custom retry approach is sound based on Tower's documented limitations |
-| Features | HIGH | Convergence across LiteLLM/Portkey/Helicone/BricksLLM is clear; table stakes vs differentiators well-supported by competitive analysis |
-| Architecture | MEDIUM | Patterns (fire-and-forget logging, oneshot for streams) are well-established in Rust async; but exact SSE parsing behavior with different clients not verified |
-| Pitfalls | HIGH | Pitfalls 1-4 directly observable in codebase or inherent to tech (Cashu, SQLite concurrency); 5-12 are standard domain patterns |
+| Stack | HIGH | Secrecy v0.10.3 verified on crates.io/docs.rs, serde feature confirmed. Env expansion requires no crates. Existing config crate confirmed unused via code analysis. |
+| Features | HIGH | Table stakes verified against LiteLLM, Docker Compose, Terraform, kubectl docs. Anti-features analysis matches arbstr's single-user local proxy use case. Feature priorities clear. |
+| Architecture | HIGH | Two-phase deserialization is standard Rust pattern. Secrecy integration documented with examples. Direct codebase analysis confirms all api_key flow paths (config -> router -> handlers). |
+| Pitfalls | HIGH | All critical pitfalls directly observable in current code (Debug derives at config.rs:52, selector.rs:9, error forwarding at handlers.rs:506-508/526-529). Prevention strategies verified against secrecy docs. |
 
-**Overall confidence:** MEDIUM
+**Overall confidence:** HIGH
 
-Training data knowledge is comprehensive for the Rust ecosystem and LLM proxy patterns (January 2025 cutoff), but two areas lack verification:
-1. Specific Routstr provider behavior (SSE usage field inclusion, Cashu token reconciliation endpoints)
-2. Current crate versions (sqlx 0.8 was current at training cutoff; minor releases may have occurred)
+Research is based on official documentation (secrecy crate, stdlib), established ecosystem patterns (Docker Compose env vars, cloud SDK conventions), and direct analysis of the arbstr codebase. All recommendations are actionable with clear implementation paths. No areas of uncertainty require additional research.
 
 ### Gaps to Address
 
-- **Cashu token double-spend semantics:** Need to research Routstr-specific behavior - do providers expose a way to check token status? Can tokens be marked as reserved before submission? What happens on duplicate submission? This directly affects retry safety classification.
+**None identified.**
 
-- **Routstr SSE streaming format:** Verify whether Routstr providers include OpenAI-compatible `usage` field in final SSE chunk, or if arbstr needs to estimate from chunk counts/character counts. Affects streaming cost tracking accuracy.
+The research covers all aspects of the v1.1 milestone:
+- Stack changes are minimal and verified (add secrecy, remove config)
+- Feature scope is well-defined with clear table stakes vs differentiators
+- Architecture provides concrete implementation guidance (two-phase loading, type-driven redaction)
+- Pitfalls are directly mapped to current codebase with specific prevention strategies and line numbers
 
-- **sqlx version verification:** Confirm sqlx 0.8 is still current; check for breaking changes if 0.9 exists. Low risk - cargo build will surface issues.
+**Minor design decisions to finalize during planning:**
+- Provider name normalization convention for env var names (recommend: uppercase, replace non-alphanumeric with underscore)
+- Whether to support `${VAR:-default}` syntax (recommend: NO for v1.1, add in v1.2 if needed)
+- Which string fields support env var expansion (recommend: `api_key` and `url` only)
 
-- **OpenAI client library error handling:** Test error events in SSE streams against Python OpenAI SDK, Cursor, and Claude Code to verify they parse injected error events correctly. Affects streaming error detection UX.
+These are implementation details, not research gaps. The core patterns and approaches are fully validated.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- arbstr codebase analysis (src/proxy/handlers.rs, src/router/selector.rs, src/config.rs, src/error.rs, Cargo.toml) - direct observation of current implementation and gaps
-- CLAUDE.md project documentation - architecture decisions, milestone roadmap, schema design
-- sqlx 0.8 documentation and Tower 0.4 API semantics - training data knowledge as of January 2025
+- [secrecy crate v0.10.3 on crates.io](https://crates.io/crates/secrecy) — SecretString, serde feature, version verification
+- [secrecy API documentation on docs.rs](https://docs.rs/secrecy/latest/secrecy/) — SecretString type alias, ExposeSecret trait, Debug behavior, Deserialize impl
+- [secrecy GitHub (iqlusioninc/crates)](https://github.com/iqlusioninc/crates/tree/main/secrecy) — source code, zeroize integration, intentional lack of Serialize
+- [Docker Compose variable interpolation docs](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/) — ${VAR} syntax convention
+- Direct codebase analysis of `/home/john/vault/projects/github.com/arbstr/src/` — all source files analyzed for api_key flow and leak surfaces
 
 ### Secondary (MEDIUM confidence)
-- LiteLLM, Portkey, Helicone, BricksLLM feature comparison - training data knowledge of these products' feature sets and positioning as of early 2025; web verification unavailable
-- Rust async patterns (Tokio spawn, oneshot channels, fire-and-forget) - well-established community practices from training data
-- SQLite WAL mode and concurrency behavior - documented SQLite features
+- [Secure Configuration and Secrets Management in Rust with Secrecy](https://leapcell.io/blog/secure-configuration-and-secrets-management-in-rust-with-secrecy-and-environment-variables) — practical integration patterns
+- [Rust users forum: secrecy Serialize discussion](https://users.rust-lang.org/t/secrecy-crate-serialize-string/112263) — confirms no Serialize by default is intentional design
+- [Rust zeroize move/copy pitfalls](https://benma.github.io/2020/10/16/rust-zeroize-move.html) — memory copies surviving moves/drops
+- LiteLLM proxy configuration docs — env var patterns for LLM proxies
+- Terraform provider env var conventions — convention-based credential lookup patterns
 
-### Tertiary (LOW confidence, needs validation)
-- Routstr provider SSE format specifics - assumed OpenAI-compatible but not verified
-- Cashu token redemption semantics in context of retries - general Cashu knowledge but not Routstr-specific behavior
-- Exact behavior of OpenAI client SDKs parsing custom SSE error events - pattern is sound but client-specific handling not verified
+### Tertiary (LOW confidence)
+- shellexpand, serde-env-field, serde-with-expand-env crates — evaluated and rejected alternatives
+- redact, redaction crates — alternative approaches, evaluated and rejected (secrecy is ecosystem standard)
+- veil crate — derive-based redaction, noted as alternative approach but secrecy is more widely adopted
 
 ---
-*Research completed: 2026-02-02*
+*Research completed: 2026-02-15*
 *Ready for roadmap: yes*

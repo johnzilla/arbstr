@@ -1,169 +1,144 @@
-# Feature Landscape: LLM Proxy Reliability and Observability
+# Feature Landscape: Secrets Handling in CLI/Proxy Applications
 
-**Domain:** LLM proxy/gateway reliability and observability
-**Researched:** 2026-02-02
-**Confidence:** MEDIUM (based on training data knowledge of LiteLLM, Portkey, Helicone, BricksLLM as of early 2025; web verification unavailable)
+**Domain:** Secrets management for CLI tools and local proxy servers
+**Researched:** 2026-02-15
+**Overall confidence:** HIGH (well-established patterns across mature tooling ecosystem)
 
 ## Competitive Landscape Summary
 
-The LLM gateway/proxy space has converged on a common feature set. The four products studied -- LiteLLM, Portkey, Helicone, and BricksLLM -- share most reliability and observability features, differing primarily in deployment model (self-hosted vs. SaaS), depth of analytics, and enterprise features. arbstr's unique position (Bitcoin-native, local-first, Routstr marketplace) means some enterprise features are irrelevant, but the core reliability and logging patterns are universal.
+Secrets handling in CLI tools and proxies is a solved problem with clear conventions. LiteLLM, Docker Compose, Terraform, kubectl, and the broader cloud CLI ecosystem have converged on a layered approach: environment variables as the standard injection mechanism, config-file syntax for referencing them, and type-based redaction to prevent leaks. The specific patterns vary, but the hierarchy is universal: env vars > config file > hardcoded.
 
-| Product | Deployment | Focus | Key Differentiator |
-|---------|-----------|-------|--------------------|
-| LiteLLM | Self-hosted proxy | Multi-provider routing | 100+ provider support, cost tracking |
-| Portkey | SaaS gateway | Reliability + observability | Conditional routing, guardrails |
-| Helicone | SaaS layer | Observability + analytics | Deep logging, prompt analytics |
-| BricksLLM | Self-hosted proxy | Cost control + access mgmt | Per-key spend limits, rate limiting |
+arbstr currently stores `api_key` as `Option<String>` in plaintext TOML, derives `Debug` on all config structs (exposing keys in log output), prints provider URLs in the `providers` CLI command, and logs `provider.url` in tracing spans. The `/providers` HTTP endpoint deliberately omits `api_key` from its JSON response (good), but `Debug` derives on `ProviderConfig` and `SelectedProvider` would expose keys if any code path logs those structs.
 
 ---
 
 ## Table Stakes
 
-Features users expect. Missing any of these means the proxy feels broken or incomplete for a reliability/observability milestone.
+Features users expect. Missing any of these makes the tool a security liability or forces workarounds that defeat the purpose of config files.
 
 | Feature | Why Expected | Complexity | Confidence | Notes |
 |---------|--------------|------------|------------|-------|
-| **Provider fallback on failure** | Every proxy does this. A proxy that fails when one provider is down provides no value over direct calls. | Medium | HIGH | LiteLLM, Portkey, BricksLLM all have fallback. arbstr currently returns an error on first provider failure. |
-| **Configurable retry with backoff** | Transient errors (429, 500, 502, 503, 524) are common with LLM providers. Without retry, users see failures that would self-resolve. | Low | HIGH | All four products support retries. Exponential backoff is standard. Max 2-3 retries is the norm. |
-| **Request logging to persistent storage** | Without logging, there is no way to know what happened. Every observability product starts here. | Medium | HIGH | Helicone's entire value prop is logging. arbstr has the schema designed and sqlx in Cargo.toml but nothing implemented. |
-| **Token count extraction** | Usage data appears in every OpenAI-compatible response. Not capturing it means no cost tracking, no analytics, nothing downstream. | Low | HIGH | Non-streaming: parse `usage` object from response. Streaming: parse final chunk or `stream_options: {include_usage: true}`. |
-| **Cost calculation per request** | The core value of arbstr is cost optimization. Without tracking actual cost per request, you cannot validate the proxy is saving money. | Low | HIGH | Formula: `(input_tokens * input_rate / 1000) + (output_tokens * output_rate / 1000) + base_fee`. Current code only uses output_rate (noted as broken in PROJECT.md). |
-| **Latency measurement** | Users need to know if the proxy adds meaningful overhead. Every proxy tracks this. | Low | HIGH | Measure wall-clock time from request receipt to response completion (or first byte for streaming). |
-| **Structured error responses** | OpenAI-compatible error format must be maintained even during fallback/retry scenarios. Clients depend on parsing these. | Low | HIGH | arbstr already has this (error.rs with OpenAI-compatible JSON errors). Must maintain through fallback logic. |
-| **Health check with provider status** | Current `/health` returns a static "ok". Should reflect whether providers are actually reachable. | Low | MEDIUM | LiteLLM and Portkey expose provider health. For arbstr, even a simple "last known status" per provider is valuable. |
+| **Environment variable expansion in config values** | Every serious CLI tool supports this. Docker Compose uses `${VAR}`, LiteLLM uses `os.environ/VAR`, Terraform uses `var.name` with env override. Users should never have to put actual secrets in a file that might get committed. | Medium | HIGH | Use `${VAR}` or `${VAR:-default}` syntax. Parse during config loading, before validation. Fail with a clear error if the env var is not set and no default is provided. |
+| **Convention-based env var lookup when api_key is omitted** | Terraform providers, AWS CLI, and cloud SDKs all auto-discover credentials from well-known env vars. For arbstr, if a provider named "routstr" has no `api_key` in config, check `ARBSTR_ROUTSTR_API_KEY` automatically. Reduces config boilerplate and keeps secrets out of files entirely. | Low | HIGH | Naming convention: `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`. Fallback after explicit config and env expansion both miss. |
+| **Redact keys from Debug output** | The `secrecy` crate exists specifically for this. Rust's `#[derive(Debug)]` on structs containing secrets will print them when the struct is logged, debug-printed, or appears in error messages. Every security-conscious Rust project wraps secret fields. | Low | HIGH | Replace `api_key: Option<String>` with `api_key: Option<SecretString>` using the `secrecy` crate. `Debug` impl prints `[REDACTED]` instead of the actual value. |
+| **Redact keys from tracing/log output** | tracing structured fields will format any `Debug`-implementing type. If `ProviderConfig` or `SelectedProvider` is ever logged at debug level (common during development), keys leak to stderr/files. Current code logs `provider.url` in an info span -- not a key leak itself, but `Debug` on the parent struct is. | Low | HIGH | Handled automatically once `SecretString` replaces `String` for key fields, since `SecretString` implements `Debug` as `[REDACTED]`. |
+| **Redact keys from API responses** | The `/providers` HTTP endpoint already omits `api_key` from its JSON output (lines 766-779 of handlers.rs construct the response with only name, models, and rates). Verify this holds. The `error_body` in error messages (line 518-528) could contain provider responses that echo back auth headers -- these should be scrubbed. | Low | HIGH | Audit all JSON serialization paths. The current `/providers` endpoint is safe. Error paths that forward provider response bodies need scrubbing. |
+| **Redact keys from CLI output** | The `providers` CLI command (main.rs lines 120-133) currently prints `provider.name` and `provider.url` but not `api_key`. However, if someone adds a `--verbose` flag or uses `{:?}` formatting on the config struct, keys would leak. Making the type itself safe prevents future regressions. | Low | HIGH | Covered by the `SecretString` type change. Also add an explicit "has key: yes/no" indicator to CLI output so users can verify config without seeing the key. |
+| **Config file permission warning** | SSH, gpg, and SSSD all refuse to operate or warn when secret-containing files have world-readable permissions. A config file with `api_key = "cashuA..."` at mode 0644 is a local security issue. | Low | HIGH | Check `stat()` on config file at load time. Warn (do not hard-fail) if permissions are more permissive than 0600. Unix-only; skip on Windows. |
 
 ### Implementation Priority for Table Stakes
 
-1. **Request logging + token extraction + cost calculation** -- These three are tightly coupled. Implement together. Logging is the foundation that everything else builds on.
-2. **Retry with backoff** -- Simple to implement, high impact. Retry on 429/5xx before attempting fallback.
-3. **Provider fallback** -- After retry exhaustion on primary provider, try next cheapest. Requires the router to return an ordered list, not just the top pick.
-4. **Latency measurement** -- Instrument the request path. Store in the same log table.
-5. **Health check enhancement** -- Track provider success/failure rates from logged data.
+1. **SecretString type change** -- Foundation. Changes `api_key` field type, which every other feature depends on. Do this first because it changes the public API of config structs.
+2. **Environment variable expansion** -- Core config-loading change. Implement the `${VAR}` parser in `Config::parse_str` or a pre-processing step before TOML parsing.
+3. **Convention-based env var lookup** -- Small addition after expansion works. Check `ARBSTR_<NAME>_API_KEY` when `api_key` is None after TOML parsing and expansion.
+4. **Config file permission warning** -- Quick `stat()` check in `Config::from_file`.
+5. **Audit output surfaces** -- Verify no regression in `/providers`, `providers` CLI, error messages, and tracing output.
 
 ---
 
 ## Differentiators
 
-Features that go beyond expectations. Not missing = nobody notices, but present = perceived quality. These separate a "useful tool" from a "good tool."
+Features that go beyond what users strictly expect but signal a well-designed tool. Not common in simple proxy tools, but present in security-focused infrastructure.
 
 | Feature | Value Proposition | Complexity | Confidence | Notes |
 |---------|-------------------|------------|------------|-------|
-| **Cost tracking in satoshis with query endpoints** | arbstr's unique value. No other proxy tracks cost in sats. Enables "how much did I spend today on code generation?" queries. | Medium | HIGH | Unique to arbstr/Routstr ecosystem. Simple SQL aggregation endpoints. |
-| **Learned token ratios per policy** | Predict cost before seeing the response by learning that "code" requests typically have 1:3 input:output ratio. Enables smarter pre-routing decisions. | Medium | MEDIUM | LiteLLM tracks ratios but doesn't use them for routing decisions. This is genuinely novel for arbstr. |
-| **Circuit breaker per provider** | After N consecutive failures, stop trying a provider for a cooldown period. Prevents wasting time and tokens on a down provider. | Medium | HIGH | Portkey and LiteLLM both have circuit breakers. Goes beyond simple retry/fallback. |
-| **Streaming token counting** | Parse SSE chunks to count tokens in real-time during streaming, rather than relying on provider's final usage report. | High | MEDIUM | Helicone does this. Complex because you need to parse SSE `data:` lines, handle partial JSON, and count across chunks. |
-| **Per-model and per-policy cost breakdown** | "How much did claude-3.5-sonnet cost me this week?" vs "How much did my code_generation policy cost?" | Low | HIGH | Simple SQL GROUP BY on the request log. Very high value for a cost-optimization proxy. |
-| **Request metadata via response headers** | Return `x-arbstr-cost-sats`, `x-arbstr-latency-ms`, `x-arbstr-retries` headers so clients can see per-request metrics without querying the API. | Low | HIGH | Portkey and Helicone use custom response headers extensively. arbstr already adds `x-arbstr-provider`. |
-| **Timeout configuration per provider** | Different providers have different latency profiles. Allow per-provider timeout configuration rather than a global 120s. | Low | MEDIUM | LiteLLM supports per-model timeouts. arbstr currently has a global 120s timeout on the HTTP client. |
-| **Stream error detection and clean signaling** | Detect mid-stream provider failures (connection drop, malformed SSE) and either retry transparently or signal the client with a clean error event. | High | MEDIUM | This is hard. Most proxies just drop the connection. Clean mid-stream error signaling (sending an SSE error event) is rare and would be genuinely useful. |
+| **Startup validation with key source reporting** | On `serve` startup, log which providers have keys and where each key came from: "provider-alpha: key from config (env expanded)", "provider-beta: key from ARBSTR_PROVIDER_BETA_API_KEY", "provider-gamma: no key configured". Gives immediate visibility without showing the key. | Low | HIGH | LiteLLM logs model configuration at startup. arbstr already logs provider count. Adding source info is trivial and extremely helpful for debugging "why is my provider returning 401?". |
+| **`check` command validates key availability** | The existing `check` command validates config structure. Extend it to verify that env vars referenced by `${VAR}` are set and that convention-based env vars exist for keyless providers. Report clearly: "provider-alpha: key will resolve from $ROUTSTR_KEY (currently set)" or "provider-beta: no key source found (will be unauthenticated)". | Low | HIGH | Catches config mistakes at validate-time rather than first-request-time. Every good CLI tool does this (terraform validate, docker compose config). |
+| **Key masking in "providers" output** | Instead of omitting the key entirely, show `api_key: cashuA...***` (first 6 chars + mask) in both CLI and HTTP output. Lets users verify which key is loaded without exposing the full value. | Low | MEDIUM | Common in cloud dashboards (AWS console shows last 4 of access key). Useful for multi-provider configs where you need to confirm the right key is on the right provider. |
+| **Zeroize on drop for secret values** | The `secrecy` crate's `SecretString` uses `zeroize` to clear secret memory when the value is dropped. Prevents secrets from lingering in freed memory pages that could be read by a debugger or core dump. | Free | HIGH | This comes automatically with `SecretString` from the `secrecy` crate. No extra work -- it is the default behavior. Mention in docs as a security property. |
+| **Warn on plaintext key in config when env expansion available** | If a user writes `api_key = "cashuA..."` (literal value, no `${}`), emit a startup warning suggesting they use an env var instead. Educates users toward the secure path without blocking the insecure one. | Low | MEDIUM | Gentle nudge, not enforcement. Detected by checking if the resolved value matches the raw TOML value and contains no `${}` syntax. |
 
 ### Differentiator Priority
 
-1. **Cost tracking endpoints** -- Low complexity, high arbstr-specific value.
-2. **Response metadata headers** -- Trivial to add during logging implementation.
-3. **Per-model/per-policy breakdown** -- Free once logging exists.
-4. **Circuit breaker** -- Natural extension of fallback logic.
-5. **Learned token ratios** -- Interesting but can wait; needs data first.
+1. **Startup validation with key source reporting** -- Free win during implementation. Log it as part of the config loading path.
+2. **`check` command key validation** -- Natural extension of existing `check` command.
+3. **Key masking in output** -- Small utility, nice polish.
+4. **Warn on plaintext key** -- Controversial (could annoy users), implement last and consider making it suppressible.
+5. **Zeroize on drop** -- Free with SecretString. Just document it.
 
 ---
 
 ## Anti-Features
 
-Features to deliberately NOT build in this milestone. Common in the LLM gateway space but wrong for arbstr's context.
+Features to deliberately NOT build in this milestone. Over-engineering secrets management for a local single-user proxy is a real risk.
 
 | Anti-Feature | Why Other Products Have It | Why arbstr Should NOT Build It | What to Do Instead |
 |--------------|---------------------------|-------------------------------|--------------------|
-| **Web dashboard UI** | Helicone, Portkey, LiteLLM all have rich web UIs for log browsing, cost charts, and analytics. | arbstr is a single-user local proxy. A web UI adds frontend complexity (JS framework, build pipeline, CORS) for one person who can `curl` or use `sqlite3`. PROJECT.md explicitly excludes this. | Expose JSON query endpoints. Let the user pipe to `jq` or connect any SQLite viewer. |
-| **Per-API-key rate limiting** | BricksLLM's core feature. Portkey does this too. | arbstr runs on a home network for one user. There is no abuse vector. Rate limiting adds complexity with zero value. | Skip entirely. If multi-user comes later, add it then. |
-| **Client authentication / API key management** | Every SaaS gateway authenticates clients. BricksLLM and LiteLLM have extensive key management. | Same reason. One user, home network. Adding auth means every client config needs an arbstr API key for no security benefit (local network). | Skip. Bind to 127.0.0.1 (already the default). |
-| **Prompt caching / semantic cache** | Portkey and LiteLLM offer response caching to avoid duplicate LLM calls. | Caching LLM responses is useful for high-volume production but adds significant complexity (cache invalidation, storage, similarity matching). Single-user usage patterns rarely produce exact duplicate prompts. | Skip. If needed later, implement as a separate middleware layer. |
-| **Guardrails / content filtering** | Portkey has input/output guardrails (PII detection, toxicity filtering). | arbstr is a personal tool. The user is responsible for their own prompts. Adding guardrails between yourself and your own proxy is unnecessary friction. | Skip entirely. |
-| **Multi-tenant virtual keys** | Portkey and BricksLLM map virtual API keys to real provider keys with per-key budgets. | Single user, single set of provider credentials. Virtual key mapping adds indirection with no benefit. | Skip. Use real Cashu tokens directly in config. |
-| **Automatic model fallback to different model** | LiteLLM can automatically fall back from gpt-4o to gpt-3.5-turbo. Portkey has conditional model routing. | Dangerous for a cost-optimization proxy. If the user requests claude-3.5-sonnet for a code task, silently routing to gpt-4o-mini changes quality. Fallback should be same-model-different-provider, not model substitution. | Fallback to same model on different provider only. Let the user explicitly configure model alternatives in policy rules if they want cross-model fallback. |
-| **Real-time streaming analytics** | Helicone processes streaming tokens in real-time for live dashboards. | Complexity far exceeds value for single user. Parsing SSE in real-time, maintaining state machines, counting tokens mid-stream -- all for metrics you will look at hours later. | Count tokens from the final response/usage object. If streaming, optionally use `stream_options: {include_usage: true}` to get a final usage chunk. Do not parse every chunk. |
-| **Webhook / alerting on spend thresholds** | BricksLLM and Portkey support spend alerts. | A single user running a local proxy does not need automated alerts. They can query cost endpoints after a session. | Provide a CLI command or endpoint for cost queries. No push notifications needed. |
+| **External secrets manager integration (Vault, AWS SM, Doppler)** | LiteLLM supports Google KMS and Azure KMS. Enterprise tools need centralized secret rotation and audit trails. | arbstr runs on a home network for one user. Adding vault client dependencies, authentication flows, and network calls to fetch a single API key is massive over-engineering. The user's threat model is "don't commit the key to git," not "SOC2 compliance." | Environment variables are the universal interface. If the user wants Vault, they use `vault exec` or `direnv` to inject env vars before running arbstr. arbstr reads `${}` in config; how those vars get set is the user's concern. |
+| **Encrypted config file** | Some tools encrypt secrets at rest in config files (ansible-vault, sops). | Adds a key-management-for-the-key problem. The user now needs a master password or GPG key to decrypt the config, which must itself be stored somewhere. For a local proxy, file permissions (0600) + env vars achieve the same goal without the complexity. | Use env vars. Recommend `chmod 600 config.toml` in docs if users insist on putting keys in the file. |
+| **Secret rotation / auto-refresh** | Cloud SDKs refresh temporary credentials automatically. LiteLLM supports key rotation. | Routstr/Cashu tokens are pre-funded and expire when balance hits zero, not on a time schedule. There is no "refresh" operation -- you fund a new session and get a new key. Rotation logic has no semantics to implement. | When a key expires (provider returns 401), the user creates a new Cashu token and updates the env var. Restart arbstr or (future) support config reload. |
+| **Keyring / OS credential store integration** | macOS Keychain, Windows Credential Manager, Linux secret-service. Some CLI tools (gh, aws-vault) store tokens in the OS keyring. | Adds `keyring` crate dependency with platform-specific backends (libsecret on Linux, Security.framework on macOS). Significantly increases build complexity and platform-specific testing burden for marginal benefit over env vars. | Skip. Env vars work cross-platform. If the user wants keyring, they can use a wrapper like `secret-tool lookup` piped into an env var. |
+| **Runtime secret injection via API** | Some proxies accept key updates via admin API without restart. | Adds mutable state, authentication for the admin endpoint, and race conditions with in-flight requests. For a local tool, restarting is fine -- it takes <1 second. | Skip. Config changes require restart. (Future: SIGHUP config reload is simpler than an API.) |
+| **Audit logging of secret access** | Enterprise tools log every time a secret is read, by whom, from where. | Single user. The audit trail is: "I ran arbstr." There is no unauthorized access to log. | Skip entirely. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-Request Logging (SQLite)
+SecretString type change (api_key: Option<SecretString>)
   |
-  +-- Token Count Extraction (from response)
+  +-- Debug redaction (automatic via SecretString)
   |     |
-  |     +-- Cost Calculation per Request
-  |           |
-  |           +-- Cost Query Endpoints (aggregation)
-  |           |
-  |           +-- Per-Model / Per-Policy Breakdown
-  |           |
-  |           +-- Learned Token Ratios
+  |     +-- Tracing/log redaction (automatic via SecretString Debug impl)
+  |     |
+  |     +-- CLI output safety (Debug prints [REDACTED])
   |
-  +-- Latency Measurement
+  +-- Zeroize on drop (automatic via SecretString)
   |
-  +-- Provider Health Tracking (from success/failure logs)
-
-Retry with Backoff
-  |
-  +-- Provider Fallback (after retry exhaustion)
+  +-- Serde Deserialize support (secrecy "serde" feature)
         |
-        +-- Circuit Breaker (track consecutive failures)
+        +-- Config file still parses normally via toml + serde
 
-Stream Error Handling (independent but interacts with logging)
+Environment variable expansion (pre-processing step)
+  |
+  +-- Config parse pipeline change (expand before or during TOML parse)
+  |
+  +-- Convention-based lookup (check ARBSTR_<NAME>_API_KEY after expansion)
+  |
+  +-- Startup key source reporting (log where each key came from)
+  |
+  +-- `check` command key validation (verify env vars resolve)
+
+Config file permission check (independent)
+  |
+  +-- Warning on load (stat() call in Config::from_file)
+
+Output surface audit (depends on SecretString type change)
+  |
+  +-- /providers endpoint (already safe, verify no regression)
+  |
+  +-- Error message scrubbing (provider error bodies may echo auth)
+  |
+  +-- Key masking for display (first N chars + ***)
 ```
 
-Key dependency insight: **Logging is the foundation.** Cost tracking, health monitoring, and learned ratios all require logged data. Build logging first, then layer analytics on top.
-
-Retry and fallback are independent of logging and can be implemented in parallel.
+Key dependency insight: **The SecretString type change is the foundation.** It must happen first because it changes the `ProviderConfig` struct's public API. Everything downstream (debug safety, serde compat, display masking) builds on having the right type. Environment variable expansion is independent and can be developed in parallel, but must be integrated with SecretString deserialization (expand the string, then wrap in SecretString).
 
 ---
 
-## Feature Comparison Matrix: What Competitors Offer
+## MVP Recommendation
 
-| Feature | LiteLLM | Portkey | Helicone | BricksLLM | arbstr (current) | arbstr (target) |
-|---------|---------|---------|----------|-----------|-------------------|-----------------|
-| Retry with backoff | Yes | Yes | N/A (obs only) | Yes | No | **Yes** |
-| Provider fallback | Yes | Yes | N/A | Yes | No | **Yes** |
-| Circuit breaker | Yes | Yes | N/A | No | No | **Maybe (differentiator)** |
-| Request logging | Yes | Yes | Yes (core) | Yes | No | **Yes** |
-| Token counting | Yes | Yes | Yes | Yes | No | **Yes** |
-| Cost tracking | Yes (USD) | Yes (USD) | Yes (USD) | Yes (USD) | No | **Yes (sats)** |
-| Cost query API | Yes | Yes (dashboard) | Yes (dashboard) | Yes | No | **Yes (JSON endpoints)** |
-| Streaming token count | Partial | Yes | Yes | No | No | **No (not needed)** |
-| Per-model breakdown | Yes | Yes | Yes | Yes | No | **Yes** |
-| Response headers | No | Yes | Yes | No | Partial (provider only) | **Yes (cost, latency)** |
-| Web dashboard | Yes | Yes | Yes | Yes | No | **No (deliberate)** |
-| API key management | Yes | Yes | No | Yes | No | **No (deliberate)** |
-| Prompt caching | Yes | Yes | No | No | No | **No (deliberate)** |
-
----
-
-## MVP Recommendation for This Milestone
-
-Based on the competitive landscape and arbstr's specific context (single-user, cost-optimization focus, existing codebase), here is the recommended feature set for the reliability and observability milestone.
+Based on the analysis above and arbstr's specific context (single-user local proxy, Cashu tokens as API keys, existing plaintext TOML config), here is the recommended feature set for the v1.1 Secrets Hardening milestone.
 
 ### Must Have (Table Stakes)
 
-1. **Retry with exponential backoff** -- Retry on 429, 500, 502, 503, 504. Max 2 retries. Configurable but sensible defaults.
-2. **Provider fallback on failure** -- After retries exhausted, try next cheapest provider for the same model. Return error only when all providers fail.
-3. **Request logging to SQLite** -- Every request logged with: timestamp, model, provider, input_tokens, output_tokens, cost_sats, latency_ms, success, policy name.
-4. **Token count extraction** -- Non-streaming: parse `usage` from response body. Streaming: request `stream_options: {include_usage: true}` or accept null tokens for streams initially.
-5. **Fix cost calculation** -- Use full formula: `(input_tokens * input_rate / 1000) + (output_tokens * output_rate / 1000) + base_fee`.
-6. **Latency measurement** -- Wall-clock time per request, stored in log table.
-7. **Stream error handling** -- Detect connection drops and malformed responses. Do not attempt transparent retry mid-stream (too complex). Signal error cleanly to client.
+1. **SecretString for api_key field** -- Replace `Option<String>` with `Option<SecretString>` using the `secrecy` crate with serde feature. This is the single highest-leverage change: it fixes Debug, tracing, and accidental logging in one shot.
+2. **Environment variable expansion** -- Support `${VAR_NAME}` syntax in TOML string values. At minimum for `api_key`, ideally for any string field (url could also benefit). Fail with clear error when env var is unset.
+3. **Convention-based env var lookup** -- When `api_key` is omitted from a provider config, automatically check `ARBSTR_<UPPER_SNAKE_PROVIDER_NAME>_API_KEY`. This is the zero-config secure path.
+4. **Config file permission warning** -- Warn on startup if config file is group/world readable and contains any api_key values.
+5. **Output surface audit** -- Verify `/providers` endpoint, `providers` CLI command, error messages, and tracing output do not leak keys after SecretString migration.
 
 ### Should Have (Differentiators worth the effort)
 
-8. **Cost query endpoint** -- `GET /costs?period=today|week|month` returning total sats spent, with optional model/policy grouping.
-9. **Response metadata headers** -- `x-arbstr-cost-sats`, `x-arbstr-latency-ms`, `x-arbstr-retries` on every response.
-10. **Enhanced health endpoint** -- `/health` returns per-provider last-known status and success rate.
+6. **Startup key source reporting** -- Log per-provider key source (config/env-expanded/convention/none) at info level during startup.
+7. **`check` command key validation** -- Extend existing check to verify env var resolution for all providers.
+8. **Key masking for display** -- Show `cashuA...***` in providers CLI output so users can verify key identity.
 
-### Defer to Later Milestone
+### Defer
 
-11. **Circuit breaker** -- Needs more operational data to tune thresholds. Add after logging is generating data.
-12. **Learned token ratios** -- Needs logged data to learn from. Add after a period of data collection.
-13. **Per-provider timeout configuration** -- Nice to have but global 120s works for now.
+9. **Warn on plaintext key** -- Nice in theory but could annoy experienced users. Evaluate after core features land.
+10. **External secrets manager integration** -- Wrong scope for a local tool.
 
 ---
 
@@ -171,27 +146,43 @@ Based on the competitive landscape and arbstr's specific context (single-user, c
 
 | Feature | Lines of Code (est.) | New Files | Touches Existing | Risk |
 |---------|---------------------|-----------|-----------------|------|
-| SQLite setup + migrations | ~100 | storage/mod.rs, storage/db.rs | server.rs (state) | Low -- sqlx already in deps |
-| Request logging | ~150 | storage/logger.rs | handlers.rs | Low -- straightforward insert |
-| Token extraction (non-streaming) | ~50 | None (in handlers) | handlers.rs | Low -- parse usage object |
-| Cost calculation fix | ~30 | None | selector.rs, handlers.rs | Low -- arithmetic |
-| Retry with backoff | ~120 | proxy/retry.rs or in handlers | handlers.rs | Medium -- async retry loop |
-| Provider fallback | ~80 | None (modify selector + handler) | selector.rs, handlers.rs | Medium -- need ordered provider list |
-| Stream error handling | ~80 | None (in handlers) | handlers.rs | Medium -- error detection in stream |
-| Cost query endpoint | ~100 | New handler | handlers.rs, server.rs | Low -- SQL aggregation |
-| Response headers | ~30 | None | handlers.rs | Low -- add headers |
-| Health enhancement | ~60 | None | handlers.rs, state | Low -- query log table |
+| SecretString migration | ~60 | None | config.rs, selector.rs, handlers.rs | Low -- type change + expose_secret() at use sites |
+| Env var expansion | ~80 | None (or config/expand.rs) | config.rs (parse pipeline) | Medium -- regex/parser for ${VAR} syntax, error handling |
+| Convention-based lookup | ~40 | None | config.rs (post-parse step) | Low -- env::var() with name transform |
+| File permission check | ~25 | None | config.rs (from_file method) | Low -- stat() + mode check |
+| Output surface audit | ~30 | None | handlers.rs, main.rs | Low -- verification + minor adjustments |
+| Startup key source reporting | ~30 | None | server.rs or main.rs | Low -- log statements |
+| Check command key validation | ~40 | None | main.rs | Low -- extend existing path |
+| Key masking display | ~20 | None | main.rs, optionally handlers.rs | Low -- string truncation |
 
-**Total estimated new/changed code:** ~800 lines
+**Total estimated new/changed code:** ~325 lines
+
+---
+
+## Current Leak Surface Inventory
+
+Specific locations in the codebase where secrets could leak, informing the audit scope:
+
+| Surface | File | Current State | Risk | Fix |
+|---------|------|--------------|------|-----|
+| `#[derive(Debug)]` on `ProviderConfig` | config.rs:52 | Exposes `api_key` field in any debug log | HIGH | SecretString |
+| `#[derive(Debug)]` on `SelectedProvider` | selector.rs:9 | Exposes `api_key` field | HIGH | SecretString |
+| `#[derive(Debug)]` on `Router` | selector.rs:33 | Contains `Vec<ProviderConfig>`, cascades Debug | HIGH | SecretString fixes it transitively |
+| `tracing::info!(url = %provider.url, ...)` | handlers.rs:577-578 | Logs provider URL (not the key itself) | LOW | URL is not a secret, but verify URL never contains key as query param |
+| `format!("Bearer {}", api_key)` | handlers.rs:500 | Constructs auth header -- correct behavior, not logged | NONE | No change needed |
+| Provider error body forwarded | handlers.rs:518-528 | Provider error response echoed in logs and to client | MEDIUM | Scrub any auth-related content from error bodies |
+| `/providers` JSON response | handlers.rs:766-779 | Deliberately omits api_key -- safe | NONE | Verify after type change |
+| `providers` CLI command | main.rs:120-133 | Prints name and URL, not key -- safe | LOW | Add "has key: yes/no" indicator |
+| `Config` Debug derive | config.rs:7 | Root struct, cascades to all children including keys | HIGH | SecretString on leaf field fixes cascade |
 
 ---
 
 ## Sources and Confidence Notes
 
-All findings are based on training data knowledge of these products as of early 2025. Web verification was attempted but unavailable.
-
-- **LiteLLM**: Well-known open-source project (github.com/BerriAI/litellm). Features documented at docs.litellm.ai. HIGH confidence on core features (fallback, retry, routing, cost tracking) as these have been stable for 1+ years.
-- **Portkey**: Commercial AI gateway (portkey.ai). MEDIUM confidence -- feature set was expanding rapidly; specifics may have changed.
-- **Helicone**: Observability-focused SaaS (helicone.ai). HIGH confidence on logging and cost tracking features as these are the core product.
-- **BricksLLM**: Open-source proxy (github.com/bricks-cloud/BricksLLM). MEDIUM confidence -- smaller project, less certain about current feature state. Note: project may have been renamed or reorganized since training data.
-- **Feature categorization (table stakes vs differentiators)**: HIGH confidence. The convergence across products is clear -- fallback, retry, logging, and cost tracking are universal. The distinctions are based on consistent patterns across all four products.
+- **secrecy crate** ([docs.rs/secrecy](https://docs.rs/secrecy/latest/secrecy/), [crates.io](https://crates.io/crates/secrecy)): HIGH confidence. Well-maintained, widely used in Rust ecosystem. Provides SecretString with Debug redaction and zeroize-on-drop. Supports serde Deserialize via feature flag.
+- **LiteLLM env var expansion** ([docs.litellm.ai/docs/proxy/configs](https://docs.litellm.ai/docs/proxy/configs)): HIGH confidence. Uses `os.environ/VAR` syntax in YAML config. Verified pattern of config-level env var injection in LLM proxies.
+- **Docker Compose variable interpolation** ([Docker Docs](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/)): HIGH confidence. Uses `${VAR}` and `${VAR:-default}` syntax. Industry-standard convention.
+- **OWASP Secrets Management Cheat Sheet** ([cheatsheetseries.owasp.org](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)): HIGH confidence. Authoritative guidance on secrets handling.
+- **File permission conventions** (SSH, SSSD, GPG): HIGH confidence. Well-established Unix convention of refusing or warning when secret files are world-readable.
+- **redaction library** ([github.com/sformisano/redaction](https://github.com/sformisano/redaction)): MEDIUM confidence. Newer crate, less battle-tested than secrecy. Noted as alternative but secrecy is the established choice.
+- **Convention-based env var naming**: MEDIUM confidence. Pattern derived from AWS CLI (`AWS_ACCESS_KEY_ID`), Terraform provider env vars, and general cloud SDK conventions. The specific `ARBSTR_<NAME>_API_KEY` convention is arbstr-specific but follows established patterns.
