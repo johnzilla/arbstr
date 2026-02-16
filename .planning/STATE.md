@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-15)
 ## Current Position
 
 Phase: 8 of 10 (Stream Request Foundation)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-02-15 -- Roadmap created for v1.2
+Plan: 1 of 1 in current phase (COMPLETE)
+Status: Phase 8 complete, ready for Phase 9
+Last activity: 2026-02-16 -- Executed 08-01 Stream Request Foundation
 
-Progress: [##############------] 14/? plans (v1: 10, v1.1: 4, v1.2: 0)
+Progress: [###############-----] 15/? plans (v1: 10, v1.1: 4, v1.2: 1)
 
 ## Performance Metrics
 
@@ -30,6 +30,10 @@ Progress: [##############------] 14/? plans (v1: 10, v1.1: 4, v1.2: 0)
 - Phase 6 Plan 2: 2 min (2 tasks, 2 files)
 - Phase 7 Plan 1: 3 min (2 tasks, 3 files)
 
+**v1.2 Velocity:**
+- Total plans completed: 1
+- Phase 8 Plan 1: 3 min (2 tasks, 5 files)
+
 ## Accumulated Context
 
 ### Decisions
@@ -37,6 +41,11 @@ Progress: [##############------] 14/? plans (v1: 10, v1.1: 4, v1.2: 0)
 Decisions are logged in PROJECT.md Key Decisions table.
 See .planning/milestones/v1-ROADMAP.md for v1 decision history.
 See .planning/milestones/v1.1-ROADMAP.md for v1.1 decision history.
+
+**v1.2 decisions:**
+- Phase 8: Merge semantics for stream_options (preserve client values, only add include_usage when missing)
+- Phase 8: Inject stream_options at send time via clone-and-mutate, not at parse time
+- Phase 8: update_usage writes tokens/cost only; latency stays as TTFB from INSERT
 
 ### Pending Todos
 
@@ -49,6 +58,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-15
-Stopped at: Roadmap created for v1.2, ready to plan Phase 8
-Resume file: .planning/ROADMAP.md
+Last session: 2026-02-16
+Stopped at: Completed 08-01-PLAN.md (Phase 8 complete)
+Resume file: .planning/phases/08-stream-request-foundation/08-01-SUMMARY.md
