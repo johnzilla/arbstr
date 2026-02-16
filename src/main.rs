@@ -79,7 +79,9 @@ async fn main() -> anyhow::Result<()> {
                 let result = Config::from_file_with_env(&config_path)?;
 
                 // RED-01: Warn if config file permissions are too open
-                if let Some((path, mode)) = arbstr::config::check_file_permissions(std::path::Path::new(&config_path)) {
+                if let Some((path, mode)) =
+                    arbstr::config::check_file_permissions(std::path::Path::new(&config_path))
+                {
                     tracing::warn!(
                         file = %path,
                         permissions = format_args!("{:04o}", mode),
@@ -132,51 +134,55 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Check {
             config: config_path,
-        } => match Config::from_file_with_env(&config_path) {
-            Ok((config, key_sources)) => {
-                println!("Configuration is valid!");
-                println!("  Listen: {}", config.server.listen);
-                println!("  Providers: {}", config.providers.len());
-                println!("  Policy rules: {}", config.policies.rules.len());
+        } => {
+            match Config::from_file_with_env(&config_path) {
+                Ok((config, key_sources)) => {
+                    println!("Configuration is valid!");
+                    println!("  Listen: {}", config.server.listen);
+                    println!("  Providers: {}", config.providers.len());
+                    println!("  Policy rules: {}", config.policies.rules.len());
 
-                // RED-01: Check config file permissions
-                if let Some((path, mode)) = arbstr::config::check_file_permissions(std::path::Path::new(&config_path)) {
+                    // RED-01: Check config file permissions
+                    if let Some((path, mode)) =
+                        arbstr::config::check_file_permissions(std::path::Path::new(&config_path))
+                    {
+                        println!();
+                        println!("  WARNING: Config file '{}' has permissions {:04o} (more open than 0600)", path, mode);
+                        println!("  Consider: chmod 600 {}", path);
+                    }
+
                     println!();
-                    println!("  WARNING: Config file '{}' has permissions {:04o} (more open than 0600)", path, mode);
-                    println!("  Consider: chmod 600 {}", path);
-                }
-
-                println!();
-                println!("Provider key status:");
-                for (name, source) in &key_sources {
-                    match source {
-                        KeySource::Literal => {
-                            let conv_var = arbstr::config::convention_env_var_name(name);
-                            println!("  {}: key from config-literal", name);
-                            println!("    WARNING: Plaintext key. Consider: set {} or use api_key = \"${{{}}}\"", conv_var, conv_var);
-                        }
-                        KeySource::EnvExpanded => {
-                            println!("  {}: key from env-expanded", name)
-                        }
-                        KeySource::Convention(var) => {
-                            println!("  {}: key from convention ({})", name, var)
-                        }
-                        KeySource::None => {
-                            let expected = arbstr::config::convention_env_var_name(name);
-                            println!(
-                                "  {}: no key (set {} or add api_key to config)",
-                                name, expected
-                            );
+                    println!("Provider key status:");
+                    for (name, source) in &key_sources {
+                        match source {
+                            KeySource::Literal => {
+                                let conv_var = arbstr::config::convention_env_var_name(name);
+                                println!("  {}: key from config-literal", name);
+                                println!("    WARNING: Plaintext key. Consider: set {} or use api_key = \"${{{}}}\"", conv_var, conv_var);
+                            }
+                            KeySource::EnvExpanded => {
+                                println!("  {}: key from env-expanded", name)
+                            }
+                            KeySource::Convention(var) => {
+                                println!("  {}: key from convention ({})", name, var)
+                            }
+                            KeySource::None => {
+                                let expected = arbstr::config::convention_env_var_name(name);
+                                println!(
+                                    "  {}: no key (set {} or add api_key to config)",
+                                    name, expected
+                                );
+                            }
                         }
                     }
+                    Ok(())
                 }
-                Ok(())
+                Err(e) => {
+                    eprintln!("Configuration error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                eprintln!("Configuration error: {}", e);
-                std::process::exit(1);
-            }
-        },
+        }
 
         Commands::Providers {
             config: config_path,

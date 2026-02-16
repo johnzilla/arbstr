@@ -108,7 +108,15 @@ pub fn spawn_usage_update(
 ) {
     let pool = pool.clone();
     tokio::spawn(async move {
-        match update_usage(&pool, &correlation_id, input_tokens, output_tokens, cost_sats).await {
+        match update_usage(
+            &pool,
+            &correlation_id,
+            input_tokens,
+            output_tokens,
+            cost_sats,
+        )
+        .await
+        {
             Ok(0) => {
                 tracing::warn!(
                     correlation_id = %correlation_id,
@@ -302,7 +310,10 @@ mod tests {
         let rows = update_usage(&pool, "nonexistent-id", Some(100), Some(200), Some(10.0))
             .await
             .unwrap();
-        assert_eq!(rows, 0, "Should affect zero rows for non-existent correlation_id");
+        assert_eq!(
+            rows, 0,
+            "Should affect zero rows for non-existent correlation_id"
+        );
     }
 
     #[tokio::test]
@@ -312,9 +323,14 @@ mod tests {
         insert_test_row(&pool, cid).await;
 
         let rows = update_stream_completion(
-            &pool, cid,
-            Some(150), Some(300), Some(42.5),
-            2500, true, None,
+            &pool,
+            cid,
+            Some(150),
+            Some(300),
+            Some(42.5),
+            2500,
+            true,
+            None,
         )
         .await
         .unwrap();
@@ -345,9 +361,14 @@ mod tests {
         insert_test_row(&pool, cid).await;
 
         let rows = update_stream_completion(
-            &pool, cid,
-            None, None, None,
-            1800, true, Some("client_disconnected"),
+            &pool,
+            cid,
+            None,
+            None,
+            None,
+            1800,
+            true,
+            Some("client_disconnected"),
         )
         .await
         .unwrap();

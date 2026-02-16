@@ -36,7 +36,11 @@ output_rate = 30
     fs::write(config_path, toml_content).expect("Failed to write temp config");
 
     let result = Config::from_file_with_env(config_path);
-    assert!(result.is_ok(), "from_file_with_env should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "from_file_with_env should succeed: {:?}",
+        result.err()
+    );
 
     let (config, key_sources) = result.unwrap();
 
@@ -93,7 +97,10 @@ output_rate = 30
     fs::write(config_path, toml_content).expect("Failed to write temp config");
 
     let result = Config::from_file_with_env(config_path);
-    assert!(result.is_err(), "from_file_with_env should fail for missing env var");
+    assert!(
+        result.is_err(),
+        "from_file_with_env should fail for missing env var"
+    );
 
     let err = result.unwrap_err().to_string();
     assert!(
@@ -136,7 +143,11 @@ output_rate = 30
     fs::write(config_path, toml_content).expect("Failed to write temp config");
 
     let result = Config::from_file_with_env(config_path);
-    assert!(result.is_ok(), "from_file_with_env should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "from_file_with_env should succeed: {:?}",
+        result.err()
+    );
 
     let (config, key_sources) = result.unwrap();
 
@@ -195,7 +206,11 @@ output_rate = 30
     fs::write(config_path, toml_content).expect("Failed to write temp config");
 
     let result = Config::from_file_with_env(config_path);
-    assert!(result.is_ok(), "from_file_with_env should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "from_file_with_env should succeed: {:?}",
+        result.err()
+    );
 
     let (config, key_sources) = result.unwrap();
 
@@ -243,7 +258,11 @@ output_rate = 30
     fs::write(config_path, toml_content).expect("Failed to write temp config");
 
     let result = Config::from_file_with_env(config_path);
-    assert!(result.is_ok(), "from_file_with_env should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "from_file_with_env should succeed: {:?}",
+        result.err()
+    );
 
     let (config, key_sources) = result.unwrap();
 

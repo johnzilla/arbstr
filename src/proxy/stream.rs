@@ -194,10 +194,7 @@ impl SseObserver {
         }
 
         // Non-data SSE fields
-        if line.starts_with("event:")
-            || line.starts_with("id:")
-            || line.starts_with("retry:")
-        {
+        if line.starts_with("event:") || line.starts_with("id:") || line.starts_with("retry:") {
             tracing::trace!(field = line, "SSE non-data field");
             return;
         }
@@ -248,9 +245,7 @@ impl SseObserver {
         if let Some(usage) = parsed.get("usage").filter(|u| !u.is_null()) {
             if let (Some(prompt), Some(completion)) = (
                 usage.get("prompt_tokens").and_then(|v| v.as_u64()),
-                usage
-                    .get("completion_tokens")
-                    .and_then(|v| v.as_u64()),
+                usage.get("completion_tokens").and_then(|v| v.as_u64()),
             ) {
                 self.usage = Some(StreamUsage {
                     prompt_tokens: prompt as u32,
@@ -616,9 +611,7 @@ mod tests {
     // ---- wrap_sse_stream tests (Plan 2) ----
 
     /// Helper: build SSE byte chunks as a stream of `Result<Bytes, reqwest::Error>`.
-    fn mock_sse_stream(
-        chunks: Vec<&[u8]>,
-    ) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
+    fn mock_sse_stream(chunks: Vec<&[u8]>) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
         futures::stream::iter(
             chunks
                 .into_iter()
@@ -649,7 +642,9 @@ mod tests {
 
         // StreamResult is available in the handle (written by Drop)
         let guard = handle.lock().unwrap();
-        let result = guard.as_ref().expect("result should be Some after stream consumed");
+        let result = guard
+            .as_ref()
+            .expect("result should be Some after stream consumed");
         assert!(result.done_received);
         assert_eq!(
             result.usage,
@@ -678,7 +673,9 @@ mod tests {
             .await;
 
         let guard = handle.lock().unwrap();
-        let result = guard.as_ref().expect("result should be Some after stream consumed");
+        let result = guard
+            .as_ref()
+            .expect("result should be Some after stream consumed");
         assert!(!result.done_received);
         assert!(result.usage.is_none());
         assert!(result.finish_reason.is_none());

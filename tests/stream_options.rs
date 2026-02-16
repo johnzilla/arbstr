@@ -108,7 +108,10 @@ fn stream_options_roundtrip_json() {
 
     let request: ChatCompletionRequest = serde_json::from_str(json_input).unwrap();
     assert!(request.stream_options.is_some());
-    assert_eq!(request.stream_options.as_ref().unwrap().include_usage, Some(true));
+    assert_eq!(
+        request.stream_options.as_ref().unwrap().include_usage,
+        Some(true)
+    );
 
     // Re-serialize and verify field is present
     let json_output = serde_json::to_string(&request).unwrap();
