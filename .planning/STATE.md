@@ -5,16 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Planning next milestone
+**Current focus:** v1.3 Cost Querying API
 
 ## Current Position
 
-Phase: 10 of 10 (Streaming Observability Integration) -- COMPLETE
-Plan: 1 of 1 in current phase -- COMPLETE
-Status: Phase 10 complete, v1.2 milestone complete
-Last activity: 2026-02-16 -- Executed Phase 10 Plan 1 (streaming observability integration)
-
-Progress: [####################] 18/18 plans (v1: 10, v1.1: 4, v1.2: 4)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-16 — Milestone v1.3 started
 
 ## Performance Metrics
 

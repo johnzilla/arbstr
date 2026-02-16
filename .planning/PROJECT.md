@@ -8,9 +8,14 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: None (planning next)
+## Current Milestone: v1.3 Cost Querying API
 
-All three milestones shipped (v1, v1.1, v1.2). Ready for next milestone planning.
+**Goal:** Expose the cost and performance data already collected in SQLite through read-only API endpoints, making arbstr's value proposition fully queryable.
+
+**Target features:**
+- Aggregate stats endpoint (total spend, request count, token counts, latency, success rate)
+- Per-model breakdown endpoint (same stats grouped by model)
+- Time range filtering (lifetime totals and arbitrary since/until windows)
 
 ## Requirements
 
@@ -55,13 +60,18 @@ All three milestones shipped (v1, v1.1, v1.2). Ready for next milestone planning
 
 ### Active
 
-- [ ] Stream error handling (detect mid-stream failures, signal client cleanly)
-- [ ] Basic cost query endpoint (total spend, per-model breakdown)
-- [ ] Per-model and per-policy cost breakdown queries
-- [ ] Enhanced /health endpoint with per-provider status and success rates
-- [ ] Learned token ratios per policy (predict cost before seeing response)
-- [ ] Circuit breaker per provider (stop sending after N consecutive failures)
-- [ ] Per-provider timeout configuration (replace global 30s)
+- [ ] Aggregate stats endpoint (total spend, request count, tokens, latency, success rate)
+- [ ] Per-model stats breakdown endpoint
+- [ ] Time range filtering on stats endpoints (since/until query params)
+
+### Future
+
+- Stream error handling (detect mid-stream failures, signal client cleanly)
+- Per-policy cost breakdown queries
+- Enhanced /health endpoint with per-provider status and success rates
+- Learned token ratios per policy (predict cost before seeing response)
+- Circuit breaker per provider (stop sending after N consecutive failures)
+- Per-provider timeout configuration (replace global 30s)
 
 ### Out of Scope
 
@@ -128,4 +138,4 @@ All three milestones shipped (v1, v1.1, v1.2). Ready for next milestone planning
 | Continue upstream on client disconnect | Extract usage for DB even when client gone | ✓ Good — complete observability regardless of client |
 
 ---
-*Last updated: 2026-02-16 after v1.2 milestone complete*
+*Last updated: 2026-02-16 after v1.3 milestone started*
