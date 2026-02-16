@@ -57,20 +57,20 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STAT-01 | — | Pending |
-| STAT-02 | — | Pending |
-| FILT-01 | — | Pending |
-| FILT-02 | — | Pending |
-| FILT-03 | — | Pending |
-| LOG-01 | — | Pending |
-| LOG-02 | — | Pending |
-| LOG-03 | — | Pending |
+| STAT-01 | Phase 11 | Pending |
+| STAT-02 | Phase 11 | Pending |
+| FILT-01 | Phase 11 | Pending |
+| FILT-02 | Phase 11 | Pending |
+| FILT-03 | Phase 11 | Pending |
+| LOG-01 | Phase 12 | Pending |
+| LOG-02 | Phase 12 | Pending |
+| LOG-03 | Phase 12 | Pending |
 
 **Coverage:**
 - v1.3 requirements: 8 total
-- Mapped to phases: 0
-- Unmapped: 8
+- Mapped to phases: 8
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-16*
-*Last updated: 2026-02-16 after initial definition*
+*Last updated: 2026-02-16 after roadmap creation*

@@ -5,14 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** v1.3 Cost Querying API
+**Current focus:** v1.3 Cost Querying API -- Phase 11: Aggregate Stats and Filtering
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-02-16 — Milestone v1.3 started
+Phase: 11 of 12 (Aggregate Stats and Filtering)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-02-16 -- Roadmap created for v1.3
+
+Progress: [====================..] 83% (10/12 phases complete)
 
 ## Performance Metrics
 
@@ -40,29 +42,14 @@ Last activity: 2026-02-16 — Milestone v1.3 started
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
-See .planning/milestones/v1-ROADMAP.md for v1 decision history.
-See .planning/milestones/v1.1-ROADMAP.md for v1.1 decision history.
+See .planning/milestones/ for per-milestone decision history.
 
-**v1.2 decisions:**
-- Phase 8: Merge semantics for stream_options (preserve client values, only add include_usage when missing)
-- Phase 8: Inject stream_options at send time via clone-and-mutate, not at parse time
-- Phase 8: update_usage writes tokens/cost only; latency stays as TTFB from INSERT
-- Phase 9: Extract usage + finish_reason, not model/other metadata
-- Phase 9: Strict OpenAI SSE format only, no fallback parsing
-- Phase 9: No data returned without [DONE] — unreliable streams yield empty result
-- Phase 9: Panic isolation — extraction bugs must never break client stream
-- Phase 9-01: Vec<u8> buffer (not String) for safe cross-chunk UTF-8 handling
-- Phase 9-01: 64KB buffer cap with full drain on overflow to prevent OOM
-- Phase 9-01: into_result returns empty when [DONE] not received
-- Phase 9-02: StreamResultHandle as Arc<Mutex<Option<StreamResult>>> for cross-thread result delivery
-- Phase 9-02: Drop impl writes result to handle, ensuring availability on early stream drop
-- Phase 9-02: catch_unwind(AssertUnwindSafe(...)) wraps observer.process_chunk for panic isolation
-- Phase 9-02: Poisoned mutex recovery via unwrap_or_else(|e| e.into_inner())
-- Phase 10: Channel buffer size 32 for mpsc stream relay
-- Phase 10: stream_start captured before send() for full round-trip timing
-- Phase 10: Client disconnect detected via channel send error, upstream consumption continues
-- Phase 10: Trailing SSE event sent only when client connected; DB UPDATE fires always
-- Phase 10: Completion status: success=true+[DONE], client_disconnected, or stream_incomplete
+**v1.3 research decisions:**
+- Use TOTAL() not SUM() for nullable cost columns (returns 0.0 instead of NULL)
+- Separate read-only SQLite pool for analytics (prevents proxy write starvation)
+- Normalize timestamps through chrono parse_from_rfc3339 before SQL
+- Whitelist column names for sort params via enum (prevents SQL injection)
+- Zero new dependencies -- existing stack covers everything
 
 ### Pending Todos
 
@@ -70,11 +57,10 @@ None.
 
 ### Blockers/Concerns
 
-- Routstr provider `stream_options` support unknown -- safe degradation (NULL usage) prevents regression
-- Phase 8 and 9 are independent -- can execute in either order before Phase 10
+- Routstr provider stream_options support unknown -- safe degradation (NULL usage) prevents regression
 
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 10-01-PLAN.md (streaming observability integration) -- Phase 10 complete, v1.2 milestone complete
-Resume file: N/A -- all planned phases complete
+Stopped at: Created v1.3 roadmap (2 phases, 8 requirements mapped)
+Resume file: None -- ready for phase 11 planning
