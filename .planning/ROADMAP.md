@@ -72,11 +72,11 @@ See: .planning/milestones/v1.3-ROADMAP.md for full details.
   3. Successful request resets the failure counter to zero (non-consecutive failures never trip)
   4. After 30 seconds in Open state, circuit transitions to Half-Open and allows exactly one probe request
   5. Probe success closes the circuit; probe failure reopens it with a fresh 30s timer
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 13-01: TBD
-- [ ] 13-02: TBD
+- [ ] 13-01-PLAN.md -- Core circuit breaker state machine (TDD: types, transitions, unit tests)
+- [ ] 13-02-PLAN.md -- Registry, queue-and-wait, ProbeGuard, AppState wiring
 
 ### Phase 14: Routing Integration
 **Goal**: Router uses circuit state to skip unhealthy providers, with fail-fast when no alternatives exist
