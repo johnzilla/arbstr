@@ -74,10 +74,11 @@ Plans:
   1. User can GET a paginated list of individual request records with page number, per-page size, and total count in the response
   2. User can filter request logs by model, provider, success status, or streaming flag via query parameters
   3. User can sort request logs by timestamp, cost, or latency in ascending or descending order via query parameters
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 12-01: TBD
+- [ ] 12-01-PLAN.md -- Storage layer, handler, and route wiring for /v1/requests endpoint
+- [ ] 12-02-PLAN.md -- Integration tests for /v1/requests endpoint
 
 ## Progress
 
@@ -97,4 +98,4 @@ Phases execute in numeric order: 11 -> 12
 | 9. SSE Stream Interception | v1.2 | 2/2 | Complete | 2026-02-16 |
 | 10. Streaming Observability Integration | v1.2 | 1/1 | Complete | 2026-02-16 |
 | 11. Aggregate Stats and Filtering | v1.3 | Complete    | 2026-02-16 | - |
-| 12. Request Log Listing | v1.3 | 0/? | Not started | - |
+| 12. Request Log Listing | v1.3 | 0/2 | Not started | - |
