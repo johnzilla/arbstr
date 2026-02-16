@@ -161,16 +161,173 @@ pub async fn chat_completions(
     );
 
     if is_streaming {
-        // Streaming path: no retry, fail fast (existing behavior)
-        let result = execute_request(
-            &state,
-            &request,
+        // Streaming path: select candidates and filter through circuit breaker
+
+        // Get ordered candidate list
+        let candidates = match state.router.select_candidates(
+            &request.model,
             policy_name.as_deref(),
             user_prompt,
-            &correlation_id,
-            true,
-        )
-        .await;
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                let latency_ms = start.elapsed().as_millis() as i64;
+                let (status_code, message) = match &e {
+                    Error::NoProviders { .. } => (400u16, e.to_string()),
+                    Error::NoPolicyMatch => (400, e.to_string()),
+                    Error::BadRequest(_) => (400, e.to_string()),
+                    _ => (500, e.to_string()),
+                };
+
+                if let Some(pool) = &state.db {
+                    spawn_log_write(
+                        pool,
+                        RequestLog {
+                            correlation_id: correlation_id.clone(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            model: model.clone(),
+                            provider: None,
+                            policy: policy_name.clone(),
+                            streaming: true,
+                            input_tokens: None,
+                            output_tokens: None,
+                            cost_sats: None,
+                            provider_cost_sats: None,
+                            latency_ms,
+                            success: false,
+                            error_status: Some(status_code),
+                            error_message: Some(message),
+                        },
+                    );
+                }
+
+                let mut error_response = e.into_response();
+                attach_arbstr_headers(
+                    &mut error_response,
+                    &correlation_id,
+                    latency_ms,
+                    None,
+                    None,
+                    true,
+                );
+                return Ok(error_response);
+            }
+        };
+
+        // Filter through circuit breaker (RTG-01)
+        let mut filtered_candidates = Vec::new();
+        let mut probe_provider: Option<String> = None;
+        for candidate in &candidates {
+            match state.circuit_breakers.acquire_permit(&candidate.name).await {
+                Ok(PermitType::Normal) => {
+                    filtered_candidates.push(candidate.clone());
+                }
+                Ok(PermitType::Probe) => {
+                    probe_provider = Some(candidate.name.clone());
+                    // Probe candidate goes first -- it IS the probe request
+                    filtered_candidates.insert(0, candidate.clone());
+                }
+                Err(open_err) => {
+                    tracing::debug!(
+                        provider = %candidate.name,
+                        reason = %open_err.reason,
+                        "Skipping provider: circuit open (streaming)"
+                    );
+                }
+            }
+        }
+
+        // Fail-fast if all circuits are open (RTG-02)
+        if filtered_candidates.is_empty() {
+            let latency_ms = start.elapsed().as_millis() as i64;
+
+            if let Some(pool) = &state.db {
+                spawn_log_write(
+                    pool,
+                    RequestLog {
+                        correlation_id: correlation_id.clone(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        model: model.clone(),
+                        provider: None,
+                        policy: policy_name.clone(),
+                        streaming: true,
+                        input_tokens: None,
+                        output_tokens: None,
+                        cost_sats: None,
+                        provider_cost_sats: None,
+                        latency_ms,
+                        success: false,
+                        error_status: Some(503),
+                        error_message: Some(format!(
+                            "All providers have open circuits for model '{}'",
+                            model
+                        )),
+                    },
+                );
+            }
+
+            let circuit_error = Error::CircuitOpen {
+                model: model.clone(),
+            };
+            let mut error_response = circuit_error.into_response();
+            attach_arbstr_headers(
+                &mut error_response,
+                &correlation_id,
+                latency_ms,
+                None,
+                None,
+                true,
+            );
+            return Ok(error_response);
+        }
+
+        // Streaming path uses the first (cheapest) available candidate, no retry
+        let provider = &filtered_candidates[0];
+
+        tracing::info!(
+            provider = %provider.name,
+            url = %provider.url,
+            output_rate = %provider.output_rate,
+            "Selected provider (streaming)"
+        );
+
+        // Create ProbeGuard before send_to_provider (RTG-04)
+        let probe_guard: Option<ProbeGuard<'_>> = probe_provider
+            .as_ref()
+            .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
+
+        let result = send_to_provider(&state, &request, provider, &correlation_id, true).await;
+
+        // Record circuit breaker outcome (RTG-04)
+        match &result {
+            Ok(outcome) => {
+                state.circuit_breakers.record_success(&outcome.provider_name);
+                if let Some(guard) = probe_guard {
+                    if outcome.provider_name == probe_provider.as_deref().unwrap_or("") {
+                        guard.success();
+                    } else {
+                        guard.failure("not_reached", "different provider succeeded");
+                    }
+                }
+            }
+            Err(outcome_err) => {
+                if is_circuit_failure(outcome_err.status_code) {
+                    state.circuit_breakers.record_failure(
+                        outcome_err.provider_name.as_deref().unwrap_or("unknown"),
+                        "5xx",
+                        &format!("HTTP {}", outcome_err.status_code),
+                    );
+                }
+                if let Some(guard) = probe_guard {
+                    if is_circuit_failure(outcome_err.status_code) {
+                        guard.failure("5xx", &format!("HTTP {}", outcome_err.status_code));
+                    } else {
+                        // Non-5xx error (e.g., 4xx) -- don't trip circuit, but probe didn't succeed
+                        guard.failure("non_5xx", &format!("HTTP {}", outcome_err.status_code));
+                    }
+                }
+            }
+        }
 
         let latency_ms = start.elapsed().as_millis() as i64;
 
@@ -606,10 +763,10 @@ pub async fn chat_completions(
 
 /// Send a request to a specific provider and handle the response.
 ///
-/// This is the core provider-calling logic extracted for reuse by both
-/// the streaming path (via `execute_request`) and the retry path.
-/// Adds an `Idempotency-Key` header with the correlation ID to allow
-/// providers to deduplicate retried requests.
+/// This is the core provider-calling logic used by both the streaming
+/// and non-streaming (retry) paths. Adds an `Idempotency-Key` header
+/// with the correlation ID to allow providers to deduplicate retried
+/// requests.
 async fn send_to_provider(
     state: &AppState,
     request: &ChatCompletionRequest,
@@ -692,49 +849,6 @@ async fn send_to_provider(
     } else {
         handle_non_streaming_response(upstream_response, provider).await
     }
-}
-
-/// Execute the core request logic (provider selection, forwarding, response handling).
-///
-/// Returns Ok(RequestOutcome) on success or Err(RequestError) on any failure.
-/// This separation allows the caller to log both outcomes before returning.
-/// Used by the streaming path (no retry). The non-streaming path uses
-/// `retry_with_fallback` + `send_to_provider` directly.
-async fn execute_request(
-    state: &AppState,
-    request: &ChatCompletionRequest,
-    policy_name: Option<&str>,
-    user_prompt: Option<&str>,
-    correlation_id: &str,
-    is_streaming: bool,
-) -> std::result::Result<RequestOutcome, RequestError> {
-    // Select provider
-    let provider = state
-        .router
-        .select(&request.model, policy_name, user_prompt)
-        .map_err(|e| {
-            let (status_code, message) = match &e {
-                Error::NoProviders { .. } => (400u16, e.to_string()),
-                Error::NoPolicyMatch => (400, e.to_string()),
-                Error::BadRequest(_) => (400, e.to_string()),
-                _ => (500, e.to_string()),
-            };
-            RequestError {
-                error: e,
-                provider_name: None,
-                status_code,
-                message,
-            }
-        })?;
-
-    tracing::info!(
-        provider = %provider.name,
-        url = %provider.url,
-        output_rate = %provider.output_rate,
-        "Selected provider"
-    );
-
-    send_to_provider(state, request, &provider, correlation_id, is_streaming).await
 }
 
 /// Handle a non-streaming provider response.
