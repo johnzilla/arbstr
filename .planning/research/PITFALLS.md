@@ -1,387 +1,474 @@
-# Domain Pitfalls: Secrets Handling in Existing Rust Proxy
+# Domain Pitfalls: SSE Stream Interception and Token Extraction
 
-**Domain:** Adding secrets handling to an existing Rust/Tokio/axum application
+**Domain:** Adding SSE stream interception to an existing Rust/Tokio/axum pass-through proxy
 **Researched:** 2026-02-15
-**Scope:** Env var expansion, key redaction across Debug/tracing/endpoints/errors
-**Confidence:** HIGH (based on direct codebase analysis + verified library documentation)
+**Scope:** Stream parsing, buffering, provider format differences, database update patterns, memory/latency concerns
+**Confidence:** HIGH (based on direct codebase analysis + verified SSE specification + provider documentation + community reports)
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that expose secrets in production or require architectural rework to fix.
+Mistakes that break existing streaming, lose data, or require architectural rework.
 
 ---
 
-### Pitfall 1: `#[derive(Debug)]` on Config Structs Exposes API Keys in Logs
+### Pitfall 1: SSE Data Lines Split Across TCP Chunk Boundaries
 
-**What goes wrong:** Every config struct in this codebase has `#[derive(Debug, Clone, Deserialize)]`. The `ProviderConfig` struct (config.rs:52) contains `api_key: Option<String>`. Any code path that formats a `ProviderConfig` with `{:?}` -- including panics, `tracing::debug!`, `unwrap()` failures, and `assert!` messages in tests -- will print the full API key in plaintext. The `Config`, `Router`, `SelectedProvider`, and `AppState` structs all transitively contain `api_key` through `ProviderConfig`, so `Debug`-formatting any of them leaks keys.
+**What goes wrong:** The current `handle_streaming_response` (handlers.rs:665-729) receives bytes from `upstream_response.bytes_stream()` and processes each chunk independently with `text.lines()`. This assumes that each `Bytes` chunk from reqwest contains complete SSE lines. In reality, TCP delivers data in arbitrarily-sized chunks. A single SSE event like `data: {"choices":[{"delta":{"content":"hello"}}]}\n\n` can be split across two or more `Bytes` chunks at any byte boundary, including:
 
-**Why it happens:** `#[derive(Debug)]` is a Rust reflex. It is on every struct in the codebase. Changing `api_key` from `String` to `SecretString` (from the `secrecy` crate) would break compilation everywhere `Debug` is derived, because `SecretString`'s `Debug` impl prints `[REDACTED]`. But if you only wrap the field without updating all the structs that clone/move/access it, you get a partially protected system that still leaks through transitive `Debug` on parent structs.
+- Mid-line: chunk 1 = `data: {"choices":[{"del`, chunk 2 = `ta":{"content":"hello"}}]}\n\n`
+- Mid-prefix: chunk 1 = `dat`, chunk 2 = `a: {"choices":...}\n\n`
+- Mid-JSON: chunk 1 = `data: {"usage":{"prompt_tokens":100,"completion_to`, chunk 2 = `kens":200}}\n\n`
 
-**Specific leak surfaces in this codebase:**
-- `ProviderConfig` has `#[derive(Debug)]` (config.rs:52)
-- `SelectedProvider` has `#[derive(Debug, Clone)]` and `api_key: Option<String>` (selector.rs:9-17)
-- `Router` has `#[derive(Debug, Clone)]` and stores `Vec<ProviderConfig>` (selector.rs:33-38)
-- `Config` has `#[derive(Debug, Clone)]` (config.rs:7)
-- `AppState` stores `Arc<Config>` (server.rs:29) -- if anyone `Debug`-formats the state, all keys leak
+The current code calls `text.lines()` on each chunk, which produces partial lines that fail `strip_prefix("data: ")` or produce invalid JSON that `serde_json::from_str` silently rejects. The usage data from the final chunk -- the entire purpose of this feature -- is the most likely to be split because it arrives alongside `data: [DONE]` and the TCP FIN.
+
+**Why it happens:** `reqwest::Response::bytes_stream()` yields `Bytes` chunks corresponding to HTTP chunked transfer encoding boundaries or TCP segment boundaries, NOT SSE event boundaries. Developers test with localhost where chunks tend to be large and aligned, then discover splits in production over real networks with varying MTU, Nagle's algorithm, and intermediary proxies.
 
 **Consequences:**
-- A single `tracing::debug!(config = ?config, ...)` or `dbg!(&config)` dumps all API keys
-- Panic backtraces that include config values expose keys in crash logs
-- Test assertion failures that print the struct expose keys in CI output
+- Usage data silently dropped for a percentage of requests (the final chunk is most vulnerable to splitting)
+- Token counts and cost tracking become unreliable with no obvious error
+- Tests pass locally but fail in production under real network conditions
 
 **Warning signs:**
-- `#[derive(Debug)]` on any struct containing secrets
-- No grep for `debug` or `?` formatting of config/provider/router types
-- Tests that construct `ProviderConfig` with real-looking API keys
+- `.lines()` called on raw `Bytes` without cross-chunk buffering
+- No test for SSE events split across chunk boundaries
+- Usage extraction that works in local testing but shows NULL in production logs
 
-**Prevention:**
-1. Replace `api_key: Option<String>` with `api_key: Option<SecretString>` in `ProviderConfig` and `SelectedProvider`. The `secrecy` crate's `SecretString` implements `Debug` as `[REDACTED]`. Use `secrecy = { version = "0.10", features = ["serde"] }` to keep serde Deserialize working.
-2. Access the actual key value only at the single point it is needed: the `Authorization` header construction in `send_to_provider` (handlers.rs:498-501). Call `.expose_secret()` only there.
-3. Audit every `#[derive(Debug)]` on structs that transitively contain `api_key`. With `SecretString`, the derived `Debug` will automatically redact -- but verify this with a test.
-4. Add a test that `Debug`-formats a `ProviderConfig` with a known key and asserts the key does NOT appear in the output.
+**How to avoid:**
+1. Maintain a `String` buffer across chunks. Append each chunk's bytes to the buffer. Only process complete lines (terminated by `\n`). Keep any trailing partial line in the buffer for the next chunk.
+2. Use the `eventsource-stream` crate (which handles SSE parsing including cross-chunk buffering) as a processing layer rather than hand-rolling line parsing. Apply it to the stream for observation, then reconstruct the byte stream for forwarding.
+3. If hand-rolling (to avoid the overhead of full SSE parsing when you only need the final usage chunk): scan the buffer for `\n`-delimited complete lines, extract and process them, retain the remainder.
+4. Test with a mock server that deliberately fragments SSE events at awkward byte boundaries (mid-prefix, mid-JSON, mid-newline sequence).
 
-**Detection:** `grep -rn 'derive.*Debug' src/` on any struct containing a field named `key`, `secret`, `token`, or `password`. If the field type is `String`, it is exposed.
+**Phase to address:** First phase -- the buffering strategy is the foundational design decision. Everything else builds on correctly receiving complete SSE lines.
 
-**Which phase should address it:** First phase. This is the foundation -- all other redaction work is pointless if `Debug` still leaks.
-
-**Confidence:** HIGH -- directly observable in config.rs:52 and selector.rs:9-17.
+**Confidence:** HIGH -- the current code at handlers.rs:671-707 demonstrably uses per-chunk `text.lines()` with no cross-chunk buffer. TCP chunk splitting is well-documented networking behavior.
 
 ---
 
-### Pitfall 2: `Clone` on Secret-Bearing Structs Creates Untracked Copies
+### Pitfall 2: Tee Architecture -- Forwarding Bytes While Also Parsing Them
 
-**What goes wrong:** `ProviderConfig` and `SelectedProvider` both derive `Clone`, and the api_key is `Option<String>`. Every `.clone()` creates a new heap allocation containing the plaintext key. These clones are scattered throughout the codebase:
-- `ProviderConfig` is cloned into `SelectedProvider` via the `From` impl (selector.rs:19-29)
-- Provider configs are cloned when building the router (server.rs:80-81: `config.providers.clone()`)
-- `SelectedProvider` is returned from `select()` and moved into various handler scopes
+**What goes wrong:** The current architecture passes the `reqwest` byte stream directly to `Body::from_stream(stream)` (handlers.rs:709), which means the bytes flow from reqwest to the axum response body. To intercept and extract usage, you need to both READ the bytes (to parse SSE events) and FORWARD the same bytes to the client -- a "tee" pattern. The naive approach has several failure modes:
 
-With plain `String`, each clone is an independent heap allocation that lives until it is dropped. The original config, the router's copy, and the selected provider's copy all hold the key simultaneously. None of these locations zeroes memory on drop.
+- **Cloning every chunk:** Calling `.clone()` on each `Bytes` chunk doubles memory bandwidth. `bytes::Bytes` uses reference counting, so `.clone()` is cheap (just an Arc increment), but only if you don't then convert to `&str` or `String` for parsing -- that allocation IS expensive.
+- **Buffering the entire stream:** Collecting all chunks to parse after completion defeats the purpose of streaming and causes memory to grow linearly with response size.
+- **Channel-based tee:** Spawning a parsing task connected via `tokio::sync::mpsc` adds latency per chunk and complexity for error propagation.
 
-**Why it happens:** Rust's ownership model means moving values does a memcpy under the hood. The compiler may optimize some moves away, but cannot guarantee it. When a `String` containing a key is cloned, moved, or dropped, the previous memory location may retain the key bytes until the allocator reuses the page. This is a known Rust security concern documented in the zeroize crate literature.
+The right approach for this codebase: keep the existing `.map()` closure pattern (handlers.rs:671-707) but add a cross-chunk buffer to it. The closure already has access to each chunk as it passes through. The `Bytes` does not need cloning because `std::str::from_utf8(bytes)` borrows the chunk in place. The parsed data (usage values) can be communicated back via a shared `Arc<Mutex<Option<Usage>>>` or a `tokio::sync::watch` channel.
+
+**Why it happens:** "Tee" is conceptually simple but Rust's ownership model makes the naive implementation awkward. The stream is consumed by `Body::from_stream()`, and there's no built-in "observe while forwarding" combinator in `futures::StreamExt`.
 
 **Consequences:**
-- Multiple copies of each API key exist in process memory at any given time
-- Dropped copies leave key material in freed heap memory
-- A core dump, `/proc/[pid]/mem` read, or memory-scanning attack reveals keys even after the structs are dropped
+- Over-engineering the tee pattern adds latency (channel overhead per chunk) or memory (full buffering)
+- Under-engineering it loses data (no cross-chunk buffer) or breaks streaming (consuming the stream for parsing)
+- Getting the ownership wrong causes the stream adapter closure to not be `Send + 'static`, preventing it from being used with `Body::from_stream()`
 
 **Warning signs:**
-- `#[derive(Clone)]` on structs containing `String` secrets
-- Multiple ownership paths for the same secret value
-- No zeroize-on-drop for secret-bearing types
+- Calls to `Bytes::clone()` in the hot path for every chunk
+- `tokio::spawn` for a parallel parsing task just to read side-channel data
+- Stream adapter closure that captures non-Send types
+- `String::from_utf8(bytes.to_vec())` instead of `std::str::from_utf8(&bytes)` (unnecessary allocation)
 
-**Prevention:**
-1. Use `SecretString` from the `secrecy` crate, which zeros memory on drop via the `zeroize` crate. `SecretString` also implements `Clone` (via `CloneableSecret`), but at least each copy is zeroed on drop.
-2. Minimize the number of copies. Consider storing api_key in a shared `Arc<SecretString>` rather than cloning the string into every `SelectedProvider`. The current `From<&ProviderConfig>` impl (selector.rs:19-29) clones the key -- this could reference the original instead.
-3. Accept that Rust cannot guarantee zero copies in memory (buffer reallocation during string construction, stack spills, etc.). `SecretString` is a best-effort mitigation, not a guarantee. For this application (a local proxy, not a hardware security module), best-effort zeroization is sufficient.
+**How to avoid:**
+1. Extend the existing `.map()` closure to maintain a `String` line buffer (captured by the closure). On each chunk, append to the buffer, extract complete lines, scan for usage. The `Bytes` pass through unmodified.
+2. Store extracted usage in an `Arc<Mutex<Option<(u32, u32)>>>` shared between the stream closure and the completion handler. The closure writes; the completion handler (triggered when the stream ends) reads.
+3. Use `std::str::from_utf8(&bytes)` to borrow the chunk without allocation. Only allocate when appending incomplete line fragments to the buffer.
+4. The existing pattern at handlers.rs:671-707 already does almost exactly this -- it just lacks the cross-chunk buffer and the shared state for extracted values.
 
-**Detection:** Search for `.clone()` calls on types containing secrets. Count the number of independent copies of each key that exist at runtime.
+**Phase to address:** First phase -- the tee architecture determines the entire implementation shape.
 
-**Which phase should address it:** Same phase as Pitfall 1 -- the `SecretString` migration handles both Debug redaction and zeroize-on-drop simultaneously.
-
-**Confidence:** HIGH -- Clone derives visible at config.rs:52 and selector.rs:9. Memory zeroing concern is well-documented in the secrecy/zeroize ecosystem.
+**Confidence:** HIGH -- based on direct analysis of the current stream adapter pattern at handlers.rs:671-707 and Rust ownership constraints on `Body::from_stream()`.
 
 ---
 
-### Pitfall 3: `/providers` Endpoint Returns Config Struct That May Include Keys
+### Pitfall 3: Database INSERT-then-UPDATE Race and the Fire-and-Forget Pattern
 
-**What goes wrong:** The `/providers` endpoint (handlers.rs:765-784) manually constructs JSON from `router.providers()`, and currently does NOT include `api_key`. However, the underlying `router.providers()` method (selector.rs:196) returns `&[ProviderConfig]`, which includes the `api_key` field. If anyone changes the JSON construction to use `serde_json::to_value(p)` instead of the manual `json!({...})` macro, all fields -- including `api_key` -- will be serialized and returned to the caller.
+**What goes wrong:** The current code logs streaming requests BEFORE the stream is consumed (handlers.rs:166-203). The log entry is written with `input_tokens: None, output_tokens: None, cost_sats: None` because usage is unknown at that point. The new feature needs to UPDATE that row after the stream completes with the extracted usage data. This creates several problems:
 
-This is a latent vulnerability. The current code is safe only because of the manual field selection in the `json!` macro. There is no type-level protection preventing serialization of the key.
+1. **Race condition:** The fire-and-forget INSERT (`spawn_log_write` at handlers.rs:202) is a `tokio::spawn` that may not have completed by the time the stream starts. If the stream completes quickly (small response) or if the database is slow, the UPDATE may execute before the INSERT, finding zero rows to update.
+2. **Stream outlives the handler:** The handler function returns the `Response` containing the stream body. The stream is consumed by axum's response writer AFTER the handler returns. The handler's scope (where the database pool and correlation_id live) is gone by the time the stream completes. Any on-complete callback needs to capture these values.
+3. **Two-write pattern doubles database load:** Every streaming request now requires an INSERT + UPDATE instead of a single INSERT. For a local proxy this is fine, but the pattern should be intentional.
 
-**Why it happens:** The `ProviderConfig` struct derives `Deserialize` (for config loading) but does not derive `Serialize`. This provides some protection today -- you cannot accidentally `serde_json::to_value()` a `ProviderConfig`. But if someone adds `#[derive(Serialize)]` for any reason (e.g., a config export command, a debug endpoint), all fields including `api_key` become serializable.
+**Why it happens:** The current fire-and-forget INSERT was designed for a world where streaming requests have no usage data. Adding post-stream usage requires changing when and how the database write happens.
 
 **Consequences:**
-- A future code change could expose all API keys via a public HTTP endpoint
-- Anyone with network access to the proxy could read all provider credentials
+- UPDATE executes before INSERT: zero rows affected, usage data silently lost
+- Captured values in stream closure cause lifetime issues or prevent the closure from being `Send + 'static`
+- Database errors in the stream closure have no handler to report to (the handler already returned)
 
 **Warning signs:**
-- `#[derive(Serialize)]` added to `ProviderConfig`
-- `serde_json::to_value()` called on a struct containing secrets
-- JSON construction that uses struct serialization instead of manual field selection
+- `UPDATE ... WHERE correlation_id = ?` affecting 0 rows in production logs
+- Database pool cloned into the stream closure without testing the timing
+- No test that verifies the INSERT-then-UPDATE sequence under concurrent load
 
-**Prevention:**
-1. Using `SecretString` for `api_key` provides automatic protection: the `secrecy` crate intentionally does NOT implement `Serialize` for `SecretString` by default. Even if `ProviderConfig` gains `#[derive(Serialize)]`, the `api_key: Option<SecretString>` field will cause a compilation error, forcing the developer to consciously handle it.
-2. Create a separate `ProviderInfo` struct (without `api_key`) for API responses. This struct should be the return type of a dedicated method, not a filtered view of `ProviderConfig`.
-3. Add a test that hits `/providers` and asserts the response does NOT contain any string matching the configured API keys.
+**How to avoid:**
 
-**Detection:** Test that serializes a `ProviderConfig` and asserts the key is absent. Grep for `Serialize` on config types.
+**Option A (recommended): Defer the INSERT until stream completion.**
+Do not INSERT when the handler returns. Instead, let the stream's on-complete logic do a single INSERT with all data (including usage if available). This eliminates the race condition and the two-write pattern entirely. The tradeoff: if the stream is interrupted (client disconnect, server crash), no database record exists at all.
 
-**Which phase should address it:** Second phase (after SecretString migration). The type-level protection from `SecretString` makes accidental serialization a compile error rather than a runtime bug.
+**Option B: INSERT placeholder, then UPDATE.**
+Keep the current INSERT but `await` it (not fire-and-forget) to guarantee it completes before the stream starts. Then UPDATE after stream completion. This guarantees a record exists even for interrupted streams, but requires changing `spawn_log_write` to be awaitable for the streaming path.
 
-**Confidence:** HIGH -- handler code at handlers.rs:765-784 and struct definition at config.rs:52 directly observable.
+**Option C: INSERT on stream completion, mark interrupted streams differently.**
+Use the stream's `Drop` impl or a wrapper that detects whether the stream completed normally or was interrupted. INSERT on normal completion with full data. On interruption, INSERT with a special `error_message` indicating the stream was interrupted.
+
+Option A is simplest and correct for a local proxy where incomplete records for crashed streams are not useful. Option B is better if you need records for interrupted streams for debugging.
+
+**Phase to address:** Must be decided in the design phase before any implementation. The database write timing is an architectural decision.
+
+**Confidence:** HIGH -- the race condition between `spawn_log_write` (fire-and-forget) and stream consumption is directly observable in the code at handlers.rs:166-203.
 
 ---
 
-### Pitfall 4: Error Messages Include Provider URLs and Context That Leak Keys
+### Pitfall 4: Providers That Do Not Send Usage Data in Streams
 
-**What goes wrong:** Several error paths in the codebase format provider details into error messages that are returned to clients via the OpenAI-compatible error response:
+**What goes wrong:** The OpenAI API only includes usage in streaming responses when the request contains `stream_options: {"include_usage": true}`. Without this parameter, the final chunk has no `usage` field. Many OpenAI-compatible providers have varying support:
 
-1. `send_to_provider` (handlers.rs:506-508): `"Failed to reach provider '{}': {}"` -- the reqwest error may include the full URL with query parameters
-2. `send_to_provider` (handlers.rs:526-529): `"Provider '{}' returned {}: {}"` -- the error body from the provider may contain credential-related information
-3. `Error::Provider(String)` (error.rs:23) passes the string directly to the JSON error response via `self.to_string()` in `IntoResponse` (error.rs:43)
+- **OpenAI:** Requires `stream_options: {"include_usage": true}`. Without it, no usage in stream. With it, the final chunk before `data: [DONE]` has `choices: []` and `usage: {...}`.
+- **Groq:** Puts usage in `x_groq.usage` field, NOT in the standard `usage` field. Does not support `stream_options`.
+- **Anthropic (via OpenAI-compatible endpoints):** Uses a different SSE event structure entirely (`event: message_delta` with `usage` in the data). May or may not be normalized by Routstr providers.
+- **OpenRouter:** Normalizes to OpenAI format but sends SSE comment lines (`:` prefix) as keep-alive heartbeats. Also sends errors mid-stream with `finish_reason: "error"`.
+- **Ollama:** Has open issues about `stream_options` support. May or may not include usage.
+- **Azure OpenAI:** Requires specific API version parameters for streaming usage support.
 
-If the provider URL contains credentials (e.g., `https://user:pass@provider.com/v1`) or if the provider's error response mentions the API key (e.g., "Invalid API key: cashuA1234..."), that information flows directly to the client in the error response.
+If arbstr injects `stream_options: {"include_usage": true}` into the forwarded request, it may break providers that do not support this parameter (they might return 400 Bad Request or ignore it).
 
-**Why it happens:** Error messages are constructed for debugging convenience, not security. The pattern `format!("Failed to reach provider '{}': {}", provider.name, e)` is natural for development but dangerous in production when the error is returned to HTTP clients.
+**Why it happens:** "OpenAI-compatible" is a loose standard. Providers implement subsets of the API at different specification versions. The `stream_options` parameter was added to OpenAI in mid-2024 and adoption varies.
 
 **Consequences:**
-- API keys or partial key values appear in HTTP error responses
-- Provider URLs (which may contain credentials) appear in client-facing errors
-- Error aggregation services (Sentry, etc.) store secrets in plaintext
+- Injecting `stream_options` breaks requests to providers that reject unknown parameters
+- Not injecting it means no usage data from providers that require it
+- Extracting from non-standard locations (`x_groq.usage`) requires provider-specific parsing
+- Some providers will never send usage in streams, leaving permanent gaps in cost tracking
 
 **Warning signs:**
-- `format!` or `Display` on error types that include external error messages
-- Provider error bodies forwarded to clients without sanitization
-- `self.to_string()` used in `IntoResponse` for error types that may contain sensitive context
+- Testing against only one provider (especially OpenAI directly)
+- Hard-coded `"usage"` field path for extraction
+- No fallback for streams that complete without usage data
+- No per-provider configuration for whether to inject `stream_options`
 
-**Prevention:**
-1. Separate internal error messages (for logging) from external error messages (for HTTP responses). The `IntoResponse` impl should return a generic message, while the full detail is logged server-side.
-2. Never include the raw reqwest error in client-facing responses. The reqwest error may contain the request URL. Log it at `tracing::error!` level, but return `"Failed to reach provider"` to the client.
-3. Never forward provider error bodies verbatim to clients. The provider may echo back credentials or internal details. Log the body server-side, return `"Provider returned an error"` to the client.
-4. Audit every `Error::Provider(format!(...))` call site and strip sensitive context.
+**How to avoid:**
+1. **Do NOT inject `stream_options` by default.** Let the client decide. If the client sends `stream_options: {"include_usage": true}`, arbstr should pass it through and also extract the usage from the response. If the client does not send it, arbstr should not add it (this would be modifying the client's request semantics).
+2. **Add an optional per-provider config flag** like `inject_stream_usage = true` that tells arbstr to add `stream_options` to requests for providers known to support it.
+3. **Check multiple locations for usage data:** Standard `usage` field, `x_groq.usage`, and any `usage`-like fields in the SSE events. A flexible extraction function that tries multiple paths.
+4. **Gracefully handle missing usage:** The database schema already supports NULL token fields. The code should log at `debug` level when a stream completes without usage, not `warn` or `error` -- this is expected behavior, not an error.
+5. **Test with a mock provider that sends no usage, and verify the proxy handles it without error.**
 
-**Detection:** Grep for `Error::Provider(format!` and examine what data flows into the format string. Check if any external/untrusted content reaches the client-facing error message.
+**Phase to address:** Design phase -- the decision about whether to inject `stream_options` affects the request forwarding logic. The multi-provider extraction logic should be in a dedicated parsing module.
 
-**Which phase should address it:** Should be addressed alongside the SecretString migration, but is a separate concern. Even with SecretString, error messages can leak keys if they include raw upstream error text.
+**Confidence:** HIGH -- OpenAI stream_options behavior verified via API documentation. Groq x_groq.usage verified via community reports and GitHub issues. OpenRouter SSE comments verified via OpenRouter documentation.
 
-**Confidence:** HIGH -- error construction visible at handlers.rs:506-508 and handlers.rs:526-529, error rendering at error.rs:38-60.
+---
+
+### Pitfall 5: Not Handling the `data: [DONE]` Sentinel Correctly
+
+**What goes wrong:** OpenAI streams terminate with `data: [DONE]\n\n`. The current code checks for this (handlers.rs:679: `if data != "[DONE]"`). But the interception logic needs to know that `[DONE]` means the stream is COMPLETE and it is time to finalize usage extraction and trigger the database write. Several things go wrong:
+
+1. **`[DONE]` may not arrive:** If the upstream connection drops, the stream ends without `[DONE]`. The stream's last chunk may be a partial SSE event or nothing. Usage extraction must handle both normal termination (`[DONE]` received) and abnormal termination (stream error or EOF without `[DONE]`).
+2. **Usage chunk arrives BEFORE `[DONE]`:** The chunk containing `usage` data has `choices: []` and is the second-to-last SSE event. `[DONE]` is the last. If the code triggers finalization on `[DONE]`, it must have already processed the usage chunk. If processing is deferred to after `[DONE]`, the usage chunk might not be in the buffer.
+3. **Some providers send `[DONE]` without usage:** If `stream_options` was not set, the last data chunk is the final content delta (with `finish_reason: "stop"`), followed immediately by `[DONE]`. There is no usage chunk. The finalization logic must not treat "no usage found" as an error.
+4. **OpenRouter sends `[DONE]` but may also send mid-stream errors:** A stream can have `finish_reason: "error"` on a choice, followed by `[DONE]`. The finalization logic should detect the error and log accordingly.
+
+**Why it happens:** `[DONE]` is a convention, not part of the SSE specification. It is OpenAI-specific and not all providers send it. Code that relies on `[DONE]` for finalization misses the stream-ended-without-DONE case.
+
+**Consequences:**
+- Usage data processed correctly when `[DONE]` arrives, but database write never triggers when the stream ends without `[DONE]`
+- Memory leak: if finalization waits for `[DONE]` and it never comes, shared state (Arc<Mutex<...>>) lingers
+- Incorrect error classification: a stream that completes normally without `[DONE]` is treated as an error
+
+**Warning signs:**
+- Finalization logic gated on `data == "[DONE]"` with no fallback for stream end
+- No test for a stream that ends without `[DONE]` (just EOF)
+- Shared state that is only cleaned up in the `[DONE]` handler
+
+**How to avoid:**
+1. Trigger finalization when the stream ENDS, not when `[DONE]` is received. In Rust's `Stream` trait, the stream signals completion by returning `Poll::Ready(None)`. Use a stream wrapper (or the `.map()` closure's drop) to detect stream end.
+2. Use `[DONE]` as an optimization hint ("the next event is probably the end") but not as the sole trigger for finalization.
+3. Implement a stream wrapper that implements `Drop` and triggers finalization. Or use `futures::StreamExt::chain` to append a finalization item.
+4. The cleanest pattern: after the `.map()` closure extracts usage, append a `.chain(futures::stream::once(async { finalize() }))` that runs when the upstream stream is exhausted.
+
+**Phase to address:** Implementation phase -- the finalization trigger is a tactical decision within the stream wrapper implementation.
+
+**Confidence:** HIGH -- `[DONE]` handling visible at handlers.rs:679. Stream termination without `[DONE]` is a well-documented edge case in SSE.
+
+---
+
+### Pitfall 6: Stream Closure Lifetime and `Send + 'static` Constraints
+
+**What goes wrong:** `Body::from_stream()` requires the stream to be `Send + 'static`. The `.map()` closure that processes each chunk must therefore only capture `Send + 'static` types. Adding state to the closure for cross-chunk buffering (a `String` buffer) and usage extraction (shared state back to the handler) introduces ownership constraints that are easy to violate:
+
+- Capturing `&AppState` (which contains `Arc<Config>`, `Arc<ProviderRouter>`, `SqlitePool`) -- references are not `'static`
+- Capturing `&str` slices (like `correlation_id`) -- references are not `'static`
+- Capturing the `provider` reference -- not `'static`
+
+The existing code (handlers.rs:669-707) avoids this by capturing only `move`d owned values. The `provider_name` is cloned before the closure. Adding more captured state (database pool, correlation_id, provider rates for cost calculation) requires the same discipline.
+
+**Why it happens:** Rust's borrow checker enforces that closures passed to `Body::from_stream()` cannot borrow from the handler's stack frame because the handler returns before the stream is consumed. Every value the closure needs must be owned (moved or cloned into the closure).
+
+**Consequences:**
+- Compilation errors that are confusing: "closure may outlive the current function" or "`T` is not `Send`"
+- Developers work around it by cloning large structures (entire `AppState`) into the closure, which is wasteful
+- `Mutex` in the closure makes it not `Send` if the `Mutex` is `std::sync::Mutex` but the code tries to hold it across an `.await` (actually, `std::sync::Mutex` IS `Send` -- it is `tokio::sync::Mutex` that has different properties. But `std::sync::Mutex` must not be held across await points)
+
+**Warning signs:**
+- `Send + 'static` compilation errors when modifying the stream closure
+- Cloning entire `AppState` or `Config` into the closure
+- Using `Rc<RefCell<...>>` instead of `Arc<Mutex<...>>` (Rc is not Send)
+- Holding a `MutexGuard` across the `chunk.map_err()` call
+
+**How to avoid:**
+1. Clone only what you need into the closure: `pool.clone()` (SqlitePool is Arc-based and cheap to clone), `correlation_id.clone()` (String), provider rate info (copy of u64 values), `provider_name.clone()`.
+2. For shared mutable state (the extracted usage), use `Arc<Mutex<Option<(u32, u32)>>>`. Create it before the closure, clone the Arc into the closure, and keep a handle outside.
+3. Do not hold any MutexGuard across `.await` points (there are none in the current `.map()` closure since it is synchronous, but be careful if refactoring to `.then()` or async closures).
+4. Capture a small struct of needed values rather than individual clones to keep the closure signature clean.
+
+**Phase to address:** Implementation phase -- this is mechanical Rust ownership wrangling, but must be anticipated in the design.
+
+**Confidence:** HIGH -- Rust's Send + 'static requirements are compiler-enforced. The current closure at handlers.rs:670-707 demonstrates the pattern.
 
 ---
 
 ## Moderate Pitfalls
 
-Mistakes that create incomplete protection or subtle leak paths.
+Mistakes that cause subtle data loss, incorrect metrics, or performance issues.
 
 ---
 
-### Pitfall 5: `tracing::info!` Logs Provider URLs (Which May Contain Credentials)
+### Pitfall 7: SSE Comment Lines and Keep-Alive Events
 
-**What goes wrong:** The `execute_request` function (handlers.rs:576-581) logs:
-```rust
-tracing::info!(
-    provider = %provider.name,
-    url = %provider.url,
-    output_rate = %provider.output_rate,
-    "Selected provider"
-);
-```
+**What goes wrong:** The SSE specification defines comment lines starting with `:` (colon). These are used by providers as keep-alive heartbeats to prevent proxies and load balancers from timing out idle connections. OpenRouter explicitly documents sending SSE comments during processing. The current parsing code (handlers.rs:678) only looks for `data: ` prefixed lines and would ignore comments -- which is correct for data extraction. However, there are edge cases:
 
-The `url` field is logged at `info` level, which is the default log level. If a provider URL contains credentials (common in some API patterns, e.g., basic auth embedded in URL), those credentials appear in every request log. Even without embedded credentials, the URL reveals the provider's API endpoint, which is potentially sensitive information about the user's infrastructure.
+1. **Comment lines in the buffer:** If using a line buffer for cross-chunk parsing, comment lines accumulate in the buffer and must be recognized and skipped (or they interfere with line parsing).
+2. **Event type lines:** The SSE spec allows `event: ` lines. Anthropic's API uses named events (`event: message_start`, `event: content_block_delta`, `event: message_delta`). If a Routstr provider passes through Anthropic events without normalization, the `data:` line follows an `event:` line, and the usage data may be on a `data:` line that is part of a `message_delta` event, not a standalone data event.
+3. **Retry lines:** SSE allows `retry:` lines that suggest reconnection intervals. These should be ignored by the parser but forwarded to the client.
+4. **Empty lines as event delimiters:** In the SSE spec, a blank line (`\n\n`) delimits events. Multiple `data:` lines before a blank line are concatenated into a single event data. If a provider sends multi-line data (unlikely for JSON but allowed by spec), the parser must concatenate rather than treating each `data:` line as an independent event.
 
-Additionally, `tower_http::TraceLayer` (server.rs:54-69) logs request URIs, which would include any query parameters. While arbstr's own endpoints are clean, this middleware pattern logs everything.
+**Why it happens:** Most LLM providers use a simplified SSE format (single `data:` line per event), so developers never encounter multi-line data or event types. Then a non-standard provider breaks the parser.
 
-**Why it happens:** URL logging is standard practice for HTTP proxies. The risk is specific to URLs that contain credentials, which is a pattern arbstr does not currently use but cannot prevent users from configuring.
+**How to avoid:**
+1. For usage extraction, only process lines matching `^data: `. Skip lines matching `^:`, `^event:`, `^retry:`, and blank lines. This is what the current code does and it is correct for the simplified LLM SSE format.
+2. Do not attempt to implement a full SSE parser unless you need to handle Anthropic-style named events. For arbstr's use case (extract a JSON object from the last meaningful data line), simple prefix matching is sufficient.
+3. Ensure the line buffer correctly handles blank lines as event delimiters without treating them as data.
+4. Forward ALL bytes to the client unmodified -- the parsing is observation-only. Never filter or modify the stream.
 
-**Prevention:**
-1. Remove `url` from the `tracing::info!` in `execute_request`. The provider name is sufficient for operational debugging. The URL can be logged at `debug` level if needed.
-2. If URL logging is retained, redact it: log only the host portion, not the full URL (which may contain path-based tokens or query credentials).
-3. Consider adding a `tracing::info!` filter or a custom `MakeSpan` that strips sensitive headers and URL components.
+**Phase to address:** Implementation phase -- the line parser design should account for these non-data line types.
+
+**Confidence:** HIGH for OpenRouter comments (documented). MEDIUM for Anthropic-style events through Routstr providers (depends on provider normalization).
+
+---
+
+### Pitfall 8: Memory Growth on Long-Running Streams
+
+**What goes wrong:** If the line buffer for cross-chunk parsing is never cleared, it grows with every chunk. For a typical chat completion (a few hundred tokens), this is negligible. But for very long responses (code generation, long documents), the buffer could accumulate megabytes. Worse, if the buffer retains all processed data (not just the incomplete trailing line), memory grows linearly with response size.
+
+Additionally, the shared state for extracted usage (`Arc<Mutex<Option<Usage>>>`) is small and bounded. But if the implementation accumulates ALL parsed events (for debugging or fallback counting), that state grows unboundedly.
+
+**Why it happens:** The buffer pattern for cross-chunk SSE parsing naturally accumulates data. Without explicit truncation after processing complete lines, the buffer retains processed data.
+
+**How to avoid:**
+1. After extracting complete lines from the buffer, drain the processed portion. Only the trailing incomplete line fragment remains in the buffer. `buffer.drain(..last_newline_pos)` or equivalent.
+2. For the stream closure, process each complete line immediately and discard it. Only retain the pending partial line and the last-seen usage values.
+3. Set a maximum buffer size (e.g., 64KB). If a single SSE line exceeds this, something is wrong. Log a warning and skip that line rather than OOM.
+4. Do not accumulate parsed events in a `Vec`. Extract the usage values and discard everything else.
 
 **Warning signs:**
-- `url = %` in any tracing macro at info level or above
-- Full URLs logged without redaction
+- `String::push_str()` without corresponding `drain()` or `truncate()`
+- `Vec<ParsedEvent>` growing for the duration of the stream
+- Memory usage correlated with response length
 
-**Which phase should address it:** Same phase as the SecretString migration. Review all tracing calls as part of the redaction audit.
+**Phase to address:** Implementation phase -- buffer management is part of the line parser.
 
-**Confidence:** HIGH -- log statement directly visible at handlers.rs:576-581.
+**Confidence:** HIGH -- standard concern for any stream processing with buffering.
 
 ---
 
-### Pitfall 6: Env Var Expansion That Fails Open (Missing Var Returns Empty String)
+### Pitfall 9: Latency Impact of Per-Chunk JSON Parsing
 
-**What goes wrong:** When implementing `${ENV_VAR}` expansion in TOML config values, a common mistake is treating a missing environment variable as an empty string rather than an error. If `api_key = "${ROUTSTR_KEY}"` and `ROUTSTR_KEY` is not set, the key becomes an empty string. The proxy then sends requests to the provider with `Authorization: Bearer ` (empty token), which:
-- Fails with a confusing 401 error from the provider
-- May be logged as "authentication failed" with no indication that the key was misconfigured
-- In the worst case, if the provider treats empty auth as "no auth" and allows unauthenticated access, requests proceed without payment tracking
+**What goes wrong:** Parsing every SSE data line as JSON to check for `usage` adds CPU overhead to every chunk in the stream. For a typical streaming response with hundreds of chunks, this means hundreds of `serde_json::from_str` calls. The current code already does this (handlers.rs:680-696), so the baseline overhead exists. But adding a line buffer, string operations, and more complex extraction could measurably increase per-chunk latency.
 
-**Why it happens:** `std::env::var("KEY").unwrap_or_default()` returns empty string for missing vars. Regex-based substitution that replaces `${VAR}` with the env value naturally produces empty string for missing vars.
+The key insight: usage data ONLY appears in the final chunk (or second-to-last, before `[DONE]`). Parsing every intermediate chunk for `usage` is wasted work.
+
+**Why it happens:** It is simpler to parse every chunk uniformly than to detect which chunk is the final one. The "final chunk" is only identifiable after the fact (when the stream ends or `[DONE]` arrives).
+
+**How to avoid:**
+1. **Optimization: only parse chunks that might contain usage.** Usage chunks have `"usage"` as a substring. Do a cheap `bytes.contains("usage")` or `line.contains("\"usage\"")` check before parsing JSON. This skips JSON parsing for 99%+ of chunks.
+2. **Optimization: only parse the last few data lines.** After `[DONE]` or stream end, parse the last buffered data line for usage. During the stream, just buffer line boundaries without parsing.
+3. **Measurement: benchmark the overhead.** Time the stream closure with and without parsing. For a local proxy on localhost, per-chunk overhead under 10 microseconds is irrelevant. Over a network, the network latency dwarfs parsing time.
+4. The current code already parses every chunk -- so any optimization is an improvement, not a regression.
+
+**Warning signs:**
+- `serde_json::from_str` called for every chunk in profiling flamegraphs
+- Measurable TTFB (time to first byte) increase after adding interception
+- `serde_json::Value` allocations dominating memory profiles during streaming
+
+**Phase to address:** Second phase (optimization). Get correctness first, then optimize if benchmarks show impact.
+
+**Confidence:** MEDIUM -- the overhead exists but may be negligible for a local proxy. Optimize only if measured.
+
+---
+
+### Pitfall 10: `ChatCompletionRequest` Does Not Forward Unknown Fields
+
+**What goes wrong:** The `ChatCompletionRequest` struct (types.rs:7-26) uses explicit field definitions with `#[serde(skip_serializing_if = "Option::is_none")]`. It does NOT have `#[serde(flatten)] extra: HashMap<String, Value>` or similar catch-all. This means if a client sends `stream_options: {"include_usage": true}` in their request, it is silently dropped during deserialization. The upstream provider never receives it.
+
+This is a pre-existing bug, not introduced by the streaming feature. But it becomes critical now because `stream_options` is the mechanism by which clients opt into streaming usage data from OpenAI-compatible providers.
+
+**Why it happens:** The request struct was designed to model the known OpenAI fields. `stream_options` was added to the OpenAI API in mid-2024 and was not included in the struct definition.
 
 **Consequences:**
-- Silent misconfiguration that manifests as confusing auth errors
-- Config validation passes (the api_key field is present), but the value is useless
-- Users think the proxy is broken when the real issue is a missing environment variable
+- Clients that explicitly request streaming usage get no usage data because the parameter is stripped
+- arbstr silently modifies the client's request semantics
+- If arbstr wants to inject `stream_options` for its own purposes, it has no field to set
 
 **Warning signs:**
-- Env var lookup with `unwrap_or_default()` or `.unwrap_or("".to_string())`
-- No distinction between "variable is set to empty" and "variable is not set"
-- Config validation that checks field presence but not value content
+- Client sends `stream_options` but provider never receives it
+- New OpenAI API parameters are silently dropped
+- Testing against arbstr with `stream_options` shows no usage, but direct provider calls do
 
-**Prevention:**
-1. Treat `${VAR}` where VAR is unset as a hard error during config loading. Fail fast with a clear message: "Environment variable 'ROUTSTR_KEY' not set, referenced in providers[0].api_key"
-2. Distinguish between `${VAR}` (must be set, error if missing) and `${VAR:-default}` (use default if missing) syntax
-3. Validate expanded values: an api_key that is empty after expansion should be treated the same as a missing api_key
-4. Log which env vars were resolved (by name, not value) at startup, so operators can verify the config
+**How to avoid:**
+1. **Add `stream_options` to `ChatCompletionRequest`:**
+   ```rust
+   #[serde(skip_serializing_if = "Option::is_none")]
+   pub stream_options: Option<StreamOptions>,
+   ```
+   Where `StreamOptions` contains `include_usage: Option<bool>`.
+2. **Alternatively, use a catch-all:** Add `#[serde(flatten)] pub extra: HashMap<String, serde_json::Value>` to forward all unknown fields. This is more future-proof but means you cannot inspect `stream_options` by type.
+3. **Best approach for arbstr:** Add the typed `stream_options` field AND a `#[serde(flatten)] extra` catch-all. This gives you typed access to `stream_options` while preserving all other unknown fields.
 
-**Detection:** Config test that sets an env var reference but does not set the variable, and asserts the parse fails with a descriptive error.
+**Phase to address:** First phase -- this must be fixed before stream usage extraction can work, because without it, the client cannot request streaming usage from the provider through arbstr.
 
-**Which phase should address it:** First phase of env var expansion. The error handling for missing vars must be designed before the expansion logic.
-
-**Confidence:** HIGH -- standard software engineering concern, well-understood failure mode.
-
----
-
-### Pitfall 7: Convention-Based Env Var Lookup Conflicts with Explicit Config
-
-**What goes wrong:** The v1.1 milestone specifies two mechanisms: explicit `api_key = "${ROUTSTR_KEY}"` in TOML, and convention-based `ARBSTR_<PROVIDER>_API_KEY` auto-detection when `api_key` is omitted. If both are present -- a user sets `api_key = "hardcoded_key"` in TOML AND has `ARBSTR_MYPROVIDER_API_KEY` in their environment -- which one wins? Without a clear, documented precedence rule, behavior is unpredictable and debugging is difficult.
-
-**Why it happens:** The two mechanisms are designed for different use cases (explicit config vs zero-config convenience), but nothing prevents them from overlapping. The implementation order matters: if convention lookup runs after TOML parsing, it may overwrite an explicitly configured key.
-
-**Consequences:**
-- User sets a key in config, but the convention env var silently overrides it (or vice versa)
-- Debugging auth failures becomes harder because the actual key used is not the one the user expects
-- Security risk: a stale env var from a previous session could override a fresh config value
-
-**Warning signs:**
-- No documented precedence order
-- Convention lookup that runs unconditionally even when an explicit key is present
-- No startup log indicating which key source was used for each provider
-
-**Prevention:**
-1. Define and document a clear precedence: explicit TOML value > `${ENV}` expansion in TOML > convention-based `ARBSTR_<NAME>_API_KEY` > no key
-2. Convention-based lookup should ONLY apply when `api_key` is not present in the TOML config at all (not when it is present but empty)
-3. Log the key source (not value) at startup for each provider: `"Provider 'alpha' api_key: from config file"`, `"Provider 'beta' api_key: from env ARBSTR_BETA_API_KEY"`, `"Provider 'gamma' api_key: not configured"`
-4. Add a config validation test that verifies precedence order with all combinations
-
-**Detection:** Integration test that sets both explicit config and convention env var, verifies the expected one wins.
-
-**Which phase should address it:** Must be designed before implementing convention-based lookup. The precedence rule is an architectural decision, not an implementation detail.
-
-**Confidence:** MEDIUM -- depends on implementation approach, but precedence conflicts are a common pattern in config systems.
+**Confidence:** HIGH -- directly observable in types.rs:7-26 that `stream_options` is not a field.
 
 ---
 
-### Pitfall 8: `SecretString` Breaks Existing Serde Deserialization for TOML
+### Pitfall 11: Counting Tokens by Summing Deltas vs. Using Final Usage Object
 
-**What goes wrong:** Changing `api_key: Option<String>` to `api_key: Option<SecretString>` in `ProviderConfig` requires the `secrecy` crate's `serde` feature. With the feature enabled, `SecretString` implements `Deserialize`, so `toml::from_str` can parse it. However, there are subtle compatibility issues:
+**What goes wrong:** There are two approaches to getting token counts from a stream:
+1. **Count deltas:** Sum the content lengths from each `delta.content` chunk to estimate output tokens. Estimate input tokens from the request.
+2. **Use the final usage object:** Extract `prompt_tokens` and `completion_tokens` from the usage chunk that the provider sends.
 
-1. `SecretString` is `SecretBox<str>`, which deserializes a `Box<str>` internally. TOML string values work fine, but if anyone passes a non-string TOML type (integer, boolean) where a key is expected, the error message will reference `SecretBox` internal types, confusing users.
-2. The existing tests in `config.rs` (lines 194-249) construct `ProviderConfig` without api_key. Any test that constructs one WITH an api_key will need to use `SecretString::from("value")` instead of just `"value".to_string()`.
-3. The `SelectedProvider::from(&ProviderConfig)` impl clones the api_key. `SecretString` implements `Clone`, so this works -- but the clone semantics are different (zeroize-on-drop applies to each copy).
+Approach 1 (counting deltas) is unreliable because tokens are not characters. A tokenizer maps variable-length character sequences to tokens, and the delta content strings do not correspond to token boundaries. You would need a tokenizer (like tiktoken) running in the proxy to count tokens from text, and different models use different tokenizers.
 
-**Why it happens:** Type changes in core config structs ripple through the entire codebase. `SecretString` is intentionally not a drop-in replacement for `String` -- it has restricted APIs to prevent accidental exposure. Code that previously called `.as_ref()`, `.as_str()`, or compared keys with `==` will not compile.
+Approach 2 (final usage object) is authoritative but may not be available (see Pitfall 4).
 
-**Prevention:**
-1. Make the change incrementally: first add `secrecy` dependency with serde feature, then change the type in `ProviderConfig`, fix all compilation errors, then change `SelectedProvider`, fix all compilation errors.
-2. The only place that needs the actual string value is `send_to_provider` (handlers.rs:498-501) where it constructs the `Authorization` header. Use `api_key.expose_secret()` there.
-3. Update all tests that construct providers with api_keys to use `SecretString::from(...)`.
-4. If `Option<SecretString>` causes too much friction (e.g., `#[serde(default)]` behavior, None handling), consider a newtype wrapper around `Option<SecretString>` with convenience methods.
+The mistake is using approach 1 as a "fallback" when approach 2 is unavailable, which produces inaccurate counts that feed into cost calculations.
 
-**Detection:** `cargo build` after the type change will show every location that needs updating. This is Rust's type system working as intended -- treat compilation errors as a checklist.
+**Why it happens:** It feels wasteful to have a stream of text pass through without counting it. The "approximate by counting characters/words" approach seems reasonable until you realize it can be off by 30-50% due to tokenizer differences.
 
-**Which phase should address it:** First phase. This is purely a mechanical migration, but it touches many files and must be done carefully to avoid partial application.
+**How to avoid:**
+1. Use ONLY the provider-reported usage object for token counts. If the provider does not send usage, record NULL tokens (not estimated tokens).
+2. Do NOT implement client-side token counting as a fallback. It gives a false sense of accuracy and the error margins make cost calculations unreliable.
+3. The database schema already supports NULL token fields. The cost tracking already handles NULL gracefully. There is no need for estimated counts.
+4. If approximate counting is needed in the future (e.g., for budget enforcement before stream completes), make it a separate field (`estimated_output_tokens`) distinct from the authoritative `output_tokens`.
 
-**Confidence:** HIGH -- directly follows from changing `String` to `SecretString` in Rust's type system.
+**Phase to address:** Design phase -- decide that token counting is provider-authoritative-only and do not build estimation infrastructure.
 
----
-
-## Minor Pitfalls
-
-Mistakes that cause confusion or minor issues but are easily fixed.
+**Confidence:** HIGH -- tokenizer mismatch between client-side counting and provider-side counting is well-documented.
 
 ---
 
-### Pitfall 9: Provider Name Normalization for Convention-Based Env Vars
+## Technical Debt Patterns
 
-**What goes wrong:** Convention-based lookup maps provider name `"provider-alpha"` to env var `ARBSTR_PROVIDER_ALPHA_API_KEY`. But provider names can contain characters that are invalid in env var names (hyphens, dots, spaces). The normalization rule (e.g., replace `-` with `_`, uppercase everything) must be clearly defined and consistently applied.
+Shortcuts that seem reasonable but create long-term problems.
 
-Edge cases: `"my.provider"` -> `ARBSTR_MY_PROVIDER_API_KEY` (dot to underscore?), `"Provider Alpha"` -> `ARBSTR_PROVIDER_ALPHA_API_KEY` (space to underscore?), `"provider_alpha"` and `"provider-alpha"` -> both map to the same env var (collision).
+| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
+|----------|-------------------|----------------|-----------------|
+| Parse every chunk as JSON | Simple uniform logic | CPU overhead on every chunk, thousands of unnecessary allocations per stream | MVP -- optimize later if profiling shows impact |
+| Clone entire `AppState` into stream closure | Compiles easily | Captures database pool, config, router -- more than needed. Conceptually unclear what the closure uses | Never -- clone only the 4-5 values actually needed |
+| `unwrap()` on `from_utf8` in stream closure | Avoids error handling | Non-UTF8 bytes from a misbehaving provider crash the proxy | Never -- use `from_utf8` and skip non-UTF8 chunks |
+| Hardcode `"usage"` field path | Works for OpenAI | Breaks for Groq (`x_groq.usage`) and future providers | MVP if only targeting OpenAI-compatible providers initially. Add provider-specific extraction later |
+| Fire-and-forget UPDATE for post-stream usage | Simple, no await in closure | Silent data loss if UPDATE fails, no retry, no logging of failure | Acceptable for local proxy -- log the failure at warn level |
+| Skip stream interception for non-200 responses | Avoids parsing error streams | Misses error metadata that could inform routing decisions | Acceptable -- error responses are already logged before streaming starts |
 
-**Prevention:**
-1. Document the exact normalization: uppercase, replace non-alphanumeric with underscore, collapse consecutive underscores
-2. Detect collisions at startup: if two provider names normalize to the same env var name, warn or error
-3. Log the expected env var name for each provider at startup so users know exactly what to set
+## Integration Gotchas
 
-**Which phase should address it:** Implementation phase of convention-based lookup.
+Common mistakes when connecting to upstream LLM providers via SSE.
 
-**Confidence:** MEDIUM -- depends on the variety of provider names users configure.
+| Integration | Common Mistake | Correct Approach |
+|-------------|----------------|------------------|
+| OpenAI streaming | Not sending `stream_options: {"include_usage": true}` | Either pass through client's `stream_options` or configure per-provider injection |
+| Groq streaming | Looking for `usage` in standard location | Check both `usage` and `x_groq.usage` in the final chunk |
+| OpenRouter streaming | Not handling SSE comment lines (`:` prefix) | Forward all bytes to client; skip comment lines in parser |
+| OpenRouter mid-stream errors | Treating `finish_reason: "error"` as normal completion | Detect error finish reason, log stream as failed |
+| Azure OpenAI | Assuming `stream_options` is supported on all API versions | Check API version; older versions do not support it |
+| Provider timeout (no `[DONE]`) | Waiting for `[DONE]` to finalize | Finalize on stream end (None from poll), not on `[DONE]` receipt |
+| HTTP chunked encoding | Assuming chunk = SSE event | Buffer across chunks, parse complete lines only |
 
----
+## Performance Traps
 
-### Pitfall 10: Env Var Expansion Only Applied to `api_key` Field
+Patterns that work at small scale but fail as usage grows.
 
-**What goes wrong:** If env var expansion is implemented only for the `api_key` field (because that is the current use case), users may expect it to work for other fields too -- like `url` (which might reference `${ROUTSTR_URL}`). Implementing field-specific expansion creates an inconsistent experience. Implementing generic expansion (any string field can use `${VAR}`) is more work but more predictable.
+| Trap | Symptoms | Prevention | When It Breaks |
+|------|----------|------------|----------------|
+| JSON-parsing every SSE chunk | High CPU usage during streaming, increased latency | Substring check for `"usage"` before parsing | 100+ concurrent streams |
+| Unbounded line buffer | Memory grows with response length | Drain processed lines, cap buffer at 64KB | Very long responses (10K+ tokens) |
+| Synchronous Mutex in stream closure | Contention under concurrent streams (unlikely with per-stream mutex) | Use per-stream state, not shared global state | Not a real risk if each stream has its own Mutex |
+| `String::from_utf8(bytes.to_vec())` per chunk | Double allocation (vec + string) per chunk | `std::str::from_utf8(&bytes)` borrows in place | High throughput, many concurrent streams |
+| SQLite UPDATE per completed stream | WAL contention under concurrent completions | Batch updates via channel, or accept per-request latency | 50+ concurrent streams completing simultaneously |
 
-**Prevention:**
-1. Decide upfront: is env var expansion a feature of the TOML parser (applies to all string values) or a feature of specific fields (only api_key)?
-2. If field-specific: document which fields support expansion and which do not.
-3. If generic: apply expansion to ALL string values in the config after TOML parsing but before validation. This is simpler to explain and implement (single pass over all strings).
-4. Either way: expansion should happen BEFORE config validation, so that `url = "${PROVIDER_URL}"` expanding to empty string fails URL validation.
+## "Looks Done But Isn't" Checklist
 
-**Which phase should address it:** Design phase of env var expansion.
+Things that appear complete but are missing critical pieces.
 
-**Confidence:** MEDIUM -- depends on user expectations and design choices.
+- [ ] **SSE parsing:** Often missing cross-chunk buffering -- verify with a test that splits `data: {"usage":...}\n` across two chunks at every possible byte position
+- [ ] **Usage extraction:** Often missing Groq `x_groq.usage` path -- verify with a mock Groq response
+- [ ] **Stream finalization:** Often missing the "stream ended without [DONE]" case -- verify with a mock that sends EOF after the last data chunk without `[DONE]`
+- [ ] **Request forwarding:** Often drops `stream_options` -- verify by capturing the upstream request and checking it contains `stream_options`
+- [ ] **Database timing:** Often has INSERT/UPDATE race -- verify with a test that delays the INSERT and asserts the UPDATE still succeeds (or that the single-write approach works)
+- [ ] **Client disconnect:** Often leaks the parsing state -- verify that when a client disconnects mid-stream, the stream closure's state is dropped and any finalization still runs
+- [ ] **Non-UTF8 resilience:** Often panics on non-UTF8 bytes -- verify with a mock that sends 0xFF bytes mid-stream
+- [ ] **Error streams:** Often tries to parse error response bodies as SSE -- verify that non-200 upstream responses are handled before reaching the SSE parser
+- [ ] **Empty streams:** Often fails on a stream that immediately sends `[DONE]` with no content chunks -- verify the zero-content-chunk case
 
----
+## Recovery Strategies
 
-### Pitfall 11: Test Fixtures That Contain Real-Looking Secrets
+When pitfalls occur despite prevention, how to recover.
 
-**What goes wrong:** Test code (selector.rs tests, handlers.rs tests, config.rs tests) constructs `ProviderConfig` with `api_key: None` or no api_key at all. When secrets handling is added, tests will need realistic api_key values. If someone uses a real key format (e.g., `api_key: Some("cashuA1REAL_LOOKING_TOKEN...")`) in test fixtures, those values may:
-- Appear in CI logs
-- Be committed to version control
-- Be mistaken for real credentials by secret scanning tools
+| Pitfall | Recovery Cost | Recovery Steps |
+|---------|---------------|----------------|
+| Split-chunk parsing bug (Pitfall 1) | LOW | Add buffering layer, existing data is not corrupted (just NULL usage fields in DB) |
+| Database INSERT/UPDATE race (Pitfall 3) | LOW | Switch to single-INSERT-on-completion, backfill NULL usage from provider logs if needed |
+| Missing `stream_options` forwarding (Pitfall 10) | LOW | Add field to request struct, redeploy. No data migration needed |
+| Provider-specific format not handled (Pitfall 4) | LOW | Add extraction path for new provider format, existing records stay with NULL usage |
+| Memory leak from unbounded buffer (Pitfall 8) | MEDIUM | Add buffer drain, may require restart under memory pressure |
+| Wrong token counts from delta counting (Pitfall 11) | HIGH | Must discard all estimated counts, cannot retroactively correct cost calculations |
 
-**Prevention:**
-1. Use obviously fake values in tests: `SecretString::from("test-key-not-real")`
-2. Add a `.gitignore` or pre-commit hook for common secret patterns
-3. If using the `secrecy` crate, test that `Debug`-formatting a test provider does NOT show the key -- this doubles as both a redaction test and a safety net for CI output
+## Pitfall-to-Phase Mapping
 
-**Which phase should address it:** Concurrent with the SecretString migration -- tests need updating anyway.
+How roadmap phases should address these pitfalls.
 
-**Confidence:** HIGH -- test construction visible throughout the test modules.
-
----
-
-## Phase-Specific Warnings
-
-| Phase Topic | Likely Pitfall | Mitigation |
-|---|---|---|
-| SecretString migration | Debug derive leaking keys (Pitfall 1) | Replace `String` with `SecretString`, verify with Debug-format test |
-| SecretString migration | Clone proliferating key copies (Pitfall 2) | SecretString zeroizes on drop; minimize copies via Arc |
-| SecretString migration | Serde compatibility breaks (Pitfall 8) | Enable secrecy serde feature, update tests incrementally |
-| Env var expansion | Failing open on missing vars (Pitfall 6) | Treat missing vars as hard errors, fail fast at config load |
-| Env var expansion | Field scope confusion (Pitfall 10) | Decide generic vs field-specific upfront |
-| Convention env var lookup | Precedence conflicts (Pitfall 7) | Document and enforce: explicit > expanded > convention |
-| Convention env var lookup | Name normalization edge cases (Pitfall 9) | Document rules, detect collisions, log expected var names |
-| Endpoint/error redaction | Error messages leaking keys (Pitfall 4) | Separate internal log messages from client-facing errors |
-| Endpoint/error redaction | /providers serialization risk (Pitfall 3) | SecretString blocks Serialize; add endpoint response test |
-| Endpoint/error redaction | tracing leaking URLs (Pitfall 5) | Audit all tracing calls, remove URL from info level |
-| Testing | Test fixtures with real-looking secrets (Pitfall 11) | Use obviously fake values, test Debug redaction |
-
-## Recommended Phase Ordering Based on Pitfalls
-
-The dependency chain for secrets handling:
-
-1. **SecretString type migration** (Pitfalls 1, 2, 3, 8) -- Foundation. Changes the type of `api_key` from `String` to `SecretString` across `ProviderConfig`, `SelectedProvider`, and related code. This is a mechanical migration guided by compiler errors. Provides automatic Debug redaction and Serialize protection. Must come first because all subsequent work builds on the new type.
-
-2. **Env var expansion** (Pitfalls 6, 7, 10) -- Configuration. Implements `${VAR}` syntax in TOML string values and convention-based `ARBSTR_<NAME>_API_KEY` lookup. Requires clear precedence rules and fail-fast on missing vars. Depends on phase 1 because expanded values must produce `SecretString`, not `String`.
-
-3. **Output surface redaction audit** (Pitfalls 4, 5) -- Hardening. Reviews every code path where secret-adjacent data reaches external surfaces: error messages to HTTP clients, tracing calls at info level, response bodies. Depends on phases 1-2 because the type migration eliminates the most dangerous leak paths; this phase catches what the type system cannot enforce.
-
-4. **Testing and validation** (Pitfall 11) -- Verification. Adds tests that verify redaction works across all surfaces. Integration tests that format providers, hit endpoints, trigger errors, and assert no key material appears. Can partially overlap with earlier phases.
-
-## Existing Code Vulnerabilities (Direct Observations)
-
-| File | Line(s) | Issue | Severity |
-|---|---|---|---|
-| `src/config.rs` | 52 | `#[derive(Debug)]` on `ProviderConfig` with `api_key: Option<String>` | CRITICAL |
-| `src/router/selector.rs` | 9-10 | `#[derive(Debug, Clone)]` on `SelectedProvider` with `api_key: Option<String>` | CRITICAL |
-| `src/router/selector.rs` | 33-34 | `#[derive(Debug, Clone)]` on `Router` containing `Vec<ProviderConfig>` | CRITICAL |
-| `src/config.rs` | 7 | `#[derive(Debug)]` on `Config` containing `Vec<ProviderConfig>` | CRITICAL |
-| `src/proxy/handlers.rs` | 506-508 | Error message includes reqwest error (may contain URL with credentials) | HIGH |
-| `src/proxy/handlers.rs` | 526-529 | Error message includes provider error body (may echo credentials) | HIGH |
-| `src/proxy/handlers.rs` | 576-581 | `tracing::info!` logs provider URL at default log level | MODERATE |
-| `src/proxy/handlers.rs` | 765-784 | `/providers` endpoint safe today but no type-level protection against future `Serialize` addition | LOW (latent) |
-| `src/proxy/server.rs` | 29 | `AppState` stores `Arc<Config>` -- Debug on AppState would leak all keys | MODERATE |
+| Pitfall | Prevention Phase | Verification |
+|---------|------------------|--------------|
+| Pitfall 1: Chunk splitting | Phase 1 (Core SSE parser) | Unit test: SSE events split at every byte position |
+| Pitfall 2: Tee architecture | Phase 1 (Stream wrapper design) | Integration test: client receives identical bytes as direct provider call |
+| Pitfall 3: DB write timing | Phase 1 (Design decision) | Integration test: completed stream has non-NULL usage in DB |
+| Pitfall 4: Provider format differences | Phase 1 (Design) + Phase 2 (Provider-specific) | Mock tests per provider format |
+| Pitfall 5: [DONE] handling | Phase 1 (Finalization logic) | Test: stream with [DONE], stream without [DONE], stream with only [DONE] |
+| Pitfall 6: Send + 'static | Phase 1 (Implementation) | Compiler enforces this -- if it compiles, it works |
+| Pitfall 7: SSE comment lines | Phase 1 (Parser) | Test: stream with `: keep-alive` comment lines interspersed |
+| Pitfall 8: Memory growth | Phase 1 (Buffer management) | Test: stream 1MB of SSE data, assert memory does not grow linearly |
+| Pitfall 9: Parsing overhead | Phase 2 (Optimization) | Benchmark: TTFB and throughput with and without interception |
+| Pitfall 10: stream_options forwarding | Phase 1 (Request struct) | Test: client sends stream_options, upstream receives it |
+| Pitfall 11: Token counting approach | Phase 1 (Design decision) | Code review: no delta-counting code exists |
 
 ## Sources
 
-- Direct codebase analysis of `/home/john/vault/projects/github.com/arbstr/src/` (all source files read)
-- [secrecy crate documentation](https://docs.rs/secrecy/latest/secrecy/) -- SecretString, SecretBox, ExposeSecret trait, serde feature
-- [Rust zeroize move/copy/drop pitfalls](https://benma.github.io/2020/10/16/rust-zeroize-move.html) -- memory copies surviving moves and drops
-- [Secure Configuration and Secrets Management in Rust](https://leapcell.io/blog/secure-configuration-and-secrets-management-in-rust-with-secrecy-and-environment-variables) -- secrecy + serde integration patterns
-- [tracing instrument macro](https://docs.rs/tracing/latest/tracing/attr.instrument.html) -- skip and skip_all for sensitive fields
-- [veil crate for derive-based redaction](https://github.com/primait/veil) -- alternative to manual Debug impl
-- [redaction crate](https://github.com/sformisano/redaction) -- context-based redaction patterns
-- Confidence: HIGH overall. All critical pitfalls are directly observable in the codebase. Library behavior verified against official crate documentation.
+- Direct codebase analysis of arbstr `src/proxy/handlers.rs` (streaming handler at lines 665-729), `src/proxy/types.rs` (request struct), `src/storage/logging.rs` (fire-and-forget pattern)
+- [OpenAI Streaming API Reference](https://platform.openai.com/docs/api-reference/chat-streaming) -- stream_options, include_usage, final chunk format
+- [OpenAI Developers announcement](https://x.com/OpenAIDevs/status/1787573348496773423) -- stream_options feature launch
+- [OpenRouter Streaming Documentation](https://openrouter.ai/docs/api/reference/streaming) -- SSE comments, mid-stream errors, normalization
+- [Groq streaming usage discussion](https://github.com/vercel/ai/discussions/2290) -- x_groq.usage non-standard field
+- [LiteLLM streaming token usage issue](https://github.com/BerriAI/litellm/issues/3553) -- provider-specific usage format differences
+- [Axum SSE backpressure discussion](https://users.rust-lang.org/t/axum-sse-and-backpressure/133061) -- backpressure handling patterns
+- [Axum proxy streaming discussion](https://github.com/tokio-rs/axum/discussions/1821) -- bytes_stream proxying patterns
+- [Adam Chalmers: Static streams for faster async proxies](https://blog.adamchalmers.com/streaming-proxy/) -- stream forwarding patterns in Rust
+- [eventsource-stream crate](https://docs.rs/eventsource-stream/) -- Rust SSE parsing with cross-chunk buffering
+- [Axum client disconnect detection](https://users.rust-lang.org/t/how-to-detect-an-a-dropped-sse-server-sent-event-client-using-axum/101028) -- Drop-based cleanup patterns
+- [Simon Willison: How streaming LLM APIs work](https://til.simonwillison.net/llms/streaming-llm-apis) -- SSE format comparison across providers
+- [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming) -- event-typed SSE format differences
+- [Tokio/Reqwest byte stream to lines](https://users.rust-lang.org/t/tokio-reqwest-byte-stream-to-lines/65258) -- line buffering for reqwest byte streams
+
+---
+*Pitfalls research for: SSE stream interception and token extraction in Rust proxy*
+*Researched: 2026-02-15*
