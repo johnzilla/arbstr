@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 14 -- Routing Integration
+**Current focus:** Phase 15 -- Enhanced Health Endpoint (complete)
 
 ## Current Position
 
-Phase: 14 of 15 (Routing Integration)
-Plan: 2 of 2 in current phase
-Status: Phase 14 complete -- all plans executed
-Last activity: 2026-02-16 -- Plan 14-02 executed (streaming circuit integration + integration tests)
+Phase: 15 of 15 (Enhanced Health Endpoint)
+Plan: 1 of 1 in current phase
+Status: Phase 15 complete -- all plans executed. Milestone v1.4 complete.
+Last activity: 2026-02-16 -- Plan 15-01 executed (enhanced health endpoint with per-provider circuit state)
 
-Progress: [████████░░] 80% (4/5 plans)
+Progress: [██████████] 100% (5/5 plans)
 
 ## Performance Metrics
 
@@ -74,6 +74,11 @@ See .planning/milestones/ for per-milestone decision history.
 - ProbeGuard created before send_to_provider and resolved via match &result pattern
 - Integration tests use lightweight axum mock servers on random ports (not wiremock)
 
+**v1.4 execution decisions (15-01):**
+- HealthResponse has only status and providers fields (no service field) per locked decision
+- all_states() uses DashMap per-shard locks, no global lock for snapshot collection
+- Half-open counts as degraded (not unhealthy) -- only fully Open circuits trigger unhealthy
+
 ### Pending Todos
 
 None.
@@ -85,5 +90,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 14-02-PLAN.md (streaming circuit integration + integration tests)
-Resume file: Phase 14 complete. Next: Phase 15 (health endpoint)
+Stopped at: Completed 15-01-PLAN.md (enhanced health endpoint with per-provider circuit state)
+Resume file: Phase 15 complete. Milestone v1.4 (Circuit Breaker) complete.
