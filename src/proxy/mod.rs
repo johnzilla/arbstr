@@ -6,6 +6,7 @@
 mod handlers;
 pub mod retry;
 mod server;
+pub mod stats;
 pub mod stream;
 pub mod types;
 

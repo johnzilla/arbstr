@@ -27,6 +27,9 @@ pub enum Error {
     #[error("Invalid request: {0}")]
     BadRequest(String),
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -43,6 +46,7 @@ impl IntoResponse for Error {
             Error::Provider(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Error::Upstream(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Error::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            Error::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Error::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
