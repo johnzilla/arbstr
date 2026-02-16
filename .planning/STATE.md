@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 13 of 15 (Circuit Breaker State Machine)
-Plan: 1 of 2 in current phase
-Status: Executing (plan 01 complete, plan 02 pending)
-Last activity: 2026-02-16 -- Plan 13-01 executed (circuit breaker state machine)
+Plan: 2 of 2 in current phase (PHASE COMPLETE)
+Status: Phase 13 complete -- ready for Phase 14
+Last activity: 2026-02-16 -- Plan 13-02 executed (circuit breaker registry and concurrency)
 
-Progress: [██░░░░░░░░] 20% (1/5 plans)
+Progress: [████░░░░░░] 40% (2/5 plans)
 
 ## Performance Metrics
 
@@ -35,8 +35,8 @@ Progress: [██░░░░░░░░] 20% (1/5 plans)
 - Average duration: 3.5 min
 
 **v1.4 Velocity:**
-- Total plans completed: 1
-- Average duration: 4 min
+- Total plans completed: 2
+- Average duration: 5 min
 
 ## Accumulated Context
 
@@ -59,6 +59,11 @@ See .planning/milestones/ for per-milestone decision history.
 - Module-level #![allow(dead_code)] for clippy compliance until Plan 13-02 consumes types
 - record_success logs at DEBUG level (routine operation, not state transition)
 
+**v1.4 execution decisions (13-02):**
+- watch::subscribe() stale-value prevention instead of immediate Pending reset after probe result
+- Unknown providers allowed through acquire_permit (opt-in for configured providers)
+- Empty CircuitBreakerRegistry for test AppState construction in existing integration tests
+
 ### Pending Todos
 
 None.
@@ -70,5 +75,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 13-01-PLAN.md (circuit breaker state machine TDD)
-Resume file: .planning/phases/13-circuit-breaker-state-machine/13-02-PLAN.md
+Stopped at: Completed 13-02-PLAN.md (circuit breaker registry and concurrency layer)
+Resume file: Phase 13 complete. Next: Phase 14 (routing integration)
