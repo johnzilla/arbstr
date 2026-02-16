@@ -68,3 +68,157 @@ pub fn spawn_log_write(pool: &SqlitePool, log: RequestLog) {
         }
     });
 }
+
+/// Update an existing request log entry with post-stream usage data.
+///
+/// Writes input_tokens, output_tokens, and cost_sats to the row matching
+/// the given correlation_id. Returns the number of rows affected.
+///
+/// Per user decision: only updates token/cost columns. Latency stays as
+/// TTFB from INSERT (Phase 10 handles full-stream latency).
+pub async fn update_usage(
+    pool: &SqlitePool,
+    correlation_id: &str,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    cost_sats: Option<f64>,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE requests SET input_tokens = ?, output_tokens = ?, cost_sats = ? WHERE correlation_id = ?",
+    )
+    .bind(input_tokens.map(|v| v as i64))
+    .bind(output_tokens.map(|v| v as i64))
+    .bind(cost_sats)
+    .bind(correlation_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Spawn a fire-and-forget database usage update.
+///
+/// Warns if the update affects zero rows (row not found) or fails.
+/// Logs at debug level on success.
+pub fn spawn_usage_update(
+    pool: &SqlitePool,
+    correlation_id: String,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    cost_sats: Option<f64>,
+) {
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        match update_usage(&pool, &correlation_id, input_tokens, output_tokens, cost_sats).await {
+            Ok(0) => {
+                tracing::warn!(
+                    correlation_id = %correlation_id,
+                    "Usage update affected zero rows"
+                );
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    correlation_id = %correlation_id,
+                    "Updated request log with usage data"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    correlation_id = %correlation_id,
+                    error = %e,
+                    "Failed to update request log with usage data"
+                );
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create an in-memory SQLite pool with migrations applied.
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// Helper: insert a test row and return its correlation_id.
+    async fn insert_test_row(pool: &SqlitePool, correlation_id: &str) {
+        let log = RequestLog {
+            correlation_id: correlation_id.to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            model: "gpt-4o".to_string(),
+            provider: Some("test-provider".to_string()),
+            policy: None,
+            streaming: true,
+            input_tokens: None,
+            output_tokens: None,
+            cost_sats: None,
+            provider_cost_sats: None,
+            latency_ms: 100,
+            success: true,
+            error_status: None,
+            error_message: None,
+        };
+        log.insert(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_usage_writes_tokens() {
+        let pool = test_pool().await;
+        let cid = "test-update-001";
+        insert_test_row(&pool, cid).await;
+
+        let rows = update_usage(&pool, cid, Some(150), Some(300), Some(42.5))
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+
+        // Verify the values were written
+        let row: (Option<i64>, Option<i64>, Option<f64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, cost_sats FROM requests WHERE correlation_id = ?",
+        )
+        .bind(cid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row.0, Some(150));
+        assert_eq!(row.1, Some(300));
+        assert!((row.2.unwrap() - 42.5).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn update_usage_with_nulls() {
+        let pool = test_pool().await;
+        let cid = "test-update-002";
+        insert_test_row(&pool, cid).await;
+
+        let rows = update_usage(&pool, cid, None, None, None).await.unwrap();
+        assert_eq!(rows, 1);
+
+        // Verify the values are NULL
+        let row: (Option<i64>, Option<i64>, Option<f64>) = sqlx::query_as(
+            "SELECT input_tokens, output_tokens, cost_sats FROM requests WHERE correlation_id = ?",
+        )
+        .bind(cid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(row.0.is_none());
+        assert!(row.1.is_none());
+        assert!(row.2.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_usage_no_matching_row() {
+        let pool = test_pool().await;
+
+        let rows = update_usage(&pool, "nonexistent-id", Some(100), Some(200), Some(10.0))
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "Should affect zero rows for non-existent correlation_id");
+    }
+}
