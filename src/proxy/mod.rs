@@ -4,6 +4,7 @@
 //! requests and forwards them to selected providers.
 
 mod handlers;
+pub mod logs;
 pub mod retry;
 mod server;
 pub mod stats;

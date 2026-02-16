@@ -33,7 +33,8 @@ pub async fn count_logs(
     success: Option<bool>,
     streaming: Option<bool>,
 ) -> Result<i64, sqlx::Error> {
-    let mut sql = String::from("SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND timestamp <= ?");
+    let mut sql =
+        String::from("SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND timestamp <= ?");
 
     if model.is_some() {
         sql.push_str(" AND LOWER(model) = LOWER(?)");
@@ -71,6 +72,7 @@ pub async fn count_logs(
 /// Builds a dynamic WHERE clause matching `count_logs`, then appends ORDER BY
 /// and LIMIT/OFFSET. The `sort_column` and `sort_direction` parameters are
 /// pre-validated &'static str values from the handler's whitelist.
+#[allow(clippy::too_many_arguments)]
 pub async fn query_logs(
     pool: &SqlitePool,
     since: &str,

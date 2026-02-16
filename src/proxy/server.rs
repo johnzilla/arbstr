@@ -49,6 +49,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models", get(handlers::list_models))
         // arbstr extensions
         .route("/v1/stats", get(handlers::stats))
+        .route("/v1/requests", get(handlers::logs))
         .route("/health", get(handlers::health))
         .route("/providers", get(handlers::list_providers))
         // State and middleware
