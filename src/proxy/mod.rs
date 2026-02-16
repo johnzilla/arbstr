@@ -6,6 +6,7 @@
 mod handlers;
 pub mod retry;
 mod server;
+pub mod stream;
 pub mod types;
 
 pub use server::{run_server, AppState, RequestId};
