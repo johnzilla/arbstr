@@ -488,13 +488,22 @@ async fn send_to_provider(
     // Build upstream URL
     let upstream_url = format!("{}/chat/completions", provider.url.trim_end_matches('/'));
 
+    // Inject stream_options for streaming requests (at send time, per user decision)
+    let request_body = if is_streaming {
+        let mut modified = request.clone();
+        crate::proxy::types::ensure_stream_options(&mut modified);
+        modified
+    } else {
+        request.clone()
+    };
+
     // Forward request to provider
     let mut upstream_request = state
         .http_client
         .post(&upstream_url)
         .header(header::CONTENT_TYPE, "application/json")
         .header("Idempotency-Key", correlation_id)
-        .json(request);
+        .json(&request_body);
 
     if let Some(api_key) = &provider.api_key {
         upstream_request = upstream_request.header(

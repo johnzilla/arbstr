@@ -6,7 +6,9 @@
 mod handlers;
 pub mod retry;
 mod server;
-mod types;
+pub mod types;
 
 pub use server::{run_server, AppState, RequestId};
-pub use types::{ChatCompletionRequest, ChatCompletionResponse, Message};
+pub use types::{
+    ensure_stream_options, ChatCompletionRequest, ChatCompletionResponse, Message, StreamOptions,
+};
