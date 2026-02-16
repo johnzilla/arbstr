@@ -60,11 +60,11 @@ See: .planning/milestones/v1.2-ROADMAP.md for full details.
   3. User can pass `since` and `until` ISO 8601 query parameters to scope any stats response to an arbitrary time window
   4. User can pass a `range` query parameter (last_1h, last_24h, last_7d, last_30d) as a shortcut instead of explicit timestamps
   5. User can pass `model` or `provider` query parameters to narrow stats to a specific model or provider
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 11-01: TBD
-- [ ] 11-02: TBD
+- [ ] 11-01-PLAN.md -- Storage layer, handler, and route wiring for /v1/stats endpoint
+- [ ] 11-02-PLAN.md -- Integration tests for /v1/stats endpoint
 
 ### Phase 12: Request Log Listing
 **Goal**: Users can browse and investigate individual request records with flexible filtering and sorting
@@ -96,5 +96,5 @@ Phases execute in numeric order: 11 -> 12
 | 8. Stream Request Foundation | v1.2 | 1/1 | Complete | 2026-02-16 |
 | 9. SSE Stream Interception | v1.2 | 2/2 | Complete | 2026-02-16 |
 | 10. Streaming Observability Integration | v1.2 | 1/1 | Complete | 2026-02-16 |
-| 11. Aggregate Stats and Filtering | v1.3 | 0/? | Not started | - |
+| 11. Aggregate Stats and Filtering | v1.3 | 0/2 | Not started | - |
 | 12. Request Log Listing | v1.3 | 0/? | Not started | - |
