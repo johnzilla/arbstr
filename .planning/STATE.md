@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-15)
 
 ## Current Position
 
-Phase: 9 of 10 (SSE Stream Interception)
-Plan: 1 of 2 in current phase
-Status: Phase 9 Plan 1 complete, Plan 2 ready for execution
-Last activity: 2026-02-16 -- Executed Phase 9 Plan 1 (SseObserver TDD)
+Phase: 9 of 10 (SSE Stream Interception) -- COMPLETE
+Plan: 2 of 2 in current phase -- COMPLETE
+Status: Phase 9 complete, ready for Phase 10
+Last activity: 2026-02-16 -- Executed Phase 9 Plan 2 (wrap_sse_stream public API)
 
-Progress: [################----] 16/? plans (v1: 10, v1.1: 4, v1.2: 2)
+Progress: [#################---] 17/? plans (v1: 10, v1.1: 4, v1.2: 3)
 
 ## Performance Metrics
 
@@ -31,9 +31,10 @@ Progress: [################----] 16/? plans (v1: 10, v1.1: 4, v1.2: 2)
 - Phase 7 Plan 1: 3 min (2 tasks, 3 files)
 
 **v1.2 Velocity:**
-- Total plans completed: 2
+- Total plans completed: 3
 - Phase 8 Plan 1: 3 min (2 tasks, 5 files)
 - Phase 9 Plan 1: 3 min (2 tasks, 2 files)
+- Phase 9 Plan 2: 4 min (1 task, 3 files)
 
 ## Accumulated Context
 
@@ -54,6 +55,10 @@ See .planning/milestones/v1.1-ROADMAP.md for v1.1 decision history.
 - Phase 9-01: Vec<u8> buffer (not String) for safe cross-chunk UTF-8 handling
 - Phase 9-01: 64KB buffer cap with full drain on overflow to prevent OOM
 - Phase 9-01: into_result returns empty when [DONE] not received
+- Phase 9-02: StreamResultHandle as Arc<Mutex<Option<StreamResult>>> for cross-thread result delivery
+- Phase 9-02: Drop impl writes result to handle, ensuring availability on early stream drop
+- Phase 9-02: catch_unwind(AssertUnwindSafe(...)) wraps observer.process_chunk for panic isolation
+- Phase 9-02: Poisoned mutex recovery via unwrap_or_else(|e| e.into_inner())
 
 ### Pending Todos
 
@@ -67,5 +72,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 09-01-PLAN.md (SseObserver TDD)
-Resume file: .planning/phases/09-sse-stream-interception/09-02-PLAN.md
+Stopped at: Completed 09-02-PLAN.md (wrap_sse_stream public API) -- Phase 9 complete
+Resume file: .planning/phases/10-stream-db-update/ (Phase 10 next)
