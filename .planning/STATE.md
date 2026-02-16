@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-15)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** v1.2 Streaming Observability -- Phase 8 (Stream Request Foundation)
+**Current focus:** v1.2 Streaming Observability -- Phase 9 (SSE Stream Interception)
 
 ## Current Position
 
-Phase: 8 of 10 (Stream Request Foundation)
-Plan: 1 of 1 in current phase (COMPLETE)
-Status: Phase 8 complete, ready for Phase 9
-Last activity: 2026-02-16 -- Executed 08-01 Stream Request Foundation
+Phase: 9 of 10 (SSE Stream Interception)
+Plan: 0 of ? in current phase
+Status: Phase 9 context gathered, ready for planning
+Last activity: 2026-02-16 -- Gathered Phase 9 context
 
 Progress: [###############-----] 15/? plans (v1: 10, v1.1: 4, v1.2: 1)
 
@@ -46,6 +46,10 @@ See .planning/milestones/v1.1-ROADMAP.md for v1.1 decision history.
 - Phase 8: Merge semantics for stream_options (preserve client values, only add include_usage when missing)
 - Phase 8: Inject stream_options at send time via clone-and-mutate, not at parse time
 - Phase 8: update_usage writes tokens/cost only; latency stays as TTFB from INSERT
+- Phase 9: Extract usage + finish_reason, not model/other metadata
+- Phase 9: Strict OpenAI SSE format only, no fallback parsing
+- Phase 9: No data returned without [DONE] — unreliable streams yield empty result
+- Phase 9: Panic isolation — extraction bugs must never break client stream
 
 ### Pending Todos
 
@@ -59,5 +63,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 08-01-PLAN.md (Phase 8 complete)
-Resume file: .planning/phases/08-stream-request-foundation/08-01-SUMMARY.md
+Stopped at: Phase 9 context gathered
+Resume file: .planning/phases/09-sse-stream-interception/09-CONTEXT.md
