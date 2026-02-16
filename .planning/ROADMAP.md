@@ -57,7 +57,7 @@ See: .planning/milestones/v1.3-ROADMAP.md for full details.
 ### v1.4 Circuit Breaker
 
 - [x] **Phase 13: Circuit Breaker State Machine** - Per-provider 3-state circuit breaker with consecutive failure tracking and half-open recovery (completed 2026-02-16)
-- [ ] **Phase 14: Routing Integration** - Handler-level circuit filtering, fail-fast 503, and outcome recording for both streaming and non-streaming paths
+- [x] **Phase 14: Routing Integration** - Handler-level circuit filtering, fail-fast 503, and outcome recording for both streaming and non-streaming paths (completed 2026-02-16)
 - [ ] **Phase 15: Enhanced Health Endpoint** - Per-provider circuit state and degraded/unhealthy status reporting via /health
 
 ## Phase Details
@@ -112,5 +112,5 @@ Plans:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 13. Circuit Breaker State Machine | v1.4 | Complete    | 2026-02-16 | - |
-| 14. Routing Integration | v1.4 | 0/2 | Not started | - |
+| 14. Routing Integration | v1.4 | Complete    | 2026-02-16 | - |
 | 15. Enhanced Health Endpoint | v1.4 | 0/1 | Not started | - |
