@@ -11,7 +11,6 @@ use axum::{
 };
 use tokio::time::{timeout_at, Duration, Instant};
 
-#[allow(unused_imports)] // Used in Task 2 (non-streaming circuit integration)
 use super::circuit_breaker::{PermitType, ProbeGuard};
 use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
 use super::server::{AppState, RequestId};
@@ -80,7 +79,6 @@ fn extract_usage(response: &serde_json::Value) -> Option<(u32, u32)> {
 ///
 /// Returns true for 5xx server errors (aligned with retry::is_retryable).
 /// Returns false for 4xx client errors and all other codes.
-#[allow(dead_code)] // Used in Task 2 (non-streaming circuit integration)
 fn is_circuit_failure(status_code: u16) -> bool {
     (500..600).contains(&status_code)
 }
@@ -297,13 +295,86 @@ pub async fn chat_completions(
             }
         };
 
-        // Build CandidateInfo list for retry module
-        let candidate_infos: Vec<CandidateInfo> = candidates
+        // Filter candidates through circuit breaker (RTG-01)
+        let mut filtered_candidates = Vec::new();
+        let mut probe_provider: Option<String> = None;
+        for candidate in &candidates {
+            match state.circuit_breakers.acquire_permit(&candidate.name).await {
+                Ok(PermitType::Normal) => {
+                    filtered_candidates.push(candidate.clone());
+                }
+                Ok(PermitType::Probe) => {
+                    probe_provider = Some(candidate.name.clone());
+                    // Probe candidate goes first -- it IS the probe request
+                    filtered_candidates.insert(0, candidate.clone());
+                }
+                Err(open_err) => {
+                    tracing::debug!(
+                        provider = %candidate.name,
+                        reason = %open_err.reason,
+                        "Skipping provider: circuit open"
+                    );
+                }
+            }
+        }
+
+        // Fail-fast if all circuits are open (RTG-02)
+        if filtered_candidates.is_empty() {
+            let latency_ms = start.elapsed().as_millis() as i64;
+
+            // Log the circuit-open error
+            if let Some(pool) = &state.db {
+                spawn_log_write(
+                    pool,
+                    RequestLog {
+                        correlation_id: correlation_id.clone(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        model: model.clone(),
+                        provider: None,
+                        policy: policy_name.clone(),
+                        streaming: false,
+                        input_tokens: None,
+                        output_tokens: None,
+                        cost_sats: None,
+                        provider_cost_sats: None,
+                        latency_ms,
+                        success: false,
+                        error_status: Some(503),
+                        error_message: Some(format!(
+                            "All providers have open circuits for model '{}'",
+                            model
+                        )),
+                    },
+                );
+            }
+
+            let circuit_error = Error::CircuitOpen {
+                model: model.clone(),
+            };
+            let mut error_response = circuit_error.into_response();
+            attach_arbstr_headers(
+                &mut error_response,
+                &correlation_id,
+                latency_ms,
+                None,
+                None,
+                false,
+            );
+            return Ok(error_response);
+        }
+
+        // Build CandidateInfo list for retry module (using filtered candidates)
+        let candidate_infos: Vec<CandidateInfo> = filtered_candidates
             .iter()
             .map(|c| CandidateInfo {
                 name: c.name.clone(),
             })
             .collect();
+
+        // Create ProbeGuard before timeout_at so it survives cancellation (RTG-03)
+        let probe_guard: Option<ProbeGuard<'_>> = probe_provider
+            .as_ref()
+            .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
 
         // Shared attempt tracking -- created before timeout so it survives cancellation
         let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
@@ -313,7 +384,7 @@ pub async fn chat_completions(
         let timeout_result = timeout_at(
             deadline,
             retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
-                let provider = candidates
+                let provider = filtered_candidates
                     .iter()
                     .find(|c| c.name == info.name)
                     .expect("candidate info must match a provider");
@@ -327,6 +398,54 @@ pub async fn chat_completions(
         // Read attempt history (available even after timeout)
         let recorded_attempts = attempts.lock().unwrap().clone();
         let retries_header = format_retries_header(&recorded_attempts);
+
+        // Record circuit breaker outcomes for failed attempts (RTG-03)
+        for attempt in &recorded_attempts {
+            if is_circuit_failure(attempt.status_code) {
+                state.circuit_breakers.record_failure(
+                    &attempt.provider_name,
+                    "5xx",
+                    &format!("HTTP {}", attempt.status_code),
+                );
+            }
+        }
+
+        // Resolve ProbeGuard and record circuit breaker success (RTG-03)
+        // Must resolve before the match consumes timeout_result by move.
+        if let Some(guard) = probe_guard {
+            let probe_name = probe_provider.as_deref().unwrap_or("");
+            match &timeout_result {
+                Ok(retry_outcome) => match &retry_outcome.result {
+                    Ok(outcome) if outcome.provider_name == probe_name => {
+                        // Probe provider won -- record_probe_success via guard
+                        guard.success();
+                    }
+                    Ok(outcome) => {
+                        // Different provider won -- record success for winner,
+                        // probe didn't get reached or failed earlier
+                        state
+                            .circuit_breakers
+                            .record_success(&outcome.provider_name);
+                        guard.failure("not_reached", "different provider succeeded");
+                    }
+                    Err(_) => {
+                        guard.failure("5xx", "all providers failed");
+                    }
+                },
+                Err(_) => {
+                    guard.failure("timeout", "retry chain timed out");
+                }
+            }
+        } else {
+            // No probe -- record success for winning provider
+            if let Ok(retry_outcome) = &timeout_result {
+                if let Ok(outcome) = &retry_outcome.result {
+                    state
+                        .circuit_breakers
+                        .record_success(&outcome.provider_name);
+                }
+            }
+        }
 
         match timeout_result {
             Err(_elapsed) => {
