@@ -87,11 +87,11 @@ Plans:
   2. When all providers for a requested model have open circuits, the proxy returns 503 immediately without attempting any requests
   3. After a non-streaming request completes (including retries), the circuit breaker records the outcome for each attempted provider
   4. After a streaming response completes in the background task, the circuit breaker records whether the stream succeeded or failed
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 14-01: TBD
-- [ ] 14-02: TBD
+- [ ] 14-01-PLAN.md -- Error::CircuitOpen variant, non-streaming circuit filtering, and outcome recording
+- [ ] 14-02-PLAN.md -- Streaming circuit filtering, outcome recording, and integration tests
 
 ### Phase 15: Enhanced Health Endpoint
 **Goal**: Operators can see per-provider circuit health and overall system status at a glance
