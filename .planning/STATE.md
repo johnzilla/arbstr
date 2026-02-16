@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** v1.3 Cost Querying API -- Phase 11: Aggregate Stats and Filtering
+**Current focus:** v1.3 Cost Querying API -- Phase 12: Request Log Listing
 
 ## Current Position
 
-Phase: 11 of 12 (Aggregate Stats and Filtering)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase complete
-Last activity: 2026-02-16 -- Completed 11-02 (Stats Integration Tests)
+Phase: 12 of 12 (Request Log Listing)
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-02-16 -- Completed 12-01 (Request Log Listing Endpoint)
 
-Progress: [=====================.] 91% (11/12 phases complete)
+Progress: [=====================.] 95% (11.5/12 phases complete)
 
 ## Performance Metrics
 
@@ -38,9 +38,10 @@ Progress: [=====================.] 91% (11/12 phases complete)
 - Phase 10 Plan 1: 4 min (2 tasks, 5 files)
 
 **v1.3 Velocity:**
-- Total plans completed: 2
+- Total plans completed: 3
 - Phase 11 Plan 1: 3 min (2 tasks, 7 files)
 - Phase 11 Plan 2: 5 min (2 tasks, 9 files)
+- Phase 12 Plan 1: 3 min (2 tasks, 6 files)
 
 ## Accumulated Context
 
@@ -67,6 +68,11 @@ See .planning/milestones/ for per-milestone decision history.
 - rfc3339z() helper for URL-safe timestamps with Z suffix
 - COALESCE(AVG(), 0.0) not COALESCE(AVG(), 0) for SQLite f64 type compatibility
 
+**v1.3 execution decisions (12-01):**
+- Reuse resolve_time_range and exists_in_db from stats module (no duplication)
+- allow(clippy::too_many_arguments) on query_logs (11 params for dynamic SQL)
+- Use clamp(1, 100) for per_page and div_ceil for total_pages
+
 ### Pending Todos
 
 None.
@@ -78,5 +84,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 11-02-PLAN.md (Phase 11 complete)
-Resume file: .planning/phases/11-aggregate-stats-and-filtering/11-02-SUMMARY.md
+Stopped at: Completed 12-01-PLAN.md
+Resume file: .planning/phases/12-request-log-listing/12-01-SUMMARY.md
