@@ -63,7 +63,10 @@ Plans:
   2. The usage object (prompt_tokens, completion_tokens) is extracted from the final SSE chunk when present
   3. Streams without usage data (unsupported providers) pass through without error, yielding no extracted values
   4. The stream wrapper passes all bytes through unmodified to the client (observation-only, zero content mutation)
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 09-01-PLAN.md — SseObserver core: types, line buffer, usage/finish_reason extraction (TDD)
+- [ ] 09-02-PLAN.md — wrap_sse_stream public API with panic isolation, Drop finalization, module registration
 
 ### Phase 10: Streaming Observability Integration
 **Goal**: Every streaming request logs accurate token counts, cost, full-duration latency, and completion status, with cost surfaced to clients via trailing SSE event
@@ -92,5 +95,5 @@ Phase 8 and Phase 9 are independent and can execute in either order. Phase 10 re
 | 6. Environment Variable Expansion | v1.1 | 2/2 | Complete | 2026-02-15 |
 | 7. Output Surface Hardening | v1.1 | 1/1 | Complete | 2026-02-15 |
 | 8. Stream Request Foundation | v1.2 | 0/1 | Planned | - |
-| 9. SSE Stream Interception | v1.2 | 0/? | Not started | - |
+| 9. SSE Stream Interception | v1.2 | 0/2 | Planned | - |
 | 10. Streaming Observability Integration | v1.2 | 0/? | Not started | - |
