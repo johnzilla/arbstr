@@ -78,7 +78,9 @@ Plans:
   3. Stream completion status distinguishes normal completion, client disconnection, and provider error in the log
   4. After the upstream `[DONE]` marker, the client receives a trailing SSE event containing `arbstr_cost_sats` and `arbstr_latency_ms`
   5. Providers that do not send usage data degrade gracefully to NULL tokens and cost (no regression from current behavior)
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 10-01-PLAN.md — Migration, DB function, trailing event builder, channel-based streaming handler with full observability wiring
 
 ## Progress
 
@@ -96,4 +98,4 @@ Phase 8 and Phase 9 are independent and can execute in either order. Phase 10 re
 | 7. Output Surface Hardening | v1.1 | 1/1 | Complete | 2026-02-15 |
 | 8. Stream Request Foundation | v1.2 | 0/1 | Planned | - |
 | 9. SSE Stream Interception | v1.2 | 0/2 | Planned | - |
-| 10. Streaming Observability Integration | v1.2 | 0/? | Not started | - |
+| 10. Streaming Observability Integration | v1.2 | 0/1 | Planned | - |
