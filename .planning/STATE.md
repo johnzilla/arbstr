@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 13 -- Circuit Breaker State Machine
+**Current focus:** Phase 14 -- Routing Integration
 
 ## Current Position
 
-Phase: 13 of 15 (Circuit Breaker State Machine)
-Plan: 2 of 2 in current phase (PHASE COMPLETE)
-Status: Phase 13 complete -- ready for Phase 14
-Last activity: 2026-02-16 -- Plan 13-02 executed (circuit breaker registry and concurrency)
+Phase: 14 of 15 (Routing Integration)
+Plan: 1 of 2 in current phase
+Status: Plan 14-01 complete -- ready for Plan 14-02
+Last activity: 2026-02-16 -- Plan 14-01 executed (non-streaming circuit integration)
 
-Progress: [████░░░░░░] 40% (2/5 plans)
+Progress: [██████░░░░] 60% (3/5 plans)
 
 ## Performance Metrics
 
@@ -35,8 +35,8 @@ Progress: [████░░░░░░] 40% (2/5 plans)
 - Average duration: 3.5 min
 
 **v1.4 Velocity:**
-- Total plans completed: 2
-- Average duration: 5 min
+- Total plans completed: 3
+- Average duration: 4 min
 
 ## Accumulated Context
 
@@ -64,6 +64,11 @@ See .planning/milestones/ for per-milestone decision history.
 - Unknown providers allowed through acquire_permit (opt-in for configured providers)
 - Empty CircuitBreakerRegistry for test AppState construction in existing integration tests
 
+**v1.4 execution decisions (14-01):**
+- ProbeGuard resolved before match timeout_result using &-references to avoid move conflicts
+- is_circuit_failure (500-599 range) for recording failures, aligned with retry::is_retryable
+- Probe candidate inserted at index 0 in filtered_candidates to become retry primary
+
 ### Pending Todos
 
 None.
@@ -75,5 +80,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 13-02-PLAN.md (circuit breaker registry and concurrency layer)
-Resume file: Phase 13 complete. Next: Phase 14 (routing integration)
+Stopped at: Completed 14-01-PLAN.md (non-streaming circuit integration)
+Resume file: Plan 14-01 complete. Next: Plan 14-02 (streaming circuit integration)
