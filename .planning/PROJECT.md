@@ -8,14 +8,9 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: v1.2 Streaming Observability
+## Current Milestone: None (planning next)
 
-**Goal:** Complete the logging story by extracting token counts and costs from streaming responses, ensuring every request — streamed or not — has accurate observability data.
-
-**Target features:**
-- Token count extraction from SSE streaming responses
-- Post-stream log updates with accurate cost data
-- Streaming cost surfaced in response metadata
+All three milestones shipped (v1, v1.1, v1.2). Ready for next milestone planning.
 
 ## Requirements
 
@@ -51,6 +46,12 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - ✓ No API key leaks in endpoints, CLI, errors, or tracing — v1.1
 - ✓ Masked key prefix display (`cashuA...***`) in providers output — v1.1
 - ✓ Startup warns on literal plaintext keys in config — v1.1
+- ✓ Token counts extracted from streaming responses via stream_options injection — v1.2
+- ✓ Post-stream database UPDATE with accurate token counts and cost — v1.2
+- ✓ Full-stream duration latency tracking (stream_duration_ms) — v1.2
+- ✓ Stream completion status (normal, client disconnect, incomplete) — v1.2
+- ✓ Trailing SSE event with arbstr metadata (cost_sats, latency_ms) — v1.2
+- ✓ Graceful degradation for providers without usage data — v1.2
 
 ### Active
 
@@ -59,7 +60,6 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - [ ] Per-model and per-policy cost breakdown queries
 - [ ] Enhanced /health endpoint with per-provider status and success rates
 - [ ] Learned token ratios per policy (predict cost before seeing response)
-- [ ] Token counts extracted from streaming responses (SSE parsing or stream_options)
 - [ ] Circuit breaker per provider (stop sending after N consecutive failures)
 - [ ] Per-provider timeout configuration (replace global 30s)
 
@@ -81,8 +81,8 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - **Current architecture**: Config models "multiple providers" with different URLs, but actual usage is one Routstr endpoint with multiple models at different price points. The multi-provider abstraction supports future flexibility.
 - **Shipped v1**: Working proxy with routing, policy engine, SQLite logging, response metadata headers, retry with fallback.
 - **Shipped v1.1**: API keys protected by SecretString type with zeroize-on-drop. Environment variable expansion (`${VAR}`) and convention-based auto-discovery (`ARBSTR_<NAME>_API_KEY`). File permission warnings, masked key prefixes, literal key warnings. 3,892 lines Rust, 69 automated tests, clippy clean.
-- **Shipped v1.2 target**: Streaming token extraction — currently tokens logged as None for streamed responses, cost tracking blind spot.
-- **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification.
+- **Shipped v1.2**: Streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status. Clients receive trailing SSE event with arbstr cost/latency metadata. ~5,000 lines Rust, 94 automated tests, clippy clean.
+- **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification. Routstr provider stream_options support unknown — safe degradation (NULL usage) prevents regression.
 
 ## Constraints
 
@@ -117,6 +117,15 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | Separate from_file_with_env entry point | Keep existing from_file/parse_str unchanged | ✓ Good — zero regressions on existing tests |
 | 6-char prefix for masked_prefix() | Identifies cashuA tokens without revealing content | ✓ Good — keys < 10 chars fall back to [REDACTED] |
 | check_file_permissions returns Option | Caller controls warning format (tracing vs println) | ✓ Good — clean separation of detection vs reporting |
+| Merge semantics for stream_options | Only add include_usage when missing, preserve client false | ✓ Good — no surprising override of client intent |
+| Clone-and-mutate injection at send time | Keep original request immutable through handler chain | ✓ Good — clean separation of concerns |
+| Vec<u8> buffer for SSE parsing | Defer UTF-8 validation to per-complete-line processing | ✓ Good — safe cross-chunk handling |
+| 64KB buffer cap with full drain | Prevent OOM from misbehaving providers | ✓ Good — bounded memory, observable overflow |
+| Strict [DONE] requirement | No data returned without [DONE] — unreliable streams yield empty | ✓ Good — correctness over permissiveness |
+| Panic isolation via catch_unwind | Extraction bugs must never break client stream | ✓ Good — zero-impact observation |
+| mpsc channel-based body | Background task consumes upstream, relays via channel | ✓ Good — enables post-stream trailing event + DB update |
+| Trailing SSE event after upstream [DONE] | arbstr metadata (cost_sats, latency_ms) visible to clients | ✓ Good — minimal payload, standard SSE format |
+| Continue upstream on client disconnect | Extract usage for DB even when client gone | ✓ Good — complete observability regardless of client |
 
 ---
-*Last updated: 2026-02-15 after v1.2 milestone started*
+*Last updated: 2026-02-16 after v1.2 milestone complete*

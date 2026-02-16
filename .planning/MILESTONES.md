@@ -57,3 +57,33 @@
 
 ---
 
+
+## v1.2 Streaming Observability (Shipped: 2026-02-16)
+
+**Delivered:** Complete streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status, with cost surfaced to clients via trailing SSE event.
+
+**Phases completed:** 8-10 (3 phases, 4 plans, 7 tasks)
+
+**Key accomplishments:**
+
+- StreamOptions injection ensuring providers send usage data in final SSE chunk
+- SseObserver line-buffered SSE parser with cross-chunk boundary reassembly and usage extraction
+- wrap_sse_stream API with panic isolation (catch_unwind) and Drop-based result finalization
+- Channel-based streaming handler (mpsc) with background task for post-stream observability
+- Trailing SSE event with arbstr metadata (cost_sats, latency_ms) after upstream [DONE]
+- Post-stream DB UPDATE for tokens, cost, stream_duration_ms, and completion status
+- 94 automated tests (85 existing + 9 new), zero clippy warnings
+
+**Stats:**
+
+- ~5,000 lines of Rust
+- 3 phases, 4 plans, 7 tasks
+- 23 files changed (+4,122 / -59 lines)
+- 1 day from start to ship (2026-02-16)
+
+**Git range:** `4e44628` (feat(08-01)) → `16dd554` (feat(10-01))
+
+**What's next:** Planning next milestone
+
+---
+
