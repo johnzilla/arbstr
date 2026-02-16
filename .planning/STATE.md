@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 14 of 15 (Routing Integration)
-Plan: 1 of 2 in current phase
-Status: Plan 14-01 complete -- ready for Plan 14-02
-Last activity: 2026-02-16 -- Plan 14-01 executed (non-streaming circuit integration)
+Plan: 2 of 2 in current phase
+Status: Phase 14 complete -- all plans executed
+Last activity: 2026-02-16 -- Plan 14-02 executed (streaming circuit integration + integration tests)
 
-Progress: [██████░░░░] 60% (3/5 plans)
+Progress: [████████░░] 80% (4/5 plans)
 
 ## Performance Metrics
 
@@ -35,7 +35,7 @@ Progress: [██████░░░░] 60% (3/5 plans)
 - Average duration: 3.5 min
 
 **v1.4 Velocity:**
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: 4 min
 
 ## Accumulated Context
@@ -69,6 +69,11 @@ See .planning/milestones/ for per-milestone decision history.
 - is_circuit_failure (500-599 range) for recording failures, aligned with retry::is_retryable
 - Probe candidate inserted at index 0 in filtered_candidates to become retry primary
 
+**v1.4 execution decisions (14-02):**
+- Removed execute_request function -- streaming path uses select_candidates + send_to_provider directly
+- ProbeGuard created before send_to_provider and resolved via match &result pattern
+- Integration tests use lightweight axum mock servers on random ports (not wiremock)
+
 ### Pending Todos
 
 None.
@@ -80,5 +85,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 14-01-PLAN.md (non-streaming circuit integration)
-Resume file: Plan 14-01 complete. Next: Plan 14-02 (streaming circuit integration)
+Stopped at: Completed 14-02-PLAN.md (streaming circuit integration + integration tests)
+Resume file: Phase 14 complete. Next: Phase 15 (health endpoint)
