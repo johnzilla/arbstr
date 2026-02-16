@@ -66,24 +66,24 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CB-01 | — | Pending |
-| CB-02 | — | Pending |
-| CB-03 | — | Pending |
-| CB-04 | — | Pending |
-| CB-05 | — | Pending |
-| CB-06 | — | Pending |
-| RTG-01 | — | Pending |
-| RTG-02 | — | Pending |
-| RTG-03 | — | Pending |
-| RTG-04 | — | Pending |
-| HLT-01 | — | Pending |
-| HLT-02 | — | Pending |
+| CB-01 | Phase 13 | Pending |
+| CB-02 | Phase 13 | Pending |
+| CB-03 | Phase 13 | Pending |
+| CB-04 | Phase 13 | Pending |
+| CB-05 | Phase 13 | Pending |
+| CB-06 | Phase 13 | Pending |
+| RTG-01 | Phase 14 | Pending |
+| RTG-02 | Phase 14 | Pending |
+| RTG-03 | Phase 14 | Pending |
+| RTG-04 | Phase 14 | Pending |
+| HLT-01 | Phase 15 | Pending |
+| HLT-02 | Phase 15 | Pending |
 
 **Coverage:**
 - v1.4 requirements: 12 total
-- Mapped to phases: 0
-- Unmapped: 12 ⚠️
+- Mapped to phases: 12
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-16*
-*Last updated: 2026-02-16 after initial definition*
+*Last updated: 2026-02-16 after roadmap creation*
