@@ -9,7 +9,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use futures::StreamExt;
 use tokio::time::{timeout_at, Duration, Instant};
 
 use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
@@ -512,6 +511,9 @@ async fn send_to_provider(
         );
     }
 
+    // Capture stream start time before send for streaming requests
+    let stream_start = std::time::Instant::now();
+
     let upstream_response = upstream_request.send().await.map_err(|e| {
         tracing::error!(error = %e, provider = %provider.name, "Failed to reach provider");
         RequestError {
@@ -546,7 +548,14 @@ async fn send_to_provider(
     }
 
     if is_streaming {
-        handle_streaming_response(upstream_response, provider).await
+        handle_streaming_response(
+            upstream_response,
+            provider,
+            correlation_id.to_string(),
+            state.db.clone(),
+            stream_start,
+        )
+        .await
     } else {
         handle_non_streaming_response(upstream_response, provider).await
     }
@@ -666,56 +675,137 @@ async fn handle_non_streaming_response(
 
 /// Handle a streaming provider response.
 ///
-/// Passes SSE chunks through to the client. For Phase 2, streaming requests
-/// are logged with None tokens/cost because the stream has not been consumed
-/// at the point we return the response. Full streaming usage tracking would
-/// require wrapping the stream body to detect end-of-stream, which is deferred
-/// to a future enhancement.
+/// Uses a channel-based body with a background task that:
+/// 1. Wraps the upstream byte stream with `wrap_sse_stream` for observation
+/// 2. Forwards chunks to the client via mpsc channel
+/// 3. After stream ends: extracts usage, computes cost, sends trailing SSE event
+/// 4. Fires DB UPDATE with tokens/cost/duration/completion status
+///
+/// The response is returned immediately with the channel-backed body.
+/// Tokens/cost are filled by the background task's DB UPDATE, not the return value.
 async fn handle_streaming_response(
     upstream_response: reqwest::Response,
     provider: &crate::router::SelectedProvider,
+    correlation_id: String,
+    pool: Option<sqlx::SqlitePool>,
+    stream_start: std::time::Instant,
 ) -> std::result::Result<RequestOutcome, RequestError> {
     let provider_name = provider.name.clone();
 
-    let stream = upstream_response.bytes_stream().map(move |chunk| {
-        match chunk {
-            Ok(ref bytes) => {
-                // Try to extract usage from SSE data lines in this chunk
-                // (for future reference -- usage may appear in final chunk)
-                if let Ok(text) = std::str::from_utf8(bytes) {
-                    for line in text.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data != "[DONE]" {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data)
-                                {
-                                    if let Some(usage) =
-                                        parsed.get("usage").filter(|u| !u.is_null())
-                                    {
-                                        if let (Some(input), Some(output)) = (
-                                            usage.get("prompt_tokens").and_then(|v| v.as_u64()),
-                                            usage.get("completion_tokens").and_then(|v| v.as_u64()),
-                                        ) {
-                                            tracing::debug!(
-                                                input_tokens = input,
-                                                output_tokens = output,
-                                                "Captured usage from streaming chunk"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
+    // Clone provider metadata for the spawned task
+    let input_rate = provider.input_rate;
+    let output_rate = provider.output_rate;
+    let base_fee = provider.base_fee;
+
+    // Create mpsc channel for streaming body
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(32);
+
+    // Wrap upstream byte stream with SSE observer
+    let (observed_stream, result_handle) =
+        crate::proxy::stream::wrap_sse_stream(upstream_response.bytes_stream());
+
+    // Spawn background task for stream forwarding and post-stream work
+    let cid = correlation_id.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt;
+
+        futures::pin_mut!(observed_stream);
+
+        let mut client_connected = true;
+
+        // Forward loop: relay chunks to client, continue consuming on disconnect
+        while let Some(chunk_result) = observed_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    if client_connected && tx.send(Ok(bytes)).await.is_err() {
+                        client_connected = false;
+                        tracing::info!(
+                            correlation_id = %cid,
+                            "Client disconnected during stream"
+                        );
+                    }
+                    // If client disconnected, just consume to let SseObserver extract usage
+                }
+                Err(e) => {
+                    if client_connected
+                        && tx
+                            .send(Err(std::io::Error::other(e.to_string())))
+                            .await
+                            .is_err()
+                    {
+                        client_connected = false;
                     }
                 }
             }
-            Err(ref e) => {
-                tracing::error!(error = %e, "Error streaming from provider");
-            }
         }
-        chunk.map_err(std::io::Error::other)
+
+        // Stream ended -- measure duration
+        let stream_duration_ms = stream_start.elapsed().as_millis() as i64;
+
+        // Read result from handle
+        let stream_result = result_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+
+        // Compute tokens/cost from extracted usage
+        let (input_tokens, output_tokens, cost_sats) = match &stream_result {
+            Some(sr) => match &sr.usage {
+                Some(usage) => {
+                    let cost = crate::router::actual_cost_sats(
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        input_rate,
+                        output_rate,
+                        base_fee,
+                    );
+                    (
+                        Some(usage.prompt_tokens),
+                        Some(usage.completion_tokens),
+                        Some(cost),
+                    )
+                }
+                None => (None, None, None),
+            },
+            None => (None, None, None),
+        };
+
+        // Determine completion status
+        let (success, error_message) = match &stream_result {
+            Some(sr) if sr.done_received => {
+                if client_connected {
+                    (true, None) // Normal completion
+                } else {
+                    (true, Some("client_disconnected".to_string()))
+                }
+            }
+            _ => (false, Some("stream_incomplete".to_string())),
+        };
+
+        // Emit trailing SSE event if client is still connected
+        if client_connected {
+            let trailing = build_trailing_sse_event(cost_sats, stream_duration_ms);
+            let _ = tx.send(Ok(bytes::Bytes::from(trailing))).await;
+        }
+        // tx is dropped here, closing the channel and signaling end-of-body
+
+        // Fire DB UPDATE (always, regardless of client status)
+        if let Some(pool) = pool {
+            crate::storage::logging::spawn_stream_completion_update(
+                &pool,
+                cid,
+                input_tokens,
+                output_tokens,
+                cost_sats,
+                stream_duration_ms,
+                success,
+                error_message,
+            );
+        }
     });
 
-    let body = Body::from_stream(stream);
+    // Build response with channel-backed body
+    let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
 
     let http_response = Response::builder()
         .status(StatusCode::OK)
@@ -724,9 +814,7 @@ async fn handle_streaming_response(
         .body(body)
         .unwrap();
 
-    // For streaming, we return the response immediately.
-    // Usage data is not yet available because the stream hasn't been consumed.
-    // Per CONTEXT.md: "if missing or incomplete, log with null token/cost fields"
+    // Tokens/cost will be filled by DB UPDATE from the spawned task
     Ok(RequestOutcome {
         response: http_response,
         provider_name,
@@ -742,7 +830,6 @@ async fn handle_streaming_response(
 /// Format: `data: {"arbstr":{"cost_sats":<value_or_null>,"latency_ms":<i64>}}\n\ndata: [DONE]\n\n`
 ///
 /// If cost_sats is None or NaN, the JSON value is null.
-#[allow(dead_code)] // Used by Task 2 handle_streaming_response rewrite
 fn build_trailing_sse_event(cost_sats: Option<f64>, latency_ms: i64) -> Vec<u8> {
     let cost_value = cost_sats
         .and_then(|c| serde_json::Number::from_f64(c).map(serde_json::Value::Number))
