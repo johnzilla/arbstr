@@ -50,7 +50,9 @@ See: .planning/milestones/v1.1-ROADMAP.md for full details.
   2. Non-streaming requests are unmodified (no stream_options injected)
   3. A database UPDATE function can write token counts and cost to an existing request log entry by correlation_id
   4. Existing tests pass unchanged (backward compatible type additions)
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 08-01-PLAN.md — StreamOptions type, injection at send time, post-stream DB UPDATE
 
 ### Phase 9: SSE Stream Interception
 **Goal**: A standalone stream wrapper module can buffer SSE lines across chunk boundaries and extract usage data from the final chunk
@@ -89,6 +91,6 @@ Phase 8 and Phase 9 are independent and can execute in either order. Phase 10 re
 | 5. Secret Type Foundation | v1.1 | 1/1 | Complete | 2026-02-15 |
 | 6. Environment Variable Expansion | v1.1 | 2/2 | Complete | 2026-02-15 |
 | 7. Output Surface Hardening | v1.1 | 1/1 | Complete | 2026-02-15 |
-| 8. Stream Request Foundation | v1.2 | 0/? | Not started | - |
+| 8. Stream Request Foundation | v1.2 | 0/1 | Planned | - |
 | 9. SSE Stream Interception | v1.2 | 0/? | Not started | - |
 | 10. Streaming Observability Integration | v1.2 | 0/? | Not started | - |
