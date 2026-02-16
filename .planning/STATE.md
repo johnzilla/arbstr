@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-15)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** v1.2 Streaming Observability
+**Current focus:** v1.2 Streaming Observability -- Phase 8 (Stream Request Foundation)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-02-15 — Milestone v1.2 started
+Phase: 8 of 10 (Stream Request Foundation)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-02-15 -- Roadmap created for v1.2
 
-Progress: [####################] 14/14 plans (v1: 10, v1.1: 4)
+Progress: [##############------] 14/? plans (v1: 10, v1.1: 4, v1.2: 0)
 
 ## Performance Metrics
 
@@ -44,11 +44,11 @@ None.
 
 ### Blockers/Concerns
 
-- Research flag: Cashu token double-spend semantics during retry need verification before production use
-- Research flag: Routstr SSE streaming format (usage field in final chunk) affects future v1.2 streaming work
+- Routstr provider `stream_options` support unknown -- safe degradation (NULL usage) prevents regression
+- Phase 8 and 9 are independent -- can execute in either order before Phase 10
 
 ## Session Continuity
 
 Last session: 2026-02-15
-Stopped at: Starting v1.2 milestone
-Resume file: .planning/MILESTONES.md
+Stopped at: Roadmap created for v1.2, ready to plan Phase 8
+Resume file: .planning/ROADMAP.md

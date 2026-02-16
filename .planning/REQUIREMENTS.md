@@ -53,19 +53,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STREAM-01 | — | Pending |
-| STREAM-02 | — | Pending |
-| EXTRACT-01 | — | Pending |
-| COST-01 | — | Pending |
-| COST-02 | — | Pending |
-| OBS-01 | — | Pending |
-| OBS-02 | — | Pending |
+| STREAM-01 | Phase 8 | Pending |
+| STREAM-02 | Phase 9 | Pending |
+| EXTRACT-01 | Phase 9 | Pending |
+| COST-01 | Phase 8 | Pending |
+| COST-02 | Phase 10 | Pending |
+| OBS-01 | Phase 10 | Pending |
+| OBS-02 | Phase 10 | Pending |
 
 **Coverage:**
 - v1.2 requirements: 7 total
-- Mapped to phases: 0
-- Unmapped: 7 (pending roadmap creation)
+- Mapped to phases: 7
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-15*
-*Last updated: 2026-02-15 after initial definition*
+*Last updated: 2026-02-15 after roadmap creation*
