@@ -17,6 +17,8 @@ use super::types::ChatCompletionRequest;
 use crate::error::Error;
 use crate::storage::logging::{spawn_log_write, RequestLog};
 
+pub use super::stats::stats_handler as stats;
+
 /// Custom header for policy selection.
 pub const ARBSTR_POLICY_HEADER: &str = "x-arbstr-policy";
 

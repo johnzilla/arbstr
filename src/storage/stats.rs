@@ -103,9 +103,7 @@ pub async fn query_grouped_by_model(
 
     sql.push_str(" GROUP BY model");
 
-    let mut query = sqlx::query_as::<_, ModelRow>(&sql)
-        .bind(since)
-        .bind(until);
+    let mut query = sqlx::query_as::<_, ModelRow>(&sql).bind(since).bind(until);
 
     if let Some(p) = provider {
         query = query.bind(p);

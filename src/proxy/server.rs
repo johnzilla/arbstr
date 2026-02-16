@@ -28,6 +28,7 @@ pub struct AppState {
     pub http_client: Client,
     pub config: Arc<Config>,
     pub db: Option<SqlitePool>,
+    pub read_db: Option<SqlitePool>,
 }
 
 /// Middleware that generates a correlation ID and stores it in request extensions.
@@ -47,6 +48,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/models", get(handlers::list_models))
         // arbstr extensions
+        .route("/v1/stats", get(handlers::stats))
         .route("/health", get(handlers::health))
         .route("/providers", get(handlers::list_providers))
         // State and middleware
@@ -101,11 +103,30 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         }
     };
 
+    // Initialize read-only database pool for stats queries
+    let read_db = match &db {
+        Some(_) => {
+            let db_config = config.database();
+            match crate::storage::init_read_pool(&db_config.path).await {
+                Ok(pool) => {
+                    tracing::info!("Read-only database pool initialized");
+                    Some(pool)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to initialize read-only pool, stats disabled");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     let state = AppState {
         router: Arc::new(provider_router),
         http_client,
         config: Arc::new(config),
         db,
+        read_db,
     };
 
     let app = create_router(state);
