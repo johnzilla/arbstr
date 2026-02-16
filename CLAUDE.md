@@ -94,13 +94,13 @@ sequenceDiagram
 
 ### Key Components
 
-- **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback
+- **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback, SSE stream interception for usage extraction
 - **Router** (`src/router/`): Provider selection logic, cost optimization
 - **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
 - **Storage** (`src/storage/`): SQLite request logging with async fire-and-forget writes
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
 
-**Planned (not yet implemented):**
+**Planned:**
 - **Policy Engine** (`src/policy/`): Advanced constraint matching (currently in router)
 
 ## Tech Stack
@@ -114,6 +114,7 @@ sequenceDiagram
 - **Config**: toml
 - **Secrets**: secrecy (SecretString with zeroize-on-drop)
 - **Logging**: tracing + tracing-subscriber
+- **Streaming**: tokio-stream (ReceiverStream for channel-based bodies), bytes
 
 ## Code Conventions
 
@@ -190,6 +191,7 @@ CREATE TABLE requests (
     cost_sats REAL,
     provider_cost_sats REAL,
     latency_ms INTEGER NOT NULL,
+    stream_duration_ms INTEGER,        -- full stream duration (NULL for non-streaming)
     success BOOLEAN NOT NULL,
     error_status INTEGER,
     error_message TEXT
@@ -214,6 +216,7 @@ CREATE TABLE token_ratios (
 
 - **v1** -- Reliability and observability: retry with backoff and fallback, SQLite request logging, response metadata headers, corrected cost calculation
 - **v1.1** -- Secrets hardening: SecretString API keys with zeroize-on-drop, `${VAR}` env var expansion, convention-based key auto-discovery, file permission warnings, masked key prefixes, literal key warnings
+- **v1.2** -- Streaming observability: `stream_options` injection for usage data, SSE line-buffered parser with cross-chunk reassembly, `wrap_sse_stream` with panic isolation, channel-based streaming handler, trailing SSE event with cost/latency metadata, post-stream DB UPDATE for tokens/cost/duration/status
 
 ## Key Files
 
@@ -228,6 +231,7 @@ src/
 │   ├── server.rs     # axum server setup, AppState
 │   ├── handlers.rs   # /v1/chat/completions, /v1/models, /health, /providers
 │   ├── retry.rs      # Retry with exponential backoff and provider fallback
+│   ├── stream.rs     # SSE observer, wrap_sse_stream, StreamResultHandle
 │   └── types.rs      # OpenAI-compatible request/response types
 ├── router/
 │   ├── mod.rs
@@ -236,7 +240,8 @@ src/
     ├── mod.rs
     └── logging.rs    # Async fire-and-forget SQLite request logging
 tests/
-└── env_expansion.rs  # Integration tests for env var expansion and key discovery
+├── env_expansion.rs  # Integration tests for env var expansion and key discovery
+└── stream_options.rs # Integration tests for stream_options injection
 migrations/
 └── *.sql             # Embedded SQLite schema migrations
 ```

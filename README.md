@@ -30,7 +30,7 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 
 - **OpenAI-compatible API** -- drop-in replacement proxy (`/v1/chat/completions`, `/v1/models`)
 - **Multi-provider routing** -- automatically selects the cheapest available provider
-- **Streaming support** -- full SSE streaming pass-through
+- **Streaming observability** -- SSE stream interception extracts token counts and cost from streaming responses; trailing SSE event surfaces arbstr metadata (cost, latency) to clients
 - **Policy engine** -- constrain routing by allowed models, max cost, and strategy
 - **Keyword heuristics** -- automatic policy matching based on message content
 - **Secret management** -- API keys protected by SecretString with zeroize-on-drop; never exposed in logs, debug output, or API responses
@@ -201,8 +201,9 @@ src/
 ├── error.rs          # Error types (OpenAI-compatible responses)
 ├── proxy/
 │   ├── server.rs     # axum server setup and middleware
-│   ├── handlers.rs   # Request handlers
+│   ├── handlers.rs   # Request handlers (streaming + non-streaming)
 │   ├── retry.rs      # Retry with backoff and provider fallback
+│   ├── stream.rs     # SSE stream interception and usage extraction
 │   └── types.rs      # OpenAI-compatible request/response types
 ├── router/
 │   └── selector.rs   # Provider selection and cost calculation
@@ -216,7 +217,8 @@ src/
 |---------|-------------|--------|
 | **v1** | Reliability and observability -- retry with fallback, SQLite logging, response metadata headers, cost calculation | Shipped |
 | **v1.1** | Secrets hardening -- SecretString API keys, env var expansion, convention-based key discovery, output surface hardening | Shipped |
-| **v2** | Intelligence -- cost query endpoints, streaming token extraction, circuit breaker, stream error handling | Planned |
+| **v1.2** | Streaming observability -- SSE token extraction, post-stream DB updates, trailing cost events, stream duration tracking | Shipped |
+| **v2** | Intelligence -- cost query endpoints, circuit breaker, stream error handling, learned token ratios | Planned |
 
 ## Related Projects
 
