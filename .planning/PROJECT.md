@@ -8,14 +8,7 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: v1.1 Secrets Hardening
-
-**Goal:** Eliminate plaintext API keys from config files by supporting environment variable injection and convention-based lookup, and redact keys from all output surfaces (logs, debug output, endpoints).
-
-**Target features:**
-- Environment variable expansion in TOML config (`api_key = "${ROUTSTR_KEY}"`)
-- Convention-based env var lookup (`ARBSTR_<PROVIDER>_API_KEY` auto-detected when api_key omitted)
-- Key redaction in logs, debug output, and API responses (/providers endpoint, error messages)
+## Current Milestone: Planning next milestone
 
 ## Requirements
 
@@ -40,6 +33,17 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - ✓ Provider fallback on failure (retry with backoff, fallback to next cheapest) — v1
 - ✓ Retry metadata in x-arbstr-retries header — v1
 - ✓ OpenAI-compatible error responses through all retry/fallback paths — v1
+- ✓ API key fields use SecretString wrapper with Debug/Display/Serialize redaction — v1.1
+- ✓ Secret values zeroized in memory when dropped — v1.1
+- ✓ `${VAR}` syntax expansion in config values — v1.1
+- ✓ Clear error when referenced env var is not set — v1.1
+- ✓ Convention-based `ARBSTR_<NAME>_API_KEY` auto-discovery — v1.1
+- ✓ Startup logs report per-provider key source without revealing key — v1.1
+- ✓ `check` command reports key availability per provider — v1.1
+- ✓ Startup warns on config file permissions > 0600 (Unix) — v1.1
+- ✓ No API key leaks in endpoints, CLI, errors, or tracing — v1.1
+- ✓ Masked key prefix display (`cashuA...***`) in providers output — v1.1
+- ✓ Startup warns on literal plaintext keys in config — v1.1
 
 ### Active
 
@@ -68,7 +72,8 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - **Routstr marketplace**: Live decentralized AI inference protocol at api.routstr.com. OpenAI-compatible API, payments via Cashu tokens (Bitcoin eCash). Fund a session with sats, get an sk- API key, each request deducts cost based on token usage.
 - **Cost formula**: `(input_tokens * input_price) + (output_tokens * output_price) + request_fee` — all in satoshis.
 - **Current architecture**: Config models "multiple providers" with different URLs, but actual usage is one Routstr endpoint with multiple models at different price points. The multi-provider abstraction supports future flexibility.
-- **Shipped v1**: 2,840 lines Rust across ~15 source files. Working proxy with routing, policy engine, SQLite logging, response metadata headers, retry with fallback. 33 automated tests, clippy clean.
+- **Shipped v1**: Working proxy with routing, policy engine, SQLite logging, response metadata headers, retry with fallback.
+- **Shipped v1.1**: API keys protected by SecretString type with zeroize-on-drop. Environment variable expansion (`${VAR}`) and convention-based auto-discovery (`ARBSTR_<NAME>_API_KEY`). File permission warnings, masked key prefixes, literal key warnings. 3,892 lines Rust, 69 automated tests, clippy clean.
 - **Known concerns**: Streaming token extraction not yet implemented (tokens logged as None), streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification.
 
 ## Constraints
@@ -97,6 +102,13 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | Generic retry with HasStatusCode trait | Decouples retry logic from handler types for testability | ✓ Good — 11 unit tests in isolation |
 | Arc<Mutex<Vec>> for timeout-safe tracking | Attempt history must survive async cancellation | ✓ Good — enables x-arbstr-retries on 504 |
 | Streaming bypasses retry | Cannot replay stream body; fail fast is correct behavior | ✓ Good — stream error handling deferred to v2 |
+| secrecy v0.10 for SecretString | Ecosystem standard, serde support, zeroize-on-drop | ✓ Good — clean integration with custom Deserialize |
+| ApiKey wraps SecretString directly | No intermediate trait needed for simplicity | ✓ Good — expose_secret() grep-auditable (1 call site) |
+| Two-phase config loading (Raw → expand → Secret) | Clean env var integration without touching existing parse_str | ✓ Good — backward compatible, testable with closures |
+| No new crates for env expansion | stdlib std::env::var is sufficient for ${VAR} | ✓ Good — zero dependency bloat |
+| Separate from_file_with_env entry point | Keep existing from_file/parse_str unchanged | ✓ Good — zero regressions on existing tests |
+| 6-char prefix for masked_prefix() | Identifies cashuA tokens without revealing content | ✓ Good — keys < 10 chars fall back to [REDACTED] |
+| check_file_permissions returns Option | Caller controls warning format (tracing vs println) | ✓ Good — clean separation of detection vs reporting |
 
 ---
-*Last updated: 2026-02-15 after v1.1 milestone start*
+*Last updated: 2026-02-15 after v1.1 milestone complete*
