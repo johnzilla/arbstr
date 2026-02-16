@@ -37,7 +37,7 @@ See: .planning/milestones/v1.1-ROADMAP.md for full details.
 
 - [ ] **Phase 8: Stream Request Foundation** - Inject stream_options into upstream requests and add post-stream database UPDATE capability
 - [ ] **Phase 9: SSE Stream Interception** - Line-buffered SSE parser that extracts usage data from streaming responses
-- [ ] **Phase 10: Streaming Observability Integration** - Wire stream interception into handlers with full latency tracking, completion status, and trailing cost events
+- [x] **Phase 10: Streaming Observability Integration** - Wire stream interception into handlers with full latency tracking, completion status, and trailing cost events (completed 2026-02-16)
 
 ## Phase Details
 
@@ -78,7 +78,7 @@ Plans:
   3. Stream completion status distinguishes normal completion, client disconnection, and provider error in the log
   4. After the upstream `[DONE]` marker, the client receives a trailing SSE event containing `arbstr_cost_sats` and `arbstr_latency_ms`
   5. Providers that do not send usage data degrade gracefully to NULL tokens and cost (no regression from current behavior)
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 10-01-PLAN.md — Migration, DB function, trailing event builder, channel-based streaming handler with full observability wiring
 
@@ -98,4 +98,4 @@ Phase 8 and Phase 9 are independent and can execute in either order. Phase 10 re
 | 7. Output Surface Hardening | v1.1 | 1/1 | Complete | 2026-02-15 |
 | 8. Stream Request Foundation | v1.2 | 0/1 | Planned | - |
 | 9. SSE Stream Interception | v1.2 | 0/2 | Planned | - |
-| 10. Streaming Observability Integration | v1.2 | 0/1 | Planned | - |
+| 10. Streaming Observability Integration | v1.2 | Complete    | 2026-02-16 | - |
