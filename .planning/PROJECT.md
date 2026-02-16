@@ -8,14 +8,9 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: v1.3 Cost Querying API
+## Current Milestone
 
-**Goal:** Expose the cost and performance data already collected in SQLite through read-only API endpoints, making arbstr's value proposition fully queryable.
-
-**Target features:**
-- Aggregate stats endpoint (total spend, request count, token counts, latency, success rate)
-- Per-model breakdown endpoint (same stats grouped by model)
-- Time range filtering (lifetime totals and arbitrary since/until windows)
+No active milestone. All planned features through v1.3 have shipped.
 
 ## Requirements
 
@@ -57,12 +52,16 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - ✓ Stream completion status (normal, client disconnect, incomplete) — v1.2
 - ✓ Trailing SSE event with arbstr metadata (cost_sats, latency_ms) — v1.2
 - ✓ Graceful degradation for providers without usage data — v1.2
+- ✓ Aggregate stats endpoint (total spend, request count, tokens, latency, success rate) — v1.3
+- ✓ Per-model stats breakdown endpoint — v1.3
+- ✓ Time range filtering on stats endpoints (since/until and preset shortcuts) — v1.3
+- ✓ Model and provider filtering on stats endpoints — v1.3
+- ✓ Paginated request log listing with filtering and sorting — v1.3
+- ✓ Read-only analytics pool isolated from proxy writes — v1.3
 
 ### Active
 
-- [ ] Aggregate stats endpoint (total spend, request count, tokens, latency, success rate)
-- [ ] Per-model stats breakdown endpoint
-- [ ] Time range filtering on stats endpoints (since/until query params)
+(None — start next milestone with `/gsd:new-milestone`)
 
 ### Future
 
@@ -92,6 +91,7 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - **Shipped v1**: Working proxy with routing, policy engine, SQLite logging, response metadata headers, retry with fallback.
 - **Shipped v1.1**: API keys protected by SecretString type with zeroize-on-drop. Environment variable expansion (`${VAR}`) and convention-based auto-discovery (`ARBSTR_<NAME>_API_KEY`). File permission warnings, masked key prefixes, literal key warnings. 3,892 lines Rust, 69 automated tests, clippy clean.
 - **Shipped v1.2**: Streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status. Clients receive trailing SSE event with arbstr cost/latency metadata. ~5,000 lines Rust, 94 automated tests, clippy clean.
+- **Shipped v1.3**: Cost querying API — GET /v1/stats for aggregate cost/performance data with time range presets, model/provider filtering, per-model breakdown. GET /v1/requests for paginated request log browsing with filtering and sorting. Read-only analytics pool isolated from proxy writes. ~6,000 lines Rust, 137 automated tests, clippy clean.
 - **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification. Routstr provider stream_options support unknown — safe degradation (NULL usage) prevents regression.
 
 ## Constraints
@@ -136,6 +136,13 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | mpsc channel-based body | Background task consumes upstream, relays via channel | ✓ Good — enables post-stream trailing event + DB update |
 | Trailing SSE event after upstream [DONE] | arbstr metadata (cost_sats, latency_ms) visible to clients | ✓ Good — minimal payload, standard SSE format |
 | Continue upstream on client disconnect | Extract usage for DB even when client gone | ✓ Good — complete observability regardless of client |
+| Separate read-only SQLite pool for analytics | Prevent analytics queries from starving proxy writes | ✓ Good — max 3 connections, clean isolation |
+| TOTAL() not SUM() for nullable cost columns | Returns 0.0 instead of NULL on empty result sets | ✓ Good — no null handling needed in response |
+| Column name whitelist via match for sort/group_by | Prevent SQL injection through dynamic ORDER BY/GROUP BY | ✓ Good — &'static str guarantees safety |
+| Default time range last_7d when no params | Bounded queries prevent full table scans | ✓ Good — consistent UX across stats and logs |
+| Two-query pagination (COUNT + SELECT) | COUNT(*) OVER() returns 0 when OFFSET exceeds rows | ✓ Good — correct total on all pages |
+| Zero new dependencies for v1.3 | Existing stack (axum, sqlx, chrono, serde) covers everything | ✓ Good — no dependency bloat |
+| Nested response sections (tokens/cost/timing/error) | Group related fields, hide internal columns | ✓ Good — clean API surface |
 
 ---
-*Last updated: 2026-02-16 after v1.3 milestone started*
+*Last updated: 2026-02-16 after v1.3 milestone complete*

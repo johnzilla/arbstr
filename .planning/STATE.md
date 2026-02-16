@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** v1.3 Cost Querying API -- Phase 12: Request Log Listing
+**Current focus:** Planning next milestone
 
 ## Current Position
 

@@ -87,3 +87,34 @@
 
 ---
 
+
+## v1.3 Cost Querying API (Shipped: 2026-02-16)
+
+**Delivered:** Read-only API endpoints exposing cost and performance data from SQLite logs — aggregate stats with time range presets and model/provider filtering, plus paginated request log browsing with sorting.
+
+**Phases completed:** 11-12 (2 phases, 4 plans, 8 tasks)
+
+**Key accomplishments:**
+
+- GET /v1/stats endpoint with aggregate cost/performance queries and per-model breakdown
+- Read-only SQLite connection pool (max 3) isolating analytics from proxy writes
+- Time range presets (last_1h, last_24h, last_7d, last_30d) and ISO 8601 since/until filtering
+- GET /v1/requests endpoint with paginated request log listing (page-based, max 100 per page)
+- Nested response structure (tokens/cost/timing/error sections) with curated field set
+- Sort by timestamp, cost, or latency with column name whitelist for SQL injection prevention
+- 34 new integration tests (14 stats + 20 logs), 137 total automated tests, zero clippy warnings
+
+**Stats:**
+
+- ~6,000 lines of Rust
+- 2 phases, 4 plans, 8 tasks
+- 29 files changed (+4,067 / -83 lines)
+- 1 day from start to ship (2026-02-16)
+- Zero new dependencies
+
+**Git range:** `46a7a16` (feat(11-01)) → `a57acaf` (docs(phase-12): complete)
+
+**What's next:** Planning next milestone
+
+---
+
