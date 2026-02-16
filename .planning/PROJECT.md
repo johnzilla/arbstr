@@ -8,9 +8,15 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone
+## Current Milestone: v1.4 Circuit Breaker
 
-No active milestone. All planned features through v1.3 have shipped.
+**Goal:** Per-provider circuit breaker that stops sending to unhealthy providers, with enhanced /health reporting.
+
+**Target features:**
+- Per-provider circuit breaker with 3-state machine (Closed → Open → Half-Open)
+- Opens after 3 consecutive failures, recovers via 30s half-open probe
+- Router skips providers with open circuits; 503 fail-fast when no alternatives
+- Enhanced /health endpoint with per-provider circuit state and failure counts
 
 ## Requirements
 
@@ -61,15 +67,18 @@ No active milestone. All planned features through v1.3 have shipped.
 
 ### Active
 
-(None — start next milestone with `/gsd:new-milestone`)
+- [ ] Per-provider circuit breaker in AppState (Closed/Open/Half-Open states)
+- [ ] Circuit opens after 3 consecutive failures
+- [ ] Half-open probe after 30s timeout, success closes circuit
+- [ ] Router skips open-circuit providers during selection
+- [ ] 503 fail-fast when all providers for a model have open circuits
+- [ ] Enhanced /health endpoint with per-provider circuit state and failure counts
 
 ### Future
 
 - Stream error handling (detect mid-stream failures, signal client cleanly)
 - Per-policy cost breakdown queries
-- Enhanced /health endpoint with per-provider status and success rates
 - Learned token ratios per policy (predict cost before seeing response)
-- Circuit breaker per provider (stop sending after N consecutive failures)
 - Per-provider timeout configuration (replace global 30s)
 
 ### Out of Scope
@@ -145,4 +154,4 @@ No active milestone. All planned features through v1.3 have shipped.
 | Nested response sections (tokens/cost/timing/error) | Group related fields, hide internal columns | ✓ Good — clean API surface |
 
 ---
-*Last updated: 2026-02-16 after v1.3 milestone complete*
+*Last updated: 2026-02-16 after v1.4 milestone started*
