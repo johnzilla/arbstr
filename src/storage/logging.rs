@@ -132,6 +132,89 @@ pub fn spawn_usage_update(
     });
 }
 
+/// Update an existing request log entry with post-stream completion data.
+///
+/// Writes input_tokens, output_tokens, cost_sats, stream_duration_ms,
+/// success, and error_message to the row matching the given correlation_id.
+/// Returns the number of rows affected.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_stream_completion(
+    pool: &SqlitePool,
+    correlation_id: &str,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    cost_sats: Option<f64>,
+    stream_duration_ms: i64,
+    success: bool,
+    error_message: Option<&str>,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE requests SET input_tokens = ?, output_tokens = ?, cost_sats = ?, stream_duration_ms = ?, success = ?, error_message = ? WHERE correlation_id = ?",
+    )
+    .bind(input_tokens.map(|v| v as i64))
+    .bind(output_tokens.map(|v| v as i64))
+    .bind(cost_sats)
+    .bind(stream_duration_ms)
+    .bind(success)
+    .bind(error_message)
+    .bind(correlation_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Spawn a fire-and-forget database stream completion update.
+///
+/// Warns if the update affects zero rows (row not found) or fails.
+/// Logs at debug level on success.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_stream_completion_update(
+    pool: &SqlitePool,
+    correlation_id: String,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    cost_sats: Option<f64>,
+    stream_duration_ms: i64,
+    success: bool,
+    error_message: Option<String>,
+) {
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        match update_stream_completion(
+            &pool,
+            &correlation_id,
+            input_tokens,
+            output_tokens,
+            cost_sats,
+            stream_duration_ms,
+            success,
+            error_message.as_deref(),
+        )
+        .await
+        {
+            Ok(0) => {
+                tracing::warn!(
+                    correlation_id = %correlation_id,
+                    "Stream completion update affected zero rows"
+                );
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    correlation_id = %correlation_id,
+                    "Updated request log with stream completion data"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    correlation_id = %correlation_id,
+                    error = %e,
+                    "Failed to update request log with stream completion data"
+                );
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +303,70 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 0, "Should affect zero rows for non-existent correlation_id");
+    }
+
+    #[tokio::test]
+    async fn test_update_stream_completion_writes_all_fields() {
+        let pool = test_pool().await;
+        let cid = "test-stream-complete-001";
+        insert_test_row(&pool, cid).await;
+
+        let rows = update_stream_completion(
+            &pool, cid,
+            Some(150), Some(300), Some(42.5),
+            2500, true, None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows, 1);
+
+        // Verify all 6 columns were set correctly
+        let row: (Option<i64>, Option<i64>, Option<f64>, Option<i64>, bool, Option<String>) =
+            sqlx::query_as(
+                "SELECT input_tokens, output_tokens, cost_sats, stream_duration_ms, success, error_message FROM requests WHERE correlation_id = ?",
+            )
+            .bind(cid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(row.0, Some(150));
+        assert_eq!(row.1, Some(300));
+        assert!((row.2.unwrap() - 42.5).abs() < f64::EPSILON);
+        assert_eq!(row.3, Some(2500));
+        assert!(row.4);
+        assert!(row.5.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_stream_completion_null_tokens() {
+        let pool = test_pool().await;
+        let cid = "test-stream-complete-002";
+        insert_test_row(&pool, cid).await;
+
+        let rows = update_stream_completion(
+            &pool, cid,
+            None, None, None,
+            1800, true, Some("client_disconnected"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows, 1);
+
+        let row: (Option<i64>, Option<i64>, Option<f64>, Option<i64>, bool, Option<String>) =
+            sqlx::query_as(
+                "SELECT input_tokens, output_tokens, cost_sats, stream_duration_ms, success, error_message FROM requests WHERE correlation_id = ?",
+            )
+            .bind(cid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert!(row.0.is_none());
+        assert!(row.1.is_none());
+        assert!(row.2.is_none());
+        assert_eq!(row.3, Some(1800));
+        assert!(row.4);
+        assert_eq!(row.5.as_deref(), Some("client_disconnected"));
     }
 }

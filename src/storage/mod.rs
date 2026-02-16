@@ -2,7 +2,7 @@
 
 pub mod logging;
 
-pub use logging::{spawn_usage_update, update_usage, RequestLog};
+pub use logging::{spawn_stream_completion_update, spawn_usage_update, update_stream_completion, update_usage, RequestLog};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;

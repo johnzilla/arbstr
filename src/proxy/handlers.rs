@@ -737,6 +737,28 @@ async fn handle_streaming_response(
     })
 }
 
+/// Build a trailing SSE event containing arbstr metadata.
+///
+/// Format: `data: {"arbstr":{"cost_sats":<value_or_null>,"latency_ms":<i64>}}\n\ndata: [DONE]\n\n`
+///
+/// If cost_sats is None or NaN, the JSON value is null.
+#[allow(dead_code)] // Used by Task 2 handle_streaming_response rewrite
+fn build_trailing_sse_event(cost_sats: Option<f64>, latency_ms: i64) -> Vec<u8> {
+    let cost_value = cost_sats
+        .and_then(|c| serde_json::Number::from_f64(c).map(serde_json::Value::Number))
+        .unwrap_or(serde_json::Value::Null);
+
+    let event_json = serde_json::json!({
+        "arbstr": {
+            "cost_sats": cost_value,
+            "latency_ms": latency_ms,
+        }
+    });
+
+    let json_str = serde_json::to_string(&event_json).expect("json! macro always serializable");
+    format!("data: {}\n\ndata: [DONE]\n\n", json_str).into_bytes()
+}
+
 /// Handle GET /v1/models - list available models across all providers
 pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
     let mut models: Vec<serde_json::Value> = vec![];
@@ -965,5 +987,36 @@ mod tests {
             response.headers().get("x-arbstr-cost-sats").unwrap(),
             "0.10"
         );
+    }
+
+    #[test]
+    fn test_build_trailing_sse_event_with_cost() {
+        let event = build_trailing_sse_event(Some(42.35), 1200);
+        let text = String::from_utf8(event).unwrap();
+
+        // Verify SSE format: data line + empty line + data: [DONE] + empty line
+        assert!(text.contains("data: "));
+        assert!(text.ends_with("data: [DONE]\n\n"));
+
+        // Extract JSON payload
+        let data_line = text.lines().next().unwrap();
+        let json_str = data_line.strip_prefix("data: ").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert!((parsed["arbstr"]["cost_sats"].as_f64().unwrap() - 42.35).abs() < f64::EPSILON);
+        assert_eq!(parsed["arbstr"]["latency_ms"].as_i64().unwrap(), 1200);
+    }
+
+    #[test]
+    fn test_build_trailing_sse_event_null_cost() {
+        let event = build_trailing_sse_event(None, 500);
+        let text = String::from_utf8(event).unwrap();
+
+        let data_line = text.lines().next().unwrap();
+        let json_str = data_line.strip_prefix("data: ").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert!(parsed["arbstr"]["cost_sats"].is_null());
+        assert_eq!(parsed["arbstr"]["latency_ms"].as_i64().unwrap(), 500);
     }
 }
