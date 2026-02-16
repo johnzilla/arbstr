@@ -100,10 +100,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. GET /health returns a JSON response containing each provider's circuit state (closed, open, or half_open) and its current failure count
   2. Top-level status field reads "ok" when all circuits are closed, "degraded" when some are open, and "unhealthy" when all are open
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 15-01: TBD
+- [ ] 15-01-PLAN.md -- Enhanced health handler with per-provider circuit state, status computation, and integration tests
 
 ## Progress
 
