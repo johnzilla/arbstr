@@ -36,6 +36,7 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 - **Secret management** -- API keys protected by SecretString with zeroize-on-drop; never exposed in logs, debug output, or API responses
 - **Environment variable expansion** -- use `${VAR}` syntax or omit `api_key` for convention-based `ARBSTR_<NAME>_API_KEY` auto-discovery
 - **Config hygiene warnings** -- file permission checks, plaintext key warnings with actionable suggestions
+- **Cost querying API** -- GET /v1/stats for aggregate cost/performance data with time range presets and model/provider filtering; GET /v1/requests for paginated request log browsing with sorting
 - **Per-request correlation IDs** -- UUID tracing for every request through the system
 - **Mock mode** -- test locally without real provider API calls
 
@@ -176,6 +177,9 @@ arbstr providers [OPTIONS]      List configured providers
 |----------|-------------|
 | `POST /v1/chat/completions` | OpenAI-compatible chat completions (streaming and non-streaming) |
 | `GET /v1/models` | List available models across all providers |
+| `GET /v1/stats` | Aggregate cost/performance stats with time range and model/provider filtering |
+| `GET /v1/stats?group_by=model` | Per-model stats breakdown |
+| `GET /v1/requests` | Paginated request log listing with filtering and sorting |
 | `GET /health` | Health check |
 | `GET /providers` | List configured providers with rates |
 
@@ -204,11 +208,15 @@ src/
 │   ├── handlers.rs   # Request handlers (streaming + non-streaming)
 │   ├── retry.rs      # Retry with backoff and provider fallback
 │   ├── stream.rs     # SSE stream interception and usage extraction
+│   ├── stats.rs      # Aggregate stats handler and time range resolution
+│   ├── logs.rs       # Paginated request log handler with sorting
 │   └── types.rs      # OpenAI-compatible request/response types
 ├── router/
 │   └── selector.rs   # Provider selection and cost calculation
 └── storage/
-    └── logging.rs    # SQLite request logging (async fire-and-forget)
+    ├── logging.rs    # SQLite request logging (async fire-and-forget)
+    ├── stats.rs      # Aggregate stats queries (read-only pool)
+    └── logs.rs       # Paginated log queries with dynamic filters
 ```
 
 ## Roadmap
@@ -218,7 +226,7 @@ src/
 | **v1** | Reliability and observability -- retry with fallback, SQLite logging, response metadata headers, cost calculation | Shipped |
 | **v1.1** | Secrets hardening -- SecretString API keys, env var expansion, convention-based key discovery, output surface hardening | Shipped |
 | **v1.2** | Streaming observability -- SSE token extraction, post-stream DB updates, trailing cost events, stream duration tracking | Shipped |
-| **v2** | Intelligence -- cost query endpoints, circuit breaker, stream error handling, learned token ratios | Planned |
+| **v1.3** | Cost querying API -- aggregate stats, time range filtering, paginated request log listing with sorting | Shipped |
 
 ## Related Projects
 

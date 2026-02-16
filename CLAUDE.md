@@ -97,7 +97,7 @@ sequenceDiagram
 - **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback, SSE stream interception for usage extraction
 - **Router** (`src/router/`): Provider selection logic, cost optimization
 - **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
-- **Storage** (`src/storage/`): SQLite request logging with async fire-and-forget writes
+- **Storage** (`src/storage/`): SQLite request logging with async fire-and-forget writes, read-only analytics pool for stats/logs queries
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
 
 **Planned:**
@@ -217,6 +217,7 @@ CREATE TABLE token_ratios (
 - **v1** -- Reliability and observability: retry with backoff and fallback, SQLite request logging, response metadata headers, corrected cost calculation
 - **v1.1** -- Secrets hardening: SecretString API keys with zeroize-on-drop, `${VAR}` env var expansion, convention-based key auto-discovery, file permission warnings, masked key prefixes, literal key warnings
 - **v1.2** -- Streaming observability: `stream_options` injection for usage data, SSE line-buffered parser with cross-chunk reassembly, `wrap_sse_stream` with panic isolation, channel-based streaming handler, trailing SSE event with cost/latency metadata, post-stream DB UPDATE for tokens/cost/duration/status
+- **v1.3** -- Cost querying API: GET /v1/stats with aggregate queries and per-model breakdown, GET /v1/requests with paginated log listing, read-only SQLite pool, time range presets and ISO 8601 filtering, model/provider filtering, sort column whitelist for SQL injection prevention, nested response structure (tokens/cost/timing/error)
 
 ## Key Files
 
@@ -232,16 +233,22 @@ src/
 │   ├── handlers.rs   # /v1/chat/completions, /v1/models, /health, /providers
 │   ├── retry.rs      # Retry with exponential backoff and provider fallback
 │   ├── stream.rs     # SSE observer, wrap_sse_stream, StreamResultHandle
+│   ├── stats.rs      # /v1/stats handler, time range resolution, StatsQuery/StatsResponse
+│   ├── logs.rs       # /v1/requests handler, pagination, LogsQuery/LogsResponse/LogEntry
 │   └── types.rs      # OpenAI-compatible request/response types
 ├── router/
 │   ├── mod.rs
 │   └── selector.rs   # Provider selection (cheapest, policy constraints)
 └── storage/
     ├── mod.rs
-    └── logging.rs    # Async fire-and-forget SQLite request logging
+    ├── logging.rs    # Async fire-and-forget SQLite request logging
+    ├── stats.rs      # Aggregate stats queries, exists_in_db validation, read-only pool init
+    └── logs.rs       # Paginated log queries (count_logs, query_logs) with dynamic WHERE/ORDER BY
 tests/
 ├── env_expansion.rs  # Integration tests for env var expansion and key discovery
-└── stream_options.rs # Integration tests for stream_options injection
+├── stream_options.rs # Integration tests for stream_options injection
+├── stats.rs          # Integration tests for /v1/stats endpoint (14 tests)
+└── logs.rs           # Integration tests for /v1/requests endpoint (20 tests)
 migrations/
 └── *.sql             # Embedded SQLite schema migrations
 ```
