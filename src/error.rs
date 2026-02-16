@@ -33,6 +33,9 @@ pub enum Error {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("All providers have open circuits for model '{model}'")]
+    CircuitOpen { model: String },
+
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -48,6 +51,7 @@ impl IntoResponse for Error {
             Error::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Error::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             Error::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Error::CircuitOpen { .. } => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             Error::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 

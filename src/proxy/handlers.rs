@@ -11,6 +11,8 @@ use axum::{
 };
 use tokio::time::{timeout_at, Duration, Instant};
 
+#[allow(unused_imports)] // Used in Task 2 (non-streaming circuit integration)
+use super::circuit_breaker::{PermitType, ProbeGuard};
 use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
@@ -72,6 +74,15 @@ fn extract_usage(response: &serde_json::Value) -> Option<(u32, u32)> {
     let input = usage.get("prompt_tokens")?.as_u64()? as u32;
     let output = usage.get("completion_tokens")?.as_u64()? as u32;
     Some((input, output))
+}
+
+/// Whether an HTTP status code should be recorded as a circuit breaker failure.
+///
+/// Returns true for 5xx server errors (aligned with retry::is_retryable).
+/// Returns false for 4xx client errors and all other codes.
+#[allow(dead_code)] // Used in Task 2 (non-streaming circuit integration)
+fn is_circuit_failure(status_code: u16) -> bool {
+    (500..600).contains(&status_code)
 }
 
 /// Attach arbstr metadata headers to a response.
