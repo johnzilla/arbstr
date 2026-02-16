@@ -13,7 +13,7 @@ use sqlx::SqlitePool;
 use tower::ServiceExt;
 
 use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
-use arbstr::proxy::{create_router, AppState};
+use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
 use arbstr::router::Router as ProviderRouter;
 
 /// Global counter for generating unique correlation IDs.
@@ -78,6 +78,7 @@ async fn setup_test_app() -> (axum::Router, SqlitePool) {
         config: Arc::new(config),
         db: Some(pool.clone()),
         read_db: Some(pool.clone()),
+        circuit_breakers: Arc::new(CircuitBreakerRegistry::new(&[])),
     };
 
     let app = create_router(state);

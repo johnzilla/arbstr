@@ -13,6 +13,7 @@ use std::time::Duration;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+use super::circuit_breaker::CircuitBreakerRegistry;
 use super::handlers;
 use crate::config::Config;
 use crate::router::Router as ProviderRouter;
@@ -29,6 +30,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: Option<SqlitePool>,
     pub read_db: Option<SqlitePool>,
+    pub circuit_breakers: Arc<CircuitBreakerRegistry>,
 }
 
 /// Middleware that generates a correlation ID and stores it in request extensions.
@@ -122,12 +124,17 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         None => None,
     };
 
+    // Initialize circuit breaker registry with one breaker per provider
+    let provider_names: Vec<String> = config.providers.iter().map(|p| p.name.clone()).collect();
+    let circuit_breakers = Arc::new(CircuitBreakerRegistry::new(&provider_names));
+
     let state = AppState {
         router: Arc::new(provider_router),
         http_client,
         config: Arc::new(config),
         db,
         read_db,
+        circuit_breakers,
     };
 
     let app = create_router(state);

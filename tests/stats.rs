@@ -15,7 +15,7 @@ use tower::ServiceExt;
 use chrono::{DateTime, SecondsFormat, Utc};
 
 use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
-use arbstr::proxy::{create_router, AppState};
+use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
 use arbstr::router::Router as ProviderRouter;
 
 /// Format a DateTime<Utc> as RFC 3339 with `Z` suffix (URL-safe, no `+` sign).
@@ -85,6 +85,7 @@ async fn setup_test_app() -> (axum::Router, SqlitePool) {
         config: Arc::new(config),
         db: Some(pool.clone()),
         read_db: Some(pool.clone()),
+        circuit_breakers: Arc::new(CircuitBreakerRegistry::new(&[])),
     };
 
     let app = create_router(state);
