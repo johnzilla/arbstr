@@ -1,326 +1,381 @@
-# Technology Stack: SSE Stream Parsing for Streaming Observability
+# Technology Stack: Cost Query API Endpoints
 
-**Project:** arbstr v1.2 - Streaming token extraction and cost tracking
-**Researched:** 2026-02-15
+**Project:** arbstr - Read-only analytics/stats API endpoints
+**Researched:** 2026-02-16
 **Overall confidence:** HIGH
 
 ## Scope
 
 This research covers ONLY the stack additions/changes needed for:
-1. Parsing SSE `data:` lines from streaming OpenAI-compatible responses
-2. Intercepting the stream to extract token usage without buffering the full response
-3. Updating SQLite log entries after stream completion with extracted token counts
-4. Injecting `stream_options: {"include_usage": true}` into forwarded requests
+1. Aggregate SQL queries against the existing `requests` table (COUNT, SUM, AVG, GROUP BY)
+2. Query parameter parsing for time ranges, model filters, and provider filters
+3. JSON response serialization for stats data
+4. axum route/extractor patterns for GET endpoints with optional query params
 
-Everything else in the existing stack is unchanged and validated from v1/v1.1.
+Everything else in the existing stack is unchanged and validated from v1/v1.1/v1.2.
 
 ## Existing Stack (No Changes Needed)
 
 These dependencies remain correct and require no modifications:
 
-| Technology | Version (locked) | Purpose | Status |
-|------------|-----------------|---------|--------|
-| tokio | 1.x (full) | Async runtime, channels, spawn | Keep as-is |
-| axum | 0.7 | HTTP server, Body::from_stream | Keep as-is |
-| reqwest | 0.12 (stream feature) | HTTP client, bytes_stream() | Keep as-is |
-| serde / serde_json | 1.x | JSON parsing of SSE data payloads | Keep as-is |
-| sqlx | 0.8 (sqlite, runtime-tokio, migrate) | Log updates after stream completion | Keep as-is |
-| futures | 0.3.31 | StreamExt for stream transformation | Keep as-is |
-| tracing | 0.1 | Debug logging of extracted tokens | Keep as-is |
-| bytes | 1.11.0 (transitive) | Already in dep tree via axum/reqwest | Keep as-is |
-| pin-project-lite | 0.2.16 (transitive) | Already in dep tree via futures-util | Keep as-is |
+| Technology | Version (in Cargo.toml) | Purpose for This Milestone | Status |
+|------------|------------------------|---------------------------|--------|
+| axum | 0.7 | HTTP server, route registration, `Query` extractor | Keep as-is |
+| sqlx | 0.8 (sqlite, runtime-tokio, migrate) | Aggregate queries with `query_as`, `query_scalar` | Keep as-is |
+| serde / serde_json | 1.x | Deserialize query params, serialize JSON responses | Keep as-is |
+| chrono | 0.4 (serde feature) | Parse date strings from query params, UTC timestamp handling | Keep as-is |
+| tokio | 1.x (full) | Async runtime | Keep as-is |
+| tracing | 0.1 | Debug/info logging of query execution | Keep as-is |
 
-**Critical existing capabilities already in the dependency tree:**
-- `reqwest` with `stream` feature provides `bytes_stream()` returning `impl Stream<Item = Result<Bytes, reqwest::Error>>`
-- `futures::StreamExt` provides `.map()` for stream transformation (already used in `handle_streaming_response`)
-- `axum::body::Body::from_stream()` accepts any `Stream<Item = Result<impl Into<Bytes>, impl Into<BoxError>>>` (already used)
-- `tokio::sync::oneshot` and `tokio::sync::watch` are available via `tokio = { features = ["full"] }`
-- `serde_json::from_str::<serde_json::Value>()` for parsing SSE data payloads (already used in the current stream map closure)
+**Critical finding: Zero new dependencies are needed.** The existing stack provides every capability required for read-only analytics endpoints.
 
 ## New Dependencies Required
 
 ### None.
 
-**The existing dependency set is sufficient for streaming SSE token extraction.** No new crates are needed. Here is why:
+The existing dependency set is sufficient for cost query API endpoints. Here is why each concern is already covered:
 
-### Why NOT eventsource-stream
+### 1. Aggregate SQL Queries: `sqlx` 0.8 (Already Present)
 
-| Crate | Version | Downloads/mo | Why Not |
-|-------|---------|-------------|---------|
-| `eventsource-stream` | 0.2.3 | ~271K | Provides `Eventsource` trait that wraps `bytes_stream()` into typed `Event` structs. Overkill -- arbstr only needs to extract `data:` line payloads, not implement full SSE spec (event types, IDs, retry). The existing code already does `strip_prefix("data: ")` and it works. Adding this crate gains nothing meaningful for the use case. |
-| `reqwest-eventsource` | 0.6.x | ~120K | High-level EventSource client with auto-reconnect. Completely wrong for a proxy -- arbstr is forwarding the stream, not consuming it as a client. It replaces the reqwest request builder, which conflicts with arbstr's existing request construction (custom headers, Idempotency-Key, etc.). |
-| `async-sse` | 5.x | Low | Surf-ecosystem crate. Wrong runtime (async-std). Not compatible with tokio/axum. |
+**Capability:** `sqlx::query_as::<_, T>()` with `#[derive(sqlx::FromRow)]` structs, and `sqlx::query_scalar()` for single-value aggregates.
 
-### Why NOT async-stream
-
-| Crate | Version | Why Not |
-|-------|---------|---------|
-| `async-stream` | 0.3.6 | Provides `stream!` macro for generator-style streams. Convenient but unnecessary -- the existing `bytes_stream().map()` pattern with `futures::StreamExt` is already sufficient and already used in the codebase. Adding `async-stream` would introduce a second stream construction pattern for no benefit. |
-
-### Why NOT tokio-stream (as direct dependency)
-
-`tokio-stream` 0.1.18 is already in the transitive dependency tree (via sqlx). However, adding it as a direct dependency is unnecessary because `futures::StreamExt` (already a direct dependency) provides all the needed combinators: `.map()`, `.then()`, and the ability to construct streams from iterators. The `futures` crate is the canonical stream toolkit for this codebase.
-
-## Implementation Stack: What Existing Tools Provide
-
-### 1. SSE Line Parsing: Hand-rolled (Already Exists)
-
-The current `handle_streaming_response` in `handlers.rs` already has SSE parsing logic:
+**Pattern for aggregate queries:**
 
 ```rust
-// Current code (lines 671-707) -- already parses SSE data lines
-if let Ok(text) = std::str::from_utf8(bytes) {
-    for line in text.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            if data != "[DONE]" {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                    // extract usage...
-                }
-            }
-        }
-    }
-}
-```
-
-**What changes:** This logic moves from a debug-only trace into an actual capture mechanism that writes extracted usage to shared state. The parsing approach itself does not change. The existing `strip_prefix("data: ")` + `serde_json::from_str` pattern is correct for OpenAI-compatible SSE.
-
-**Why hand-rolled is correct here:**
-- OpenAI SSE format is trivial: `data: {json}\n\n` or `data: [DONE]\n\n`
-- No event types, no IDs, no retry fields to parse
-- A library would add complexity (Event struct unpacking) for zero benefit
-- The prior phase-02 research explicitly recommended this: "arbstr only needs to read `data:` lines, not implement full SSE spec"
-
-### 2. Stream Transformation: `futures::StreamExt::map()` (Already Used)
-
-The stream transformation pattern uses `.map()` on the bytes stream to inspect each chunk while passing it through unmodified:
-
-```rust
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-let captured_usage: Arc<Mutex<Option<(u32, u32)>>> = Arc::new(Mutex::new(None));
-let usage_clone = captured_usage.clone();
-
-let stream = upstream_response.bytes_stream().map(move |chunk| {
-    if let Ok(ref bytes) = chunk {
-        // Parse SSE lines, extract usage, store in captured_usage
-    }
-    chunk.map_err(std::io::Error::other)
-});
-
-let body = Body::from_stream(stream);
-```
-
-**This pattern already exists in the codebase** (handlers.rs line 671). The change is making the captured usage accessible after stream completion for the log update.
-
-### 3. Post-Stream Notification: `tokio::sync::oneshot` (Already Available)
-
-To update the database log after the stream completes, use a `tokio::sync::oneshot` channel. The stream wrapper sends the captured usage when the stream ends (on `[DONE]` or drop). A spawned task receives it and issues the SQL UPDATE.
-
-```rust
-use tokio::sync::oneshot;
-
-let (usage_tx, usage_rx) = oneshot::channel::<Option<(u32, u32)>>();
-
-// Stream wrapper: on [DONE] or drop, send captured usage
-// Spawned task: await usage_rx, then UPDATE requests SET input_tokens=?, output_tokens=? WHERE correlation_id=?
-```
-
-**Why oneshot:** Already in `tokio` with `full` features. Single value, single consumer. No new dependency. The alternative (`tokio::sync::watch`) is heavier than needed for a single notification.
-
-### 4. Log Update: `sqlx::query()` UPDATE (Already Available)
-
-The database layer already supports fire-and-forget writes via `spawn_log_write`. The post-stream update uses the same pattern but with an UPDATE instead of INSERT:
-
-```rust
-sqlx::query(
-    "UPDATE requests SET input_tokens = ?, output_tokens = ?, cost_sats = ?
-     WHERE correlation_id = ?"
+// Single aggregate value (e.g., total request count)
+let count: i64 = sqlx::query_scalar(
+    "SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND timestamp < ?"
 )
+.bind(&start)
+.bind(&end)
+.fetch_one(pool)
+.await?;
+
+// Grouped aggregates (e.g., cost per model)
+#[derive(sqlx::FromRow, serde::Serialize)]
+struct ModelStats {
+    model: String,
+    request_count: i64,
+    total_cost_sats: Option<f64>,
+    avg_latency_ms: Option<f64>,
+}
+
+let stats: Vec<ModelStats> = sqlx::query_as(
+    "SELECT model,
+            COUNT(*) as request_count,
+            SUM(cost_sats) as total_cost_sats,
+            AVG(latency_ms) as avg_latency_ms
+     FROM requests
+     WHERE timestamp >= ? AND timestamp < ?
+     GROUP BY model
+     ORDER BY total_cost_sats DESC"
+)
+.bind(&start)
+.bind(&end)
+.fetch_all(pool)
+.await?;
 ```
 
-**No schema changes needed.** The `requests` table already has nullable `input_tokens`, `output_tokens`, and `cost_sats` columns. The initial INSERT logs them as NULL; the post-stream UPDATE fills them in.
+**Why `query_as` (runtime function) instead of `query_as!` (compile-time macro):**
+- The compile-time macro (`query_as!`) requires a live DATABASE_URL at build time and has known issues with SQLite aggregate type inference (COUNT returns i32 not i64, GROUP BY can cause compilation hangs in older sqlx versions)
+- The runtime function (`query_as::<_, T>()`) with `#[derive(sqlx::FromRow)]` works reliably, matches the existing codebase pattern (see `logging.rs` lines 86-96 using `sqlx::query()`), and avoids CI/build complexity
+- The project already uses runtime `sqlx::query()` everywhere -- stay consistent
 
-### 5. Request Mutation for `stream_options`: `serde_json::Value` (Already Available)
+**SQLite aggregate type mapping:**
 
-To inject `stream_options: {"include_usage": true}` into the forwarded request, serialize the `ChatCompletionRequest` to `serde_json::Value`, insert the field, and send the modified JSON:
+| SQL Function | SQLite Return | Rust Type to Use | Notes |
+|-------------|---------------|------------------|-------|
+| `COUNT(*)` | INTEGER | `i64` | Always non-NULL for COUNT(*) |
+| `SUM(col)` | REAL or INTEGER | `Option<f64>` | NULL if all values are NULL or no rows |
+| `AVG(col)` | REAL | `Option<f64>` | NULL if no rows match |
+| `MIN(col)` / `MAX(col)` | Same as column | `Option<T>` | NULL if no rows match |
+| `TOTAL(col)` | REAL | `f64` | Returns 0.0 instead of NULL (prefer over SUM for non-nullable result) |
+
+**Confidence:** HIGH -- verified against [sqlx docs](https://docs.rs/sqlx/latest/sqlx/fn.query_as.html), [sqlx aggregate issues](https://github.com/launchbadge/sqlx/issues/3238), and existing codebase patterns.
+
+### 2. Query Parameter Parsing: `axum::extract::Query` (Already Present)
+
+**Capability:** `axum::extract::Query<T>` deserializes URL query strings into a typed struct using serde. Already available in axum 0.7.
+
+**Pattern for stats endpoints:**
 
 ```rust
-let mut body = serde_json::to_value(&request)?;
-if request.stream == Some(true) {
-    body.as_object_mut().unwrap().insert(
-        "stream_options".to_string(),
-        serde_json::json!({"include_usage": true}),
-    );
+use axum::extract::Query;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct StatsParams {
+    /// Start of time range (ISO 8601 / RFC 3339, e.g., "2026-02-01T00:00:00Z")
+    #[serde(default)]
+    start: Option<String>,
+    /// End of time range
+    #[serde(default)]
+    end: Option<String>,
+    /// Filter by model name
+    #[serde(default)]
+    model: Option<String>,
+    /// Filter by provider name
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+async fn get_stats(
+    State(state): State<AppState>,
+    Query(params): Query<StatsParams>,
+) -> Result<Json<StatsResponse>, Error> {
+    // ...
 }
 ```
 
-**Why this approach:** The `ChatCompletionRequest` type does not need a `stream_options` field because arbstr always injects it for streaming requests. This keeps the type clean and avoids exposing an implementation detail to callers.
+**Why `Option<String>` for date params instead of `Option<chrono::DateTime<Utc>>`:**
+- Chrono's `DateTime<Utc>` does implement `Deserialize`, but query string deserialization through serde_html_form (which axum uses internally) may not handle the `+` in `+00:00` correctly (URL encoding issue: `+` becomes space)
+- Accepting `String` and parsing with `chrono::DateTime::parse_from_rfc3339()` in the handler gives better error messages and control
+- The existing codebase stores timestamps as `chrono::Utc::now().to_rfc3339()` -- accepting the same format as query input is consistent
 
-### 6. Chunk Boundary Buffering: `String` line buffer (std only)
+**Why NOT `axum-extra::extract::OptionalQuery`:**
+- `OptionalQuery<T>` makes the entire query struct optional (returns None if no query string at all)
+- We want individual optional fields, not an optional struct -- `#[serde(default)]` on `Option<T>` fields handles this perfectly
+- No need for the `axum-extra` crate dependency
 
-The critical pitfall from prior research: TCP chunks don't align with SSE line boundaries. A `data: {...}` line could be split across two `bytes_stream()` chunks. The fix is a simple line buffer:
+**Confidence:** HIGH -- verified against [axum Query extractor docs](https://docs.rs/axum/latest/axum/extract/struct.Query.html) and existing handler patterns in `handlers.rs`.
+
+### 3. Time Range Handling: `chrono` 0.4 (Already Present)
+
+**Capability:** Parse RFC 3339 date strings, compute defaults (e.g., "last 24 hours"), format for SQL WHERE clauses.
+
+**Pattern for time range defaults and parsing:**
 
 ```rust
-let mut line_buffer = String::new();
+use chrono::{DateTime, Utc, Duration};
 
-// In the map closure:
-line_buffer.push_str(text);
-while let Some(newline_pos) = line_buffer.find('\n') {
-    let line = &line_buffer[..newline_pos];
-    // Process complete line
-    line_buffer = line_buffer[newline_pos + 1..].to_string();
+fn parse_time_range(start: Option<&str>, end: Option<&str>) -> Result<(String, String), Error> {
+    let end_dt = match end {
+        Some(s) => DateTime::parse_from_rfc3339(s)
+            .map_err(|_| Error::BadRequest("Invalid end date (expected RFC 3339)".into()))?
+            .with_timezone(&Utc),
+        None => Utc::now(),
+    };
+    let start_dt = match start {
+        Some(s) => DateTime::parse_from_rfc3339(s)
+            .map_err(|_| Error::BadRequest("Invalid start date (expected RFC 3339)".into()))?
+            .with_timezone(&Utc),
+        None => end_dt - Duration::hours(24),
+    };
+    Ok((start_dt.to_rfc3339(), end_dt.to_rfc3339()))
 }
 ```
 
-**No crate needed.** This is ~10 lines of code. The `eventsource-stream` crate internally does the same thing but wrapped in a `Stream` adapter -- unnecessary overhead for our single use case.
+**Why this works with SQLite text comparison:**
+- All timestamps in the `requests` table are stored as RFC 3339 UTC strings (e.g., `2026-02-16T14:30:00.123456789+00:00`)
+- RFC 3339 with consistent UTC timezone sorts lexicographically == chronologically
+- `WHERE timestamp >= ? AND timestamp < ?` with string binding produces correct results
+- No need for SQLite `datetime()` function or epoch conversion
+- The existing `idx_requests_timestamp` index (from initial migration) makes range queries efficient
 
-**Note on closure state:** The line buffer must live inside the `.map()` closure as mutable captured state. Since `.map()` takes `FnMut`, mutable captures work. The buffer is `String`, which is `Send`, satisfying `Body::from_stream()` requirements.
+**Why NOT the `time` crate:**
+- `chrono` 0.4 is already a direct dependency with the `serde` feature enabled
+- Adding `time` would introduce a competing date/time library for zero benefit
+- `chrono::DateTime::parse_from_rfc3339()` does exactly what we need
 
-## OpenAI Streaming Format Reference
+**Confidence:** HIGH -- verified timestamps are stored as `chrono::Utc::now().to_rfc3339()` (6 occurrences in `handlers.rs`), and [SQLite text comparison with ISO 8601](https://sqlite.org/lang_datefunc.html) confirms lexicographic ordering works for UTC timestamps.
 
-This is the protocol arbstr must parse. Verified against OpenAI documentation.
+### 4. JSON Response Serialization: `serde` + `serde_json` (Already Present)
 
-### Normal Chunks (content delivery)
+**Capability:** `#[derive(Serialize)]` on response structs, `axum::Json<T>` for automatic serialization.
 
-```
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}],"usage":null}
-
-```
-
-### Final Usage Chunk (when `stream_options.include_usage = true`)
-
-```
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}
-
-data: [DONE]
-
-```
-
-**Key facts:**
-- Usage chunk has `"choices": []` (empty array)
-- Usage chunk comes immediately before `data: [DONE]`
-- All other chunks have `"usage": null`
-- Without `stream_options`, no chunk contains usage data
-- The `\n\n` (double newline) separates SSE events
-
-### Provider Compatibility
-
-| Provider | `stream_options` support | Confidence |
-|----------|------------------------|------------|
-| OpenAI | YES -- documented, official | HIGH |
-| vLLM | YES -- documented as `stream_include_usage` (flattened) and standard format | MEDIUM |
-| Ollama | UNCLEAR -- OpenAI compatibility mode may not support it | LOW |
-| Routstr (marketplace) | DEPENDS on underlying provider | LOW |
-
-**Mitigation for unsupported providers:** If the provider ignores `stream_options`, no usage chunk will appear. The stream will end with `data: [DONE]` and no usage is captured. The fallback is logging NULL tokens/cost -- identical to current behavior. This is safe degradation, not an error.
-
-## ChatCompletionRequest Type Changes
-
-The `stream_options` field should NOT be added to the `ChatCompletionRequest` struct. Instead, arbstr injects it at the serialization layer when forwarding to the provider. This keeps the public API type clean and makes it clear that `stream_options` is an arbstr implementation detail, not a client-facing parameter.
-
-If the client sends `stream_options` in their request, it will be preserved in `serde_json::Value` passthrough (if we switch to Value-based forwarding) or ignored (if we keep typed deserialization). Either behavior is acceptable -- arbstr controls what it needs.
-
-## ChatCompletionChunk Type Enhancement
-
-The existing `ChatCompletionChunk` struct in `types.rs` lacks a `usage` field. Add it:
+**Pattern for stats response types:**
 
 ```rust
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ChatCompletionChunk {
-    pub id: String,
-    pub object: String,
-    pub created: u64,
-    pub model: String,
-    pub choices: Vec<ChunkChoice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,  // NEW: present in final chunk when include_usage=true
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct StatsResponse {
+    period: TimePeriod,
+    totals: TotalStats,
+    by_model: Vec<ModelStats>,
+    by_provider: Vec<ProviderStats>,
+}
+
+#[derive(Serialize)]
+struct TimePeriod {
+    start: String,
+    end: String,
+}
+
+#[derive(Serialize)]
+struct TotalStats {
+    total_requests: i64,
+    successful_requests: i64,
+    failed_requests: i64,
+    total_cost_sats: f64,
+    total_input_tokens: i64,
+    total_output_tokens: i64,
+    avg_latency_ms: f64,
 }
 ```
 
-**However:** Using typed deserialization (`serde_json::from_str::<ChatCompletionChunk>()`) is heavier than needed for usage extraction. The current `serde_json::Value` approach is better because:
-1. It handles unknown fields gracefully (providers may add fields)
-2. It's a single allocation for the whole chunk
-3. We only need to read `usage.prompt_tokens` and `usage.completion_tokens`
+**Why structs with `#[derive(Serialize)]` instead of `serde_json::json!()`:**
+- The existing handlers use `serde_json::json!()` for simple responses (health, providers, models)
+- Stats responses are more complex with nested structures -- typed structs prevent field name typos and make the API contract explicit
+- `#[derive(sqlx::FromRow, serde::Serialize)]` on the same struct allows direct DB-to-JSON piping with no intermediate mapping
+- Consistent with the existing `ChatCompletionResponse` pattern in `types.rs`
 
-**Recommendation:** Keep using `serde_json::Value` for SSE data parsing. Update the `ChatCompletionChunk` type for documentation completeness but don't rely on it for parsing.
+**Confidence:** HIGH -- standard serde pattern, already used extensively in the codebase.
 
-## Cargo.toml Changes Summary
+## Recommended Stack Summary
 
-```toml
-# NO CHANGES to [dependencies]
-# Everything needed is already present:
-# - futures = "0.3"           (StreamExt for stream transformation)
-# - tokio = { features = ["full"] }  (oneshot channel for post-stream notification)
-# - serde_json = "1"          (SSE data payload parsing)
-# - sqlx = { features = ["sqlite"] } (UPDATE query for log amendment)
-# - reqwest = { features = ["stream"] } (bytes_stream() for SSE chunks)
-```
+### Core Framework (unchanged)
 
-**Net dependency change: 0.** Zero new crates. This milestone uses only existing dependencies.
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| axum | 0.7 | HTTP server, `Query<T>` extractor, `Json<T>` response, route registration | Already used, `Query` extractor built-in |
+| sqlx | 0.8 | `query_as()` for aggregate SELECT, `query_scalar()` for single values, `FromRow` derive | Already used, runtime query functions match existing patterns |
+| chrono | 0.4 | RFC 3339 parsing for time range params, UTC timestamp defaults | Already used for timestamp generation |
+| serde / serde_json | 1.x | Deserialize query params, serialize JSON responses | Already used everywhere |
+
+### Database (unchanged)
+
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| SQLite via sqlx | 0.8 | Read-only aggregate queries against `requests` table | Already used, existing indexes cover time range queries |
+
+### Infrastructure (unchanged)
+
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| tokio | 1.x (full) | Async runtime for query execution | Already used |
+
+### Supporting Libraries (unchanged)
+
+| Library | Version | Purpose | When to Use |
+|---------|---------|---------|-------------|
+| tracing | 0.1 | Log query execution times, parameter validation warnings | Every handler |
 
 ## What NOT to Add
 
 | Technology | Why Not |
 |------------|---------|
-| `eventsource-stream` | SSE parsing library. Overkill for `strip_prefix("data: ")` on a known-simple format. Adds a dependency for ~10 lines of hand-rolled code. The OpenAI SSE format uses only `data:` lines -- no event types, IDs, or retry semantics to parse. |
-| `reqwest-eventsource` | EventSource client with reconnection. Wrong abstraction -- arbstr is a proxy forwarding streams, not an SSE consumer. Conflicts with existing request construction. |
-| `async-stream` | Stream generator macro. The existing `bytes_stream().map()` pattern is sufficient and already used. Adding a second stream construction approach would be confusing. |
-| `tokio-stream` (direct dep) | Already transitive. `futures::StreamExt` covers all needed combinators. Adding it directly would create two competing `StreamExt` imports. |
-| `sse-codec` / `sse-stream` | Various small SSE crates. Low adoption, unmaintained, solve a problem we don't have. |
-| `bytes` (direct dep) | Already transitive via axum/reqwest. The stream transformation uses `bytes::Bytes` via reqwest but doesn't need direct import -- the type is re-exported through reqwest. |
-| `pin-project` / `pin-project-lite` (direct dep) | Already transitive. Only needed if implementing custom `Stream` types, which we don't need -- `StreamExt::map()` handles our case. |
+| `axum-extra` | `OptionalQuery<T>` is unnecessary -- `#[serde(default)]` on `Option<T>` fields handles optional query params. No need for a new dependency for one extractor. |
+| `time` crate | Competing date/time library. `chrono` 0.4 is already present and sufficient. |
+| `sqlx` compile-time macros (`query!`, `query_as!`) | Require DATABASE_URL at build time, have known SQLite aggregate type inference issues, and don't match the existing runtime query pattern used throughout the codebase. |
+| `sea-query` / `diesel` | SQL query builder crates. The aggregate queries for stats are static (not user-constructed), so raw SQL with bind parameters is clearer and has no SQL injection risk. Adding a query builder for 5-6 fixed queries is over-engineering. |
+| `chrono-tz` | Timezone database crate. All timestamps are UTC. No timezone conversion needed. |
+| `serde_qs` / `serde_urlencoded` | Query string parsers. axum's built-in `Query<T>` extractor already uses `serde_html_form` internally, which handles all standard query string formats. |
+
+## Alternatives Considered
+
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| Date parsing | `chrono` 0.4 (existing) | `time` crate | Second date library for zero benefit; chrono already in deps |
+| Query params | `axum::extract::Query` | `axum-extra::OptionalQuery` | Individual `Option` fields with `#[serde(default)]` is sufficient |
+| SQL queries | `sqlx::query_as()` runtime | `sqlx::query_as!()` macro | Compile-time macro needs DATABASE_URL, has SQLite aggregate issues |
+| SQL queries | Raw SQL with bind params | `sea-query` builder | Static queries don't benefit from a builder; adds complexity |
+| Response types | Typed structs with Serialize | `serde_json::json!()` | Structs provide compile-time field name checking for complex responses |
 
 ## Integration Points with Existing Code
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `src/proxy/stats.rs` (new) | Stats query handler functions and response types |
 
 ### Files That Change
 
 | File | Change | Why |
 |------|--------|-----|
-| `src/proxy/handlers.rs` | Major refactor of `handle_streaming_response` | Add line buffering, usage capture, post-stream notification |
-| `src/proxy/handlers.rs` | Modify `send_to_provider` | Inject `stream_options` into request body for streaming |
-| `src/proxy/handlers.rs` | Modify streaming path in `chat_completions` | Wire up oneshot channel, spawn post-stream log update task |
-| `src/storage/logging.rs` | Add `update_streaming_usage` function | SQL UPDATE for post-stream token/cost fill-in |
-| `src/proxy/types.rs` | Add `usage` field to `ChatCompletionChunk` | Documentation completeness (not used for parsing) |
+| `src/proxy/server.rs` | Add GET routes for stats endpoints | Wire up new handlers to the router |
+| `src/proxy/mod.rs` | Add `pub mod stats;` | Module registration |
+| `src/storage/logging.rs` OR `src/storage/queries.rs` (new) | Add aggregate query functions | Separate read queries from write operations |
 
 ### Files That Don't Change
 
 | File | Why Not |
 |------|---------|
 | `Cargo.toml` | No new dependencies |
-| `src/config.rs` | Config unchanged |
-| `src/router/` | Routing logic unchanged |
-| `src/error.rs` | No new error variants needed (stream parsing failures are logged as warnings, not errors) |
-| `migrations/` | No schema changes (columns already nullable) |
+| `src/config.rs` | No config changes needed |
+| `src/router/` | Routing/selection logic unchanged |
+| `src/error.rs` | Existing `BadRequest` variant covers invalid query params |
+| `migrations/` | No schema changes -- existing table + indexes are sufficient |
+
+### Existing Index Coverage
+
+The initial migration already created:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_requests_timestamp ON requests(timestamp);
+```
+
+This index supports efficient time-range filtering (`WHERE timestamp >= ? AND timestamp < ?`). For GROUP BY queries on `model` and `provider`, SQLite will scan the filtered result set. If performance becomes an issue at scale, composite indexes can be added later:
+
+```sql
+-- Only if needed (not for initial implementation)
+CREATE INDEX idx_requests_model_timestamp ON requests(model, timestamp);
+CREATE INDEX idx_requests_provider_timestamp ON requests(provider, timestamp);
+```
+
+**Recommendation:** Do NOT add these indexes now. The `requests` table is append-only with fire-and-forget writes. Adding indexes slows down every INSERT. Wait until query performance is measurably slow before optimizing.
+
+## SQLite-Specific Considerations
+
+### NULL Handling in Aggregates
+
+- `SUM(cost_sats)` returns NULL if all `cost_sats` values in the group are NULL (streaming requests where usage extraction failed)
+- Use `COALESCE(SUM(cost_sats), 0.0)` in SQL or `Option<f64>` in Rust and default to 0.0 in the response serialization
+- `COUNT(*)` always returns a non-NULL integer (counts rows, not values)
+- `COUNT(cost_sats)` counts only non-NULL values (useful for "requests with known cost")
+
+### CAST for Integer Division
+
+- `AVG(latency_ms)` returns REAL (f64) even though `latency_ms` is INTEGER -- this is correct behavior
+- No explicit CAST needed for our use case
+
+### Concurrent Reads During Writes
+
+- SQLite WAL mode (default for sqlx) allows concurrent reads while writes are in progress
+- Stats queries will not block the main proxy write path
+- Read queries may not see the very latest fire-and-forget writes (acceptable for analytics)
+
+## Cargo.toml Changes Summary
+
+```toml
+# NO CHANGES to [dependencies]
+# Everything needed is already present:
+# - axum = "0.7"                              (Query extractor, Json response, route registration)
+# - sqlx = { features = ["sqlite", ...] }     (query_as, query_scalar, FromRow derive)
+# - chrono = { features = ["serde"] }         (RFC 3339 parsing, UTC defaults)
+# - serde = { features = ["derive"] }         (Deserialize for query params, Serialize for responses)
+# - serde_json = "1"                          (JSON serialization)
+# - tracing = "0.1"                           (Query logging)
+```
+
+**Net dependency change: 0.** Zero new crates. This milestone uses only existing dependencies.
 
 ## Version Verification
 
-| Crate | Version (locked) | Verified Via | Confidence |
-|-------|-----------------|-------------|------------|
-| futures | 0.3.31 | Cargo.lock inspection | HIGH |
-| tokio | 1.x (full features) | Cargo.toml + Cargo.lock | HIGH |
-| reqwest | 0.12 (stream feature) | Cargo.toml | HIGH |
-| serde_json | 1.x | Cargo.toml | HIGH |
-| sqlx | 0.8 (sqlite, migrate) | Cargo.toml | HIGH |
-| bytes | 1.11.0 (transitive) | Cargo.lock | HIGH |
+| Crate | Version (Cargo.toml) | Latest Stable | Action | Confidence |
+|-------|---------------------|---------------|--------|------------|
+| sqlx | 0.8 | 0.8.6 | Keep -- semver compatible, no breaking changes | HIGH |
+| axum | 0.7 | 0.8.6 | Keep at 0.7 -- upgrading is out of scope for this milestone | HIGH |
+| chrono | 0.4 | 0.4.43 | Keep -- semver compatible | HIGH |
+| serde | 1.x | 1.x | Keep -- stable | HIGH |
+
+**Note on axum 0.8:** The project currently uses axum 0.7. Axum 0.8 is available but upgrading is a separate concern (breaking changes in middleware, extractors). The `Query` extractor API is stable across both versions. Do not upgrade axum as part of this milestone.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Local codebase analysis -- all handler, types, storage, and retry source files read and verified
-- [Cargo.lock inspection](Cargo.lock) -- confirmed futures 0.3.31, bytes 1.11.0, tokio-stream 0.1.18 as transitive deps
-- Prior phase-02 research (`.planning/phases/02-request-logging/02-RESEARCH.md`) -- SSE parsing patterns, chunk boundary pitfall, `strip_prefix` recommendation
-- [OpenAI Chat Streaming API reference](https://platform.openai.com/docs/api-reference/chat-streaming) -- `stream_options`, `include_usage`, final chunk format
-- [OpenAI streaming usage stats announcement](https://community.openai.com/t/usage-stats-now-available-when-using-streaming-with-the-chat-completions-api-or-completions-api/738156) -- `stream_options.include_usage`, extra chunk behavior
+- Local codebase analysis: `Cargo.toml`, `src/proxy/handlers.rs`, `src/proxy/server.rs`, `src/storage/logging.rs`, `src/proxy/types.rs`, `migrations/*.sql` -- all read and verified
+- [sqlx `query_as` function docs](https://docs.rs/sqlx/latest/sqlx/fn.query_as.html) -- runtime query_as with FromRow
+- [sqlx `query_scalar` function docs](https://docs.rs/sqlx/latest/sqlx/fn.query_scalar.html) -- single-value aggregate queries
+- [axum `Query` extractor docs](https://docs.rs/axum/latest/axum/extract/struct.Query.html) -- query string deserialization
+- [SQLite Date And Time Functions](https://sqlite.org/lang_datefunc.html) -- ISO 8601 text comparison behavior
+- [sqlx 0.8.6 on crates.io](https://crates.io/crates/sqlx) -- latest stable version confirmed
+- [chrono 0.4.43 on docs.rs](https://docs.rs/crate/chrono/latest) -- latest stable version confirmed
 
 ### Secondary (MEDIUM confidence)
-- [eventsource-stream on lib.rs](https://lib.rs/crates/eventsource-stream) -- 271K monthly downloads, Event struct API, eventsource trait
-- [reqwest-eventsource on docs.rs](https://docs.rs/reqwest-eventsource/latest/reqwest_eventsource/) -- EventSource wrapper, reconnection behavior
-- [async-stream releases](https://github.com/tokio-rs/async-stream/releases) -- v0.3.6, October 2024
-- [vLLM OpenAI-Compatible Server docs](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) -- stream_include_usage support
-- [Ollama OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility) -- partial compatibility, stream_options status unclear
-- [futures StreamExt docs](https://docs.rs/futures/latest/futures/stream/trait.StreamExt.html) -- map(), then() combinators
-- [axum Body::from_stream docs](https://docs.rs/axum/latest/axum/body/struct.Body.html) -- stream type requirements
-- [tokio oneshot channel docs](https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html) -- single-value notification pattern
-- [Adam Chalmers: Static streams for faster async proxies](https://blog.adamchalmers.com/streaming-proxy/) -- stream proxy patterns in Rust
-- [Tokio framing tutorial](https://tokio.rs/tokio/tutorial/framing) -- byte stream buffering patterns
+- [sqlx aggregate type issues (GitHub #3238)](https://github.com/launchbadge/sqlx/issues/3238) -- GROUP BY type inference problems with compile-time macros
+- [axum-extra OptionalQuery docs](https://docs.rs/axum-extra/latest/axum_extra/extract/struct.OptionalQuery.html) -- confirmed unnecessary for this use case
+- [axum 0.8 optional query params (GitHub #3079)](https://github.com/tokio-rs/axum/issues/3079) -- confirms `#[serde(default)]` pattern works
+- [SQLite text comparison for timestamps](https://sqlite.work/resolving-date-comparison-and-ordering-issues-in-sqlite-with-non-standard-date-formats/) -- lexicographic ordering with ISO 8601
+- [FromRow trait docs](https://docs.rs/sqlx/latest/sqlx/trait.FromRow.html) -- derive macro for struct mapping

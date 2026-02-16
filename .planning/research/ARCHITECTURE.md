@@ -1,791 +1,612 @@
-# Architecture Patterns: Streaming SSE Token Extraction
+# Architecture Patterns: Cost Querying API Endpoints
 
-**Domain:** SSE stream interception and token extraction in Rust/axum/reqwest proxy
-**Researched:** 2026-02-15
-**Overall confidence:** HIGH (patterns verified against existing codebase, OpenAI SSE format well-documented, all components use crates already in Cargo.toml)
+**Domain:** Read-only analytics/stats endpoints in existing Rust/axum/sqlx proxy
+**Researched:** 2026-02-16
+**Overall confidence:** HIGH (patterns verified against existing codebase, axum Query extractor well-documented, sqlx aggregate queries are standard SQL)
 
 ## Current Architecture (Baseline)
 
-### How Streaming Responses Flow Today
+### Existing Component Map
 
 ```
-Client                     arbstr                           Provider
-  |                          |                                |
-  |  POST /v1/chat/          |                                |
-  |  completions             |                                |
-  |  stream: true            |                                |
-  |------------------------->|                                |
-  |                          |  POST /chat/completions        |
-  |                          |  stream: true                  |
-  |                          |------------------------------->|
-  |                          |                                |
-  |                          |  200 OK (chunked)              |
-  |                          |  text/event-stream             |
-  |                          |<-------------------------------|
-  |                          |                                |
-  |                          |  Log entry written             |
-  |                          |  (tokens: None, cost: None)    |
-  |                          |                                |
-  |  200 OK (chunked)        |                                |
-  |  text/event-stream       |                                |
-  |<-------------------------|                                |
-  |                          |                                |
-  |  data: {"choices":[...]} |  bytes_stream() chunks         |
-  |  data: {"choices":[...]} |  pass-through via              |
-  |  data: {"choices":[...]} |  Body::from_stream             |
-  |  ...                     |  (debug log of usage if seen,  |
-  |  data: [DONE]            |   but value is discarded)      |
-  |<-------------------------|                                |
+src/
+  proxy/
+    server.rs     -- AppState { router, http_client, config, db: Option<SqlitePool> }
+                     create_router() builds axum::Router with routes + state
+    handlers.rs   -- chat_completions, list_models, health, list_providers (all pub)
+    mod.rs        -- declares modules, re-exports public items
+  storage/
+    mod.rs        -- init_pool(), re-exports from logging
+    logging.rs    -- RequestLog struct, insert/update functions (write-only)
+  router/
+    selector.rs   -- Router, SelectedProvider, actual_cost_sats
+  error.rs        -- Error enum with IntoResponse for OpenAI-compatible errors
+  config.rs       -- Config, ProviderConfig, PolicyRule
+  lib.rs          -- pub mod declarations
 ```
 
-### What Happens in Code (handlers.rs:665-729)
+### How Handlers Access the Database Today
 
-The `handle_streaming_response` function currently:
+Every handler follows the same pattern:
 
-1. Takes the `reqwest::Response` from the provider
-2. Calls `.bytes_stream()` to get a `Stream<Item = Result<Bytes, reqwest::Error>>`
-3. Maps each chunk through a closure that:
-   - Parses UTF-8 lines looking for `data: ` prefixed lines
-   - Attempts to extract usage JSON from each SSE data payload
-   - **Logs usage via `tracing::debug!` but discards the values** (lines 688-694)
-   - Passes bytes through unchanged
-4. Wraps the stream in `Body::from_stream(stream)`
-5. Returns `RequestOutcome` with `input_tokens: None, output_tokens: None, cost_sats: None`
+```rust
+pub async fn chat_completions(
+    State(state): State<AppState>,    // axum extracts AppState from shared state
+    Extension(request_id): Extension<RequestId>,
+    headers: HeaderMap,
+    Json(request): Json<ChatCompletionRequest>,
+) -> Result<Response, Error> {
+    // ...
+    if let Some(pool) = &state.db {
+        spawn_log_write(pool, log_entry);   // fire-and-forget write
+    }
+}
+```
 
-### The Logging Gap
+Key observations:
+- `state.db` is `Option<SqlitePool>` -- database may not be initialized
+- All current database access is **write-only** (INSERT, UPDATE)
+- No read queries exist anywhere in the codebase today
+- The `Error::Database` variant already exists for sqlx errors
+- SQLite pool uses WAL mode with max 5 connections -- reads and writes do not block each other in WAL mode
 
-In `chat_completions` (lines 152-231), the streaming path:
+### Existing Route Registration
 
-1. Calls `execute_request` which returns a `RequestOutcome`
-2. Builds a `RequestLog` using the outcome's `input_tokens` / `output_tokens` / `cost_sats`
-3. Calls `spawn_log_write` to insert the log entry
-4. Returns the streaming response to the client
+```rust
+pub fn create_router(state: AppState) -> Router {
+    Router::new()
+        .route("/v1/chat/completions", post(handlers::chat_completions))
+        .route("/v1/models", get(handlers::list_models))
+        .route("/health", get(handlers::health))
+        .route("/providers", get(handlers::list_providers))
+        .with_state(state)
+        .layer(TraceLayer::new_for_http().make_span_with(/* ... */))
+        .layer(middleware::from_fn(inject_request_id))
+}
+```
 
-The log entry is written **before the stream is consumed** because the response body hasn't been read yet -- it's just a stream wrapper. The tokens are always `None` for streaming requests.
+### Database Schema (requests table)
 
-### What the Database Has
+```sql
+CREATE TABLE requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correlation_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,          -- RFC3339 string, indexed
+    model TEXT NOT NULL,
+    provider TEXT,
+    policy TEXT,
+    streaming BOOLEAN NOT NULL DEFAULT FALSE,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cost_sats REAL,
+    provider_cost_sats REAL,
+    latency_ms INTEGER NOT NULL,
+    stream_duration_ms INTEGER,
+    success BOOLEAN NOT NULL,
+    error_status INTEGER,
+    error_message TEXT
+);
 
-The `requests` table already has columns for `input_tokens`, `output_tokens`, `cost_sats`, and `provider_cost_sats` -- all nullable INTEGER/REAL. Streaming requests insert with these as NULL. No schema change is needed to store the data; we just need to UPDATE the row after the stream completes.
+CREATE INDEX idx_requests_correlation_id ON requests(correlation_id);
+CREATE INDEX idx_requests_timestamp ON requests(timestamp);
+```
+
+The `timestamp` column stores RFC3339 strings. SQLite comparison operators work correctly on ISO 8601 / RFC3339 strings for range queries (`WHERE timestamp >= ? AND timestamp < ?`) because lexicographic ordering matches chronological ordering for these formats.
+
+---
 
 ## Recommended Architecture
 
-### Design Decision: Insert-Then-Update Pattern
+### Where New Code Lives
 
-The fundamental challenge is temporal: headers and the initial log entry must be sent/written before the stream is consumed, but token counts are only available after the final SSE chunk arrives (or the stream ends).
+**Decision: Create a new `src/storage/stats.rs` module alongside `logging.rs`.**
 
-**Two viable approaches:**
+Rationale:
+- Query functions need `&SqlitePool` -- they belong in `storage/`, the data access layer
+- `logging.rs` is exclusively write operations (INSERT/UPDATE). Mixing reads muddies its purpose
+- A `stats.rs` file keeps read concerns isolated and testable independently
+- The `storage/mod.rs` already serves as the namespace root and can re-export query types
 
-**Approach A -- Insert placeholder, UPDATE after stream completes (recommended):**
-Log the request immediately with `input_tokens = NULL` (current behavior). After the stream ends, update the same row with extracted token counts and calculated cost. Uses the existing `correlation_id` to find the row.
+**Do NOT create a new top-level `src/stats/` module.** The data access pattern (SqlitePool in, typed results out) is the same as `logging.rs`. The storage module is the right home.
 
-**Approach B -- Log only after stream completes:**
-Defer the entire log write until after the stream ends. Pro: single INSERT with complete data. Con: if the client disconnects mid-stream, no log entry exists at all -- you lose the record that a request was made.
+**Handler functions go in `src/proxy/handlers.rs`** -- the same file as all other handlers. The stats handlers will be simple and short (extract query params, call storage function, return JSON). There is no reason to split into a separate `stats_handlers.rs` until handlers.rs becomes unwieldy, which it will not with 3-5 new endpoints of ~15 lines each.
 
-**Recommendation: Approach A (insert-then-update).** The current behavior of logging immediately is correct -- it captures the request even if the stream fails partway through. Adding a post-stream UPDATE preserves this safety property while filling in the missing data. The two-write cost is negligible for SQLite with WAL mode.
+### File Change Summary
 
-### Design Decision: stream_options Injection vs. Passive Parsing
+| File | Change | What |
+|------|--------|------|
+| `src/storage/stats.rs` | **NEW** | Query functions: `get_summary`, `get_cost_by_model`, `get_cost_by_provider`, `get_recent_requests` |
+| `src/storage/mod.rs` | MODIFY | Add `pub mod stats;` and re-export key types |
+| `src/proxy/handlers.rs` | MODIFY | Add stats handler functions + query param structs |
+| `src/proxy/server.rs` | MODIFY | Register new routes in `create_router()` |
+| `src/proxy/mod.rs` | MODIFY | Nothing visible (handlers are already `mod handlers`) |
 
-**Approach A -- Inject `stream_options: {"include_usage": true}` into the upstream request (recommended):**
-Before forwarding to the provider, add `stream_options.include_usage = true` to the request JSON. This asks OpenAI-compatible providers to include a final usage chunk with `prompt_tokens` and `completion_tokens`. The proxy then parses only this final chunk.
+No changes to: `error.rs` (Database variant exists), `config.rs`, `router/`, `lib.rs`.
 
-**Approach B -- Count tokens manually by accumulating delta content:**
-Parse every SSE chunk, accumulate `delta.content` text, and use a tokenizer to estimate token counts. This is complex, inaccurate (tokenizer must match the model), and adds a heavy dependency.
-
-**Recommendation: Approach A (inject stream_options).** The OpenAI API supports `stream_options: {"include_usage": true}` which causes the provider to emit an extra chunk before `[DONE]` containing the authoritative token counts. This is the standard mechanism. It adds no new dependencies, is accurate, and requires parsing only the final chunk rather than accumulating all content.
-
-**Provider compatibility note:** The `stream_options` field is part of the OpenAI Chat Completions API specification. Routstr providers expose an OpenAI-compatible API, so this should be supported. If a provider does not support `stream_options`, it will either ignore the field (safe -- no usage chunk, tokens remain NULL) or return a 400 error (handled by existing error paths). The proxy should handle both cases gracefully.
-
-### Design Decision: Side-Channel Communication Pattern
-
-The stream is consumed by the client (via axum's response body). The proxy needs to learn what the stream contained after it's done. This requires a side channel from the stream processing closure to a post-stream completion handler.
-
-**Approach A -- Arc<Mutex<Option<Usage>>> shared state (recommended):**
-Create a shared `Arc<Mutex<Option<StreamUsage>>>` before building the stream. The stream's map closure writes to it when it encounters usage data. A `tokio::spawn` task holds a reference and polls/awaits stream completion, then reads the captured value and performs the UPDATE.
-
-**Approach B -- tokio::sync::oneshot channel:**
-Create a oneshot channel. The stream closure sends usage data through the sender when the stream ends. A spawned task awaits the receiver. Pro: no mutex. Con: oneshot can only send once, and detecting "stream ended without usage" requires dropping the sender (which means putting it in the stream closure's state), adding complexity. Harder to handle the case where usage arrives in the final data chunk but the stream hasn't technically ended yet (there's still the `[DONE]` line and stream closure).
-
-**Approach C -- Custom Stream wrapper struct implementing Stream trait:**
-Build a `StreamInterceptor` struct that wraps the inner stream, implements `Stream<Item = Result<Bytes, E>>`, and captures state internally. On `poll_next` returning `None` (stream exhausted), trigger the database update. Pro: most elegant, no external synchronization. Con: implementing `Stream` manually with `Pin` and `poll_next` is verbose and error-prone in Rust.
-
-**Recommendation: Approach A (Arc<Mutex<Option>>).** This is the same pattern already used in `retry.rs` for `Arc<Mutex<Vec<AttemptRecord>>>` -- the codebase has precedent for this exact technique. It's simple, works with the existing `.map()` stream combinator, and the mutex contention is zero (written once at end of stream, read once after stream completes).
-
-### Component Diagram
+### Component Boundaries
 
 ```
-                                  BEFORE STREAM STARTS
-                                  ====================
-
-ChatCompletionRequest              Injected field
-+---------------------+    +---> stream_options: { include_usage: true }
-| model: "gpt-4o"     |    |
-| stream: true         |----+     Forwarded to provider
-| messages: [...]      |
-+---------------------+
-
-                                  DURING STREAM
-                                  =============
-
-Provider              bytes_stream()          Stream map closure         Client
-   |                       |                        |                       |
-   |  data: {chunk}        |   Bytes                |                       |
-   |---------------------->|----------------------->| parse SSE lines       |
-   |                       |                        | if usage found:       |
-   |                       |                        |   write to shared_usage
-   |                       |                        | pass bytes through    |
-   |                       |                        |---------------------->|
-   |                       |                        |                       |
-   |  data: {usage chunk}  |   Bytes                |                       |
-   |---------------------->|----------------------->| usage found!          |
-   |                       |                        | *shared_usage =       |
-   |                       |                        |   Some(StreamUsage)   |
-   |                       |                        |---------------------->|
-   |                       |                        |                       |
-   |  data: [DONE]         |   Bytes                |                       |
-   |---------------------->|----------------------->| pass through          |
-   |                       |                        |---------------------->|
-   |                       |                        |                       |
-   |  (stream ends)        |   None                 |                       |
-   |                       |                        | (stream exhausted)    |
-   |                       |                        |                       |
-
-                                  AFTER STREAM ENDS
-                                  =================
-
-                    Completion task (tokio::spawn)
-                    +----------------------------------------+
-                    | await stream_done signal               |
-                    | read shared_usage lock                 |
-                    | if Some(usage):                        |
-                    |   calculate cost via actual_cost_sats  |
-                    |   UPDATE requests SET                  |
-                    |     input_tokens = ?,                  |
-                    |     output_tokens = ?,                 |
-                    |     cost_sats = ?,                     |
-                    |     latency_ms = ?                     |
-                    |   WHERE correlation_id = ?             |
-                    | else:                                  |
-                    |   log warning (no usage in stream)     |
-                    +----------------------------------------+
+┌─────────────────────────────────────────────────────┐
+│  proxy/handlers.rs                                  │
+│                                                     │
+│  stats_summary(State, Query<TimeRange>)             │
+│    -> calls storage::stats::get_summary(&pool, ...) │
+│    -> returns Json<SummaryResponse>                 │
+│                                                     │
+│  stats_by_model(State, Query<TimeRange>)            │
+│    -> calls storage::stats::get_cost_by_model(...)  │
+│    -> returns Json<ModelBreakdown>                  │
+│                                                     │
+│  stats_by_provider(State, Query<TimeRange>)         │
+│    -> calls storage::stats::get_cost_by_provider()  │
+│    -> returns Json<ProviderBreakdown>               │
+│                                                     │
+│  stats_recent(State, Query<RecentParams>)           │
+│    -> calls storage::stats::get_recent_requests()   │
+│    -> returns Json<RecentRequests>                  │
+│                                                     │
+└─────────────────┬───────────────────────────────────┘
+                  │ calls
+                  ▼
+┌─────────────────────────────────────────────────────┐
+│  storage/stats.rs                                   │
+│                                                     │
+│  Response types: SummaryRow, ModelCostRow, etc.     │
+│  Query functions: async fn -> Result<T, sqlx::Error>│
+│  Pure data access, no HTTP concerns                 │
+│                                                     │
+└─────────────────┬───────────────────────────────────┘
+                  │ sqlx queries
+                  ▼
+┌─────────────────────────────────────────────────────┐
+│  SQLite (requests table, WAL mode)                  │
+└─────────────────────────────────────────────────────┘
 ```
 
-### New Components
+### Data Flow for a Stats Request
 
-| Component | Location | Type | Purpose |
-|-----------|----------|------|---------|
-| `StreamUsage` | `src/proxy/stream.rs` (new module) | struct | Holds extracted `prompt_tokens: u32`, `completion_tokens: u32` from the usage chunk |
-| `build_intercepted_stream` | `src/proxy/stream.rs` | fn | Takes a `bytes_stream()`, returns `(Body, Arc<Mutex<Option<StreamUsage>>>)` -- the pass-through body and the shared usage capture |
-| `parse_sse_usage` | `src/proxy/stream.rs` | fn | Parses a single SSE data payload string and returns `Option<StreamUsage>` if it contains a usage object |
-| `SseLineBuffer` | `src/proxy/stream.rs` | struct | Buffers partial SSE lines across chunk boundaries (chunks from reqwest do not respect line boundaries) |
-| `inject_stream_options` | `src/proxy/stream.rs` or `handlers.rs` | fn | Mutates a `ChatCompletionRequest` to set `stream_options.include_usage = true` |
-| `spawn_stream_completion` | `src/proxy/stream.rs` or `handlers.rs` | fn | Spawns a task that waits for stream completion and performs the database UPDATE |
-| `update_streaming_usage` | `src/storage/logging.rs` | fn | Executes `UPDATE requests SET input_tokens=?, output_tokens=?, cost_sats=?, latency_ms=? WHERE correlation_id=?` |
+```
+GET /v1/arbstr/stats/summary?since=2026-02-01T00:00:00Z&until=2026-02-16T00:00:00Z
 
-### Modified Components
+1. axum extracts State<AppState> and Query<TimeRange>
+2. Handler checks state.db is Some (returns 503 if None)
+3. Handler calls storage::stats::get_summary(&pool, since, until)
+4. stats.rs executes SQL aggregate query
+5. sqlx returns typed result (SummaryRow or Vec<ModelCostRow>)
+6. Handler wraps in Json() and returns
+```
 
-| Component | File | Change |
-|-----------|------|--------|
-| `ChatCompletionRequest` | `src/proxy/types.rs` | Add `stream_options: Option<StreamOptions>` field with serde serialization |
-| `handle_streaming_response` | `src/proxy/handlers.rs` | Replace inline stream parsing with call to `build_intercepted_stream`, return the shared usage handle |
-| `RequestOutcome` | `src/proxy/handlers.rs` | Add `shared_usage: Option<Arc<Mutex<Option<StreamUsage>>>>` for streaming responses |
-| `chat_completions` (streaming path) | `src/proxy/handlers.rs` | After returning the response, spawn a completion task that awaits stream end and calls `update_streaming_usage` |
-| `send_to_provider` | `src/proxy/handlers.rs` | Call `inject_stream_options` on the request before forwarding when `is_streaming` is true |
-| `proxy/mod.rs` | `src/proxy/mod.rs` | Add `pub mod stream;` |
+---
 
-### Unchanged Components
+## Endpoint Design
 
-| Component | Why Unchanged |
-|-----------|--------------|
-| `retry.rs` | Streaming bypasses retry (existing design decision) |
-| `selector.rs` / Router | Provider selection is the same regardless of streaming |
-| `server.rs` / AppState | No new shared state needed at the app level |
-| `config.rs` | No config changes needed |
-| `error.rs` | No new error variants needed (stream parsing failures are warnings, not errors) |
-| Database schema (`migrations/`) | Existing columns are nullable and can be UPDATEd -- no migration needed |
+### URL Structure: `/v1/arbstr/stats/*`
 
-## Pattern Details
+Use the `/v1/arbstr/` prefix for arbstr-specific extensions. This is consistent with the existing arbstr extension pattern (the project already adds `arbstr_provider` to response bodies and uses `x-arbstr-*` headers). The `/v1/` prefix signals API versioning. The `stats/` segment groups all analytics endpoints.
 
-### Pattern 1: SSE Line Buffering Across Chunk Boundaries
+Endpoints:
 
-**What:** reqwest's `bytes_stream()` delivers arbitrary byte chunks that do not align with SSE line boundaries. A single SSE event like `data: {"choices":[...]}\n\n` may be split across multiple chunks, or multiple events may arrive in a single chunk.
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/v1/arbstr/stats/summary` | Overall totals: request count, tokens, cost, latency |
+| GET | `/v1/arbstr/stats/models` | Cost and usage broken down by model |
+| GET | `/v1/arbstr/stats/providers` | Cost and usage broken down by provider |
+| GET | `/v1/arbstr/stats/requests` | Recent individual request log entries |
 
-**Why this matters:** The current code (handlers.rs:676-698) iterates `text.lines()` on each chunk. This works most of the time because SSE events are small and often fit in a single TCP segment. But it silently fails when a chunk boundary falls in the middle of a JSON payload -- the `serde_json::from_str` parse will fail, and the usage data will be lost.
+### Route Registration Pattern
 
-**Implementation:**
+Use `axum::Router::nest` to group stats routes under a prefix, then merge into the main router. This keeps `create_router()` clean:
+
 ```rust
-/// Buffers partial SSE lines across byte-stream chunk boundaries.
-///
-/// reqwest chunks do not respect SSE line boundaries. This buffer
-/// accumulates bytes until a complete line (\n) is found, then
-/// yields complete lines for parsing.
-struct SseLineBuffer {
-    partial: String,
-}
+pub fn create_router(state: AppState) -> Router {
+    let stats_routes = Router::new()
+        .route("/summary", get(handlers::stats_summary))
+        .route("/models", get(handlers::stats_by_model))
+        .route("/providers", get(handlers::stats_by_provider))
+        .route("/requests", get(handlers::stats_recent));
 
-impl SseLineBuffer {
-    fn new() -> Self {
-        Self { partial: String::new() }
-    }
-
-    /// Feed a chunk of bytes. Returns an iterator of complete lines.
-    fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
-        let text = match std::str::from_utf8(chunk) {
-            Ok(t) => t,
-            Err(_) => return vec![], // Non-UTF8 chunk, skip
-        };
-
-        self.partial.push_str(text);
-
-        let mut lines = Vec::new();
-        while let Some(newline_pos) = self.partial.find('\n') {
-            let line = self.partial[..newline_pos].to_string();
-            self.partial = self.partial[newline_pos + 1..].to_string();
-            if !line.is_empty() {
-                lines.push(line);
-            }
-        }
-        lines
-    }
+    Router::new()
+        .route("/v1/chat/completions", post(handlers::chat_completions))
+        .route("/v1/models", get(handlers::list_models))
+        .route("/health", get(handlers::health))
+        .route("/providers", get(handlers::list_providers))
+        .nest("/v1/arbstr/stats", stats_routes)
+        .with_state(state)
+        .layer(/* ... */)
 }
 ```
 
-**Confidence:** HIGH -- this is a standard buffered line reader pattern. The current code skips this and gets lucky because most SSE chunks are line-aligned, but it's not guaranteed.
+Note: `nest()` strips the prefix from the nested router's perspective, so routes inside are registered as `/summary`, `/models`, etc. The full path is `/v1/arbstr/stats/summary`. All nested routes share the same `AppState` and middleware layers applied after nesting.
 
-### Pattern 2: Usage Extraction from Final SSE Chunk
+---
 
-**What:** When `stream_options.include_usage` is set, the OpenAI API emits an extra chunk before `data: [DONE]` with the following structure:
+## Query Parameter Design
 
-```
-data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":...,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}
+### axum Query Extractor Pattern
 
-data: [DONE]
-```
+The `axum::extract::Query<T>` extractor deserializes URL query parameters into a struct `T` that implements `serde::Deserialize`. For optional parameters, use `Option<T>` fields with `#[serde(default)]`:
 
-Key characteristics of this final usage chunk:
-- `choices` is an empty array `[]`
-- `usage` is a non-null object with `prompt_tokens`, `completion_tokens`, `total_tokens`
-- It appears immediately before `data: [DONE]`
-- On all prior chunks, `usage` is either absent or `null`
-
-**Implementation:**
 ```rust
-/// Extracted token counts from a streaming response's usage chunk.
-#[derive(Debug, Clone)]
-pub struct StreamUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
+use axum::extract::Query;
+use serde::Deserialize;
+
+/// Query parameters for time-ranged stats endpoints.
+#[derive(Debug, Deserialize)]
+pub struct TimeRangeParams {
+    /// Start of time range (RFC3339). Defaults to 24 hours ago if omitted.
+    pub since: Option<String>,
+    /// End of time range (RFC3339). Defaults to now if omitted.
+    pub until: Option<String>,
 }
 
-/// Parse an SSE data payload for usage information.
-/// Returns Some(StreamUsage) if this is the final usage chunk.
-fn parse_sse_usage(data: &str) -> Option<StreamUsage> {
-    if data == "[DONE]" {
-        return None;
-    }
-    let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
-    let usage = parsed.get("usage").filter(|u| !u.is_null())?;
-    let prompt = usage.get("prompt_tokens")?.as_u64()? as u32;
-    let completion = usage.get("completion_tokens")?.as_u64()? as u32;
-    Some(StreamUsage {
-        prompt_tokens: prompt,
-        completion_tokens: completion,
+/// Query parameters for the recent requests endpoint.
+#[derive(Debug, Deserialize)]
+pub struct RecentParams {
+    /// Maximum number of results. Defaults to 50, max 500.
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+    /// Start of time range (RFC3339). Optional.
+    pub since: Option<String>,
+    /// End of time range (RFC3339). Optional.
+    pub until: Option<String>,
+}
+
+fn default_limit() -> u32 { 50 }
+```
+
+**Why String instead of chrono::DateTime for timestamps:** The `timestamp` column in SQLite stores RFC3339 strings. Keeping query params as strings avoids a parse-format round-trip. The handler validates the format, and the SQL uses string comparison directly. If a client sends a malformed timestamp, the handler returns a 400 error before reaching the database.
+
+**How axum handles missing query strings:** When no query string is present at all, axum passes an empty string `""` to serde. With all-optional fields (`Option<T>`) this deserializes successfully with all fields as `None`. No need for `axum_extra::OptionalQuery`.
+
+### Handler Pattern
+
+```rust
+pub async fn stats_summary(
+    State(state): State<AppState>,
+    Query(params): Query<TimeRangeParams>,
+) -> Result<impl IntoResponse, Error> {
+    let pool = state.db.as_ref().ok_or_else(|| {
+        Error::Internal("Database not available".to_string())
+    })?;
+
+    let (since, until) = resolve_time_range(params.since, params.until)?;
+
+    let summary = crate::storage::stats::get_summary(pool, &since, &until)
+        .await
+        .map_err(Error::Database)?;
+
+    Ok(Json(summary))
+}
+```
+
+Key design choices:
+- Return `Error::Internal` for missing database (503 semantics via the Error enum, or add a dedicated variant)
+- `resolve_time_range()` is a shared helper that applies defaults (24h ago / now) and validates RFC3339 format
+- The `?` operator with `Error::Database` converts `sqlx::Error` naturally (the `From` impl exists)
+
+---
+
+## Storage Query Layer Design
+
+### stats.rs Structure
+
+```rust
+//! Read-only analytics queries against the requests table.
+
+use serde::Serialize;
+use sqlx::SqlitePool;
+
+/// Overall summary statistics for a time range.
+#[derive(Debug, Serialize)]
+pub struct Summary {
+    pub total_requests: i64,
+    pub successful_requests: i64,
+    pub failed_requests: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost_sats: f64,
+    pub avg_latency_ms: f64,
+    pub since: String,
+    pub until: String,
+}
+
+/// Cost and usage breakdown for a single model.
+#[derive(Debug, Serialize)]
+pub struct ModelStats {
+    pub model: String,
+    pub request_count: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost_sats: f64,
+    pub avg_latency_ms: f64,
+}
+
+/// Cost and usage breakdown for a single provider.
+#[derive(Debug, Serialize)]
+pub struct ProviderStats {
+    pub provider: String,
+    pub request_count: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost_sats: f64,
+    pub avg_latency_ms: f64,
+    pub success_rate: f64,
+}
+
+/// A single request log entry for the recent requests endpoint.
+#[derive(Debug, Serialize)]
+pub struct RequestEntry {
+    pub correlation_id: String,
+    pub timestamp: String,
+    pub model: String,
+    pub provider: Option<String>,
+    pub policy: Option<String>,
+    pub streaming: bool,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cost_sats: Option<f64>,
+    pub latency_ms: i64,
+    pub success: bool,
+    pub error_message: Option<String>,
+}
+```
+
+### Query Functions
+
+Each function takes `&SqlitePool` and time range bounds, returns `Result<T, sqlx::Error>`:
+
+```rust
+pub async fn get_summary(
+    pool: &SqlitePool,
+    since: &str,
+    until: &str,
+) -> Result<Summary, sqlx::Error> {
+    // Use sqlx::query_as or manual query + FromRow
+    let row: (i64, i64, i64, Option<i64>, Option<i64>, Option<f64>, Option<f64>) =
+        sqlx::query_as(
+            "SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
+                SUM(input_tokens),
+                SUM(output_tokens),
+                SUM(cost_sats),
+                AVG(latency_ms)
+            FROM requests
+            WHERE timestamp >= ? AND timestamp < ?"
+        )
+        .bind(since)
+        .bind(until)
+        .fetch_one(pool)
+        .await?;
+
+    Ok(Summary {
+        total_requests: row.0,
+        successful_requests: row.1,
+        failed_requests: row.2,
+        total_input_tokens: row.3.unwrap_or(0),
+        total_output_tokens: row.4.unwrap_or(0),
+        total_cost_sats: row.5.unwrap_or(0.0),
+        avg_latency_ms: row.6.unwrap_or(0.0),
+        since: since.to_string(),
+        until: until.to_string(),
     })
 }
 ```
 
-**Confidence:** HIGH -- the existing `extract_usage` function in handlers.rs uses the same JSON structure. OpenAI's documentation confirms the format. The `stream_options` parameter is a documented part of the Chat Completions API.
+**Why `query_as` with tuples instead of `FromRow` derive:** The aggregate results (SUM, AVG, COUNT) do not directly map to a table row. Using tuple extraction with `query_as` is the simplest approach for aggregate queries. The `FromRow` derive macro is better suited for selecting full rows (used in `get_recent_requests`).
 
-### Pattern 3: stream_options Injection
+**Why `Option` for SUM/AVG columns:** SQLite aggregate functions return NULL when no rows match the filter. Using `Option<i64>` / `Option<f64>` and `.unwrap_or(0)` handles this cleanly.
 
-**What:** Before forwarding a streaming request to the provider, inject `stream_options: {"include_usage": true}` to request the usage chunk.
+### Using FromRow for Recent Requests
 
-**Implementation approach -- modify ChatCompletionRequest:**
+For the recent requests endpoint, which selects individual rows rather than aggregates, use `sqlx::FromRow`:
+
 ```rust
-// In types.rs
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct StreamOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_usage: Option<bool>,
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct RequestEntry {
+    pub correlation_id: String,
+    pub timestamp: String,
+    pub model: String,
+    pub provider: Option<String>,
+    // ... etc
 }
 
-// Add to ChatCompletionRequest:
-#[serde(skip_serializing_if = "Option::is_none")]
-pub stream_options: Option<StreamOptions>,
-```
-
-Then in the streaming path, before forwarding:
-```rust
-// Ensure stream_options.include_usage is set
-if request.stream.unwrap_or(false) {
-    let opts = request.stream_options.get_or_insert(StreamOptions {
-        include_usage: None,
-    });
-    opts.include_usage = Some(true);
-}
-```
-
-**Why modify the type rather than inject at JSON level:** The request is already deserialized into `ChatCompletionRequest` and re-serialized via `.json(request)` in `send_to_provider`. Adding the field to the struct keeps the flow clean. If the client already set `stream_options`, we preserve their settings and just ensure `include_usage` is true.
-
-**Edge case -- client sets `include_usage: false`:** We override to `true`. The client's application shouldn't depend on usage being absent from the stream, and the extra chunk is harmless (it has `choices: []` so content-processing clients ignore it).
-
-**Confidence:** HIGH -- `stream_options` is a documented OpenAI API field. Routstr exposes an OpenAI-compatible API.
-
-### Pattern 4: Shared Usage Capture via Arc<Mutex<Option<T>>>
-
-**What:** The stream map closure captures a reference to shared state. When it encounters usage data, it writes to the shared state. After the stream completes, a spawned task reads the shared state.
-
-**Implementation:**
-```rust
-use std::sync::{Arc, Mutex};
-
-pub fn build_intercepted_stream(
-    byte_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
-) -> (Body, Arc<Mutex<Option<StreamUsage>>>) {
-    let shared_usage: Arc<Mutex<Option<StreamUsage>>> = Arc::new(Mutex::new(None));
-    let usage_writer = shared_usage.clone();
-
-    let mut line_buffer = SseLineBuffer::new();
-
-    let intercepted = byte_stream.map(move |chunk| {
-        match &chunk {
-            Ok(bytes) => {
-                for line in line_buffer.feed(bytes) {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if let Some(usage) = parse_sse_usage(data) {
-                            tracing::debug!(
-                                prompt_tokens = usage.prompt_tokens,
-                                completion_tokens = usage.completion_tokens,
-                                "Captured usage from streaming response"
-                            );
-                            *usage_writer.lock().unwrap() = Some(usage);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Error in streaming response");
-            }
-        }
-        chunk.map_err(std::io::Error::other)
-    });
-
-    let body = Body::from_stream(intercepted);
-    (body, shared_usage)
-}
-```
-
-**Why Arc<Mutex<Option>> and not just Arc<Mutex<StreamUsage>>:** The `Option` distinguishes "no usage chunk was received" (None) from "usage was extracted" (Some). This matters for logging -- if the provider doesn't support `stream_options`, we want to know that tokens remain unknown rather than assuming zero.
-
-**Precedent in codebase:** `retry.rs` uses `Arc<Mutex<Vec<AttemptRecord>>>` for exactly the same pattern -- shared mutable state between an async operation and its observer. The comment on line 296 of handlers.rs explains: "created before timeout so it survives cancellation."
-
-**Confidence:** HIGH -- direct codebase precedent, standard Rust async pattern.
-
-### Pattern 5: Post-Stream Database UPDATE
-
-**What:** After the stream completes, update the previously-inserted log row with token counts and cost.
-
-**Implementation in storage/logging.rs:**
-```rust
-/// Update a streaming request's log entry with token counts and cost
-/// after the stream has completed.
-pub async fn update_streaming_usage(
+pub async fn get_recent_requests(
     pool: &SqlitePool,
-    correlation_id: &str,
-    input_tokens: u32,
-    output_tokens: u32,
-    cost_sats: f64,
-    latency_ms: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE requests
-         SET input_tokens = ?, output_tokens = ?, cost_sats = ?, latency_ms = ?
-         WHERE correlation_id = ? AND streaming = TRUE"
+    since: &str,
+    until: &str,
+    limit: u32,
+) -> Result<Vec<RequestEntry>, sqlx::Error> {
+    sqlx::query_as::<_, RequestEntry>(
+        "SELECT correlation_id, timestamp, model, provider, policy,
+                streaming, input_tokens, output_tokens, cost_sats,
+                latency_ms, success, error_message
+         FROM requests
+         WHERE timestamp >= ? AND timestamp < ?
+         ORDER BY timestamp DESC
+         LIMIT ?"
     )
-    .bind(input_tokens as i64)
-    .bind(output_tokens as i64)
-    .bind(cost_sats)
-    .bind(latency_ms)
-    .bind(correlation_id)
-    .execute(pool)
-    .await?;
-    Ok(())
+    .bind(since)
+    .bind(until)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
 }
 ```
 
-**Why UPDATE rather than DELETE+INSERT:** The row already has correct values for `timestamp`, `model`, `provider`, `policy`, `streaming`, `success`. Only the token/cost/latency fields need updating. UPDATE is atomic and preserves the row ID.
+---
 
-**Why include `streaming = TRUE` in WHERE:** Defense in depth -- only update rows that are actually streaming entries. Prevents accidental overwrites if correlation IDs were reused (they won't be with UUID v4, but the guard costs nothing).
+## Patterns to Follow
 
-**Confidence:** HIGH -- standard SQL UPDATE, sqlx query pattern already used in the codebase.
+### Pattern 1: Graceful Database Absence
 
-### Pattern 6: Stream Completion Detection and Spawned Task
+The existing codebase treats `state.db` as optional. Stats endpoints should follow the same pattern but with different semantics:
 
-**What:** Detect when the stream has been fully consumed by the client and trigger the database update.
+- **Write endpoints (chat_completions):** Skip logging silently when db is None. The primary function (proxying) still works.
+- **Read endpoints (stats):** Return an error when db is None. Stats are the primary function; they cannot work without a database.
 
-**Challenge:** The stream is consumed by axum's response body machinery, not by our code. We can't `.await` the stream completion in the handler because the handler returns the response (with the body) to axum.
+Return a 503 Service Unavailable (not 500) because this is a transient/configuration issue, not a bug:
 
-**Implementation approach -- wrap stream with completion signal:**
 ```rust
-/// Spawn a task that waits for the stream to complete, then updates the database.
-pub fn spawn_stream_completion(
-    pool: SqlitePool,
-    correlation_id: String,
-    shared_usage: Arc<Mutex<Option<StreamUsage>>>,
-    provider_input_rate: u64,
-    provider_output_rate: u64,
-    provider_base_fee: u64,
-    start_time: std::time::Instant,
-    done_rx: tokio::sync::oneshot::Receiver<()>,
-) {
-    tokio::spawn(async move {
-        // Wait for stream completion signal
-        let _ = done_rx.await;
+let pool = state.db.as_ref().ok_or_else(|| {
+    Error::Internal("Database not configured; stats unavailable".to_string())
+})?;
+```
 
-        let latency_ms = start_time.elapsed().as_millis() as i64;
+Consider adding an `Error::ServiceUnavailable(String)` variant that maps to HTTP 503, or handle the mapping in the handler with a manual Response. The existing `Error::Internal` maps to 500, which is slightly wrong semantically but acceptable for v1.
 
-        // Read captured usage
-        let usage = shared_usage.lock().unwrap().take();
-        match usage {
-            Some(u) => {
-                let cost = crate::router::actual_cost_sats(
-                    u.prompt_tokens,
-                    u.completion_tokens,
-                    provider_input_rate,
-                    provider_output_rate,
-                    provider_base_fee,
-                );
-                tracing::info!(
-                    correlation_id = %correlation_id,
-                    prompt_tokens = u.prompt_tokens,
-                    completion_tokens = u.completion_tokens,
-                    cost_sats = cost,
-                    latency_ms = latency_ms,
-                    "Streaming response completed, updating log"
-                );
-                if let Err(e) = update_streaming_usage(
-                    &pool,
-                    &correlation_id,
-                    u.prompt_tokens,
-                    u.completion_tokens,
-                    cost,
-                    latency_ms,
-                ).await {
-                    tracing::warn!(
-                        correlation_id = %correlation_id,
-                        error = %e,
-                        "Failed to update streaming usage in database"
-                    );
-                }
-            }
-            None => {
-                tracing::debug!(
-                    correlation_id = %correlation_id,
-                    "Stream completed without usage data (provider may not support stream_options)"
-                );
-            }
-        }
-    });
+### Pattern 2: Time Range Resolution Helper
+
+A shared helper function to apply defaults and validate timestamps, used by all stats handlers:
+
+```rust
+/// Resolve optional time range parameters into concrete RFC3339 bounds.
+///
+/// Defaults: since = 24 hours ago, until = now.
+fn resolve_time_range(
+    since: Option<String>,
+    until: Option<String>,
+) -> Result<(String, String), Error> {
+    let now = chrono::Utc::now();
+    let default_since = (now - chrono::Duration::hours(24)).to_rfc3339();
+    let default_until = now.to_rfc3339();
+
+    let since = since.unwrap_or(default_since);
+    let until = until.unwrap_or(default_until);
+
+    // Validate RFC3339 format by attempting parse
+    chrono::DateTime::parse_from_rfc3339(&since)
+        .map_err(|_| Error::BadRequest(format!("Invalid 'since' timestamp: {}", since)))?;
+    chrono::DateTime::parse_from_rfc3339(&until)
+        .map_err(|_| Error::BadRequest(format!("Invalid 'until' timestamp: {}", until)))?;
+
+    Ok((since, until))
 }
 ```
 
-**Stream completion signal:** The completion signal comes from a `tokio::sync::oneshot` channel. The sender is held by the stream wrapper and dropped when the stream ends (either normally or on error/client disconnect). The approach:
+This gives clear 400 errors for malformed input, uses chrono (already in Cargo.toml), and keeps the validated string as the query parameter (no DateTime-to-string round-trip needed).
+
+### Pattern 3: Consistent JSON Response Wrapping
+
+Follow the existing pattern from `list_models` and `list_providers`: top-level JSON object with a descriptive key, not a bare array:
 
 ```rust
-let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+// Good: consistent with existing endpoints
+Json(serde_json::json!({
+    "summary": summary,
+    "since": since,
+    "until": until,
+}))
 
-let intercepted = byte_stream
-    .map(move |chunk| { /* usage extraction */ })
-    .chain(futures::stream::once(async move {
-        // This item is produced after the inner stream ends.
-        // Drop the sender to signal completion.
-        drop(done_tx);
-        // Produce an empty result that won't be sent (stream is ending).
-        // Actually, we need this to not produce a real item.
-        // Better approach below.
-    }));
+// Good: for array results
+Json(serde_json::json!({
+    "models": model_stats,
+    "since": since,
+    "until": until,
+}))
+
+// Bad: bare array at top level
+Json(model_stats)
 ```
 
-**Actually, simpler approach -- drop-based signaling:**
-
-Wrap the `done_tx` in a struct that sends on drop, and move it into the stream closure. When the stream is fully consumed (or dropped due to client disconnect), the closure's captured state is dropped, which triggers the signal:
-
-```rust
-struct CompletionSignal(Option<tokio::sync::oneshot::Sender<()>>);
-
-impl Drop for CompletionSignal {
-    fn drop(&mut self) {
-        if let Some(tx) = self.0.take() {
-            let _ = tx.send(());
-        }
-    }
-}
-```
-
-Move the `CompletionSignal` into the stream's map closure. When the stream is fully consumed or the response body is dropped (client disconnect), Rust's drop semantics ensure the signal fires.
-
-**Alternative -- no oneshot, just Arc<AtomicBool> + polling:**
-
-This is simpler but involves polling (sleep loop), which is wasteful. The oneshot approach is event-driven and zero-cost when idle.
-
-**Confidence:** HIGH -- tokio::sync::oneshot is a standard primitive, drop-based signaling is idiomatic Rust, `tokio::spawn` for fire-and-forget is already used in the codebase.
+---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Buffering the Entire Stream in Memory
+### Anti-Pattern 1: Blocking Queries on the Tokio Runtime
 
-**What:** Collecting all SSE chunks into a Vec<Bytes>, parsing usage at the end, then re-streaming to the client.
+**What:** Using synchronous SQLite calls or CPU-intensive post-processing on query results in an async handler.
+**Why bad:** Blocks the Tokio executor thread, starving other tasks (including the proxying pipeline).
+**Instead:** Use sqlx's async API exclusively (which this architecture does). If post-processing is needed (e.g., percentile calculations), keep it cheap or use `tokio::task::spawn_blocking`.
 
-**Why bad:** Defeats the purpose of streaming. The client would see no output until the entire response is generated. For long responses, this adds seconds of perceived latency. Also doubles memory usage.
+### Anti-Pattern 2: Query Logic in Handlers
 
-**Instead:** Pass-through streaming with side-channel capture. The client receives bytes in real-time; usage is extracted as a side effect.
+**What:** Writing SQL queries directly inside handler functions.
+**Why bad:** Handlers become untestable without a live database. SQL gets scattered across the proxy layer.
+**Instead:** All SQL lives in `storage/stats.rs`. Handlers call typed functions. Storage functions are independently testable with in-memory SQLite (existing test pattern in `logging.rs`).
 
-### Anti-Pattern 2: Manual Token Counting via Tokenizer
+### Anti-Pattern 3: Creating New Database Connections per Request
 
-**What:** Adding a tokenizer dependency (like `tiktoken-rs`) to count tokens from accumulated delta content.
+**What:** Opening a new SQLite connection for each stats query.
+**Why bad:** Connection overhead, no connection reuse, no WAL benefit.
+**Instead:** Use the shared `SqlitePool` from `AppState.db`. sqlx manages connection pooling automatically. The existing pool has `max_connections(5)` which is adequate for a local proxy; reads in WAL mode do not block writes.
 
-**Why bad:** Heavy dependency (~20MB for tiktoken data), must match the exact tokenizer for each model (GPT-4o uses cl100k_base, Claude uses a different one), inaccurate for non-text content (tool calls, structured output). The provider already knows the exact count.
+### Anti-Pattern 4: Unparameterized SQL with String Formatting
 
-**Instead:** Use `stream_options.include_usage = true` to get authoritative token counts from the provider.
+**What:** Building SQL queries with `format!("... WHERE timestamp >= '{}'", since)`.
+**Why bad:** SQL injection risk, no query plan caching.
+**Instead:** Always use `sqlx::query().bind()` with parameterized queries (existing codebase pattern).
 
-### Anti-Pattern 3: Parsing Every Chunk as Complete JSON
+---
 
-**What:** Treating each `Bytes` chunk from reqwest as a complete, self-contained SSE message.
+## Index Considerations
 
-**Why bad:** TCP chunks do not respect SSE message boundaries. A chunk might contain half a JSON payload, or multiple complete messages. `serde_json::from_str` on a truncated payload silently fails, and the usage data in that chunk is lost.
+The existing `idx_requests_timestamp` index on the `timestamp` column already supports the primary access pattern (time-range filtering). For the GROUP BY queries (`model`, `provider`), SQLite will perform a table scan within the time range and then group. This is acceptable for a local proxy with moderate volume.
 
-**Instead:** Buffer partial lines with `SseLineBuffer` and only parse complete lines.
+If performance becomes an issue with large datasets (unlikely for a local proxy), add:
 
-### Anti-Pattern 4: Blocking the Response on Stream Completion
-
-**What:** Trying to `.await` the stream in the handler before returning the response.
-
-**Why bad:** The handler must return the `Response` (containing the stream body) for axum to start sending to the client. If you await the stream first, you've buffered everything (see Anti-Pattern 1). The HTTP response headers are sent before any body bytes, so the handler must return promptly.
-
-**Instead:** Return the response immediately, spawn a background task that awaits the stream completion signal.
-
-### Anti-Pattern 5: Using request_id Header for Post-Stream Correlation
-
-**What:** Sending a custom header to the client with the correlation ID and expecting the client to send it back to trigger the update.
-
-**Why bad:** The client is not part of this architecture. The proxy manages its own state. Adding client-side requirements breaks OpenAI API compatibility.
-
-**Instead:** Internal correlation via the existing `correlation_id` (UUID v4) stored in the database row.
-
-## Data Flow (After Changes)
-
-### Happy Path: Provider Supports stream_options
-
-```
-1. Client sends: POST /v1/chat/completions, stream: true
-
-2. chat_completions handler:
-   -> Detects streaming
-   -> Calls execute_request
-
-3. execute_request -> send_to_provider:
-   -> inject_stream_options: adds stream_options.include_usage = true
-   -> POST to provider with modified request
-
-4. Provider responds: 200 OK, text/event-stream
-
-5. handle_streaming_response:
-   -> Creates shared_usage = Arc<Mutex<Option<StreamUsage>>>(None)
-   -> Creates (done_tx, done_rx) oneshot channel
-   -> Calls build_intercepted_stream(response.bytes_stream())
-   -> Returns RequestOutcome with body and shared_usage handle
-
-6. chat_completions handler:
-   -> Writes initial log entry (tokens: None, cost: None) -- existing behavior
-   -> Spawns stream_completion task with (pool, correlation_id, shared_usage, rates, done_rx)
-   -> Returns streaming response to client
-
-7. Client receives SSE chunks in real-time (zero latency added):
-   data: {"choices":[{"delta":{"content":"Hello"}}],"usage":null}
-   data: {"choices":[{"delta":{"content":" world"}}],"usage":null}
-   ...
-
-8. Stream map closure processes each chunk:
-   -> SseLineBuffer buffers partial lines
-   -> parse_sse_usage finds no usage in content chunks (usage is null)
-   -> Bytes pass through to client unchanged
-
-9. Provider sends final usage chunk:
-   data: {"choices":[],"usage":{"prompt_tokens":15,"completion_tokens":42,"total_tokens":57}}
-   data: [DONE]
-
-10. Stream map closure processes usage chunk:
-    -> parse_sse_usage returns Some(StreamUsage { prompt: 15, completion: 42 })
-    -> *shared_usage.lock() = Some(StreamUsage { ... })
-
-11. Stream ends (reqwest stream returns None):
-    -> CompletionSignal is dropped -> done_tx sends ()
-    -> Stream body reports complete to axum
-
-12. Spawned completion task wakes up:
-    -> done_rx receives ()
-    -> Reads shared_usage: Some(StreamUsage { prompt: 15, completion: 42 })
-    -> Calculates cost: actual_cost_sats(15, 42, input_rate, output_rate, base_fee)
-    -> UPDATE requests SET input_tokens=15, output_tokens=42,
-         cost_sats=X, latency_ms=Y WHERE correlation_id='...'
-
-13. Database now has complete record for this streaming request
+```sql
+CREATE INDEX idx_requests_model_timestamp ON requests(model, timestamp);
+CREATE INDEX idx_requests_provider_timestamp ON requests(provider, timestamp);
 ```
 
-### Degraded Path: Provider Does Not Support stream_options
+**Do not add these indexes now.** Premature optimization for a local proxy. The timestamp index already narrows the scan. Measure first.
 
-```
-1-6. Same as happy path
+---
 
-7. Provider ignores stream_options, sends normal chunks without usage:
-   data: {"choices":[{"delta":{"content":"Hello"}}]}
-   data: {"choices":[{"delta":{"content":" world"}}]}
-   data: [DONE]
+## Build Order
 
-8-9. Stream map closure processes chunks:
-   -> No usage object found in any chunk
-   -> shared_usage remains None
+Implement in this sequence because each step depends on the previous:
 
-10. Stream ends, completion task fires:
-    -> Reads shared_usage: None
-    -> Logs: "Stream completed without usage data"
-    -> No UPDATE performed
-    -> Database row retains input_tokens=NULL, output_tokens=NULL, cost_sats=NULL
+1. **`src/storage/stats.rs`** -- Query functions and response types. No HTTP dependency. Independently testable with in-memory SQLite.
+2. **`src/storage/mod.rs`** -- Add `pub mod stats;` declaration and re-exports.
+3. **`src/proxy/handlers.rs`** -- Add query param structs (`TimeRangeParams`, `RecentParams`), helper function (`resolve_time_range`), and handler functions. Depends on storage::stats types.
+4. **`src/proxy/server.rs`** -- Register new routes in `create_router()`. Depends on handler functions existing.
+5. **Integration tests** -- Full HTTP tests against test server with pre-populated data.
 
-11. This is the CURRENT behavior -- no regression
-```
+### Testing Strategy
 
-### Error Path: Client Disconnects Mid-Stream
+Unit tests for `storage/stats.rs` follow the exact pattern from `logging.rs` tests:
 
-```
-1-6. Same as happy path
+```rust
+async fn test_pool() -> SqlitePool {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    pool
+}
 
-7. Client disconnects after receiving some chunks
-
-8. axum drops the response body -> stream is dropped
-   -> CompletionSignal is dropped -> done_tx sends ()
-   -> OR: done_tx is dropped without sending if signal struct is dropped
-         (oneshot receiver gets RecvError, task handles gracefully)
-
-9. Spawned completion task wakes up:
-   -> Reads shared_usage: None (usage chunk hadn't arrived yet)
-   -> Logs: "Stream completed without usage data"
-   -> No UPDATE (tokens remain NULL)
-   -> Original INSERT still present with success=true
-     (NOTE: success reflects provider response status, not stream completion)
-
-10. This is acceptable -- the request was partially delivered.
-    The database shows a streaming request with unknown token count.
+#[tokio::test]
+async fn test_get_summary_empty_db() {
+    let pool = test_pool().await;
+    let summary = get_summary(&pool, "2026-01-01T00:00:00Z", "2026-12-31T00:00:00Z")
+        .await
+        .unwrap();
+    assert_eq!(summary.total_requests, 0);
+    assert_eq!(summary.total_cost_sats, 0.0);
+}
 ```
 
-## Integration Points with Existing Code
+Insert test rows using the existing `RequestLog::insert()` method, then verify aggregates.
 
-### 1. types.rs: Add StreamOptions to ChatCompletionRequest
-
-**Current:** `ChatCompletionRequest` has no `stream_options` field.
-**Change:** Add `stream_options: Option<StreamOptions>` with `#[serde(skip_serializing_if = "Option::is_none")]`.
-**Risk:** LOW -- additive field with skip_serializing_if, backward compatible. Existing requests without `stream_options` deserialize as `None`.
-
-### 2. handlers.rs: send_to_provider Injects stream_options
-
-**Current:** `send_to_provider` takes `&ChatCompletionRequest` (immutable reference).
-**Change:** Either change to `&mut ChatCompletionRequest` or clone-and-mutate before calling. Since the request is already cloned for the retry path, mutating a clone is natural.
-**Risk:** LOW -- the mutation happens before serialization to JSON.
-
-### 3. handlers.rs: handle_streaming_response Returns Usage Handle
-
-**Current:** Returns `RequestOutcome` with `input_tokens: None`.
-**Change:** Returns `RequestOutcome` with a `shared_usage` handle. The `RequestOutcome` struct gains an optional field.
-**Risk:** LOW -- additive field, non-streaming paths set it to `None`.
-
-### 4. handlers.rs: chat_completions Spawns Completion Task
-
-**Current:** Streaming path logs then returns.
-**Change:** After logging, spawns a `stream_completion` task if `shared_usage` is present.
-**Risk:** LOW -- additive. The spawned task is fire-and-forget like existing `spawn_log_write`. Failure is logged as a warning.
-
-### 5. storage/logging.rs: New update_streaming_usage Function
-
-**Current:** Only has `RequestLog::insert` and `spawn_log_write`.
-**Change:** Add `update_streaming_usage` function and `spawn_update_streaming_usage` convenience wrapper.
-**Risk:** LOW -- new function, doesn't modify existing code.
-
-### 6. proxy/mod.rs: New stream Module
-
-**Current:** `mod.rs` declares `handlers`, `retry`, `server`, `types`.
-**Change:** Add `pub mod stream;`.
-**Risk:** NONE -- additive.
-
-## Build Order (Dependency Graph)
-
-```
-Step 1: src/proxy/types.rs
-   |     Add StreamOptions struct
-   |     Add stream_options field to ChatCompletionRequest
-   |     (Fully backward compatible, no other code changes needed)
-   |
-   v
-Step 2: src/proxy/stream.rs (NEW MODULE) + src/proxy/mod.rs
-   |     - SseLineBuffer (line buffering)
-   |     - StreamUsage struct
-   |     - parse_sse_usage() function
-   |     - build_intercepted_stream() function
-   |     - CompletionSignal (drop-based oneshot trigger)
-   |     - Unit tests for SseLineBuffer (partial chunks, multi-line chunks)
-   |     - Unit tests for parse_sse_usage (usage chunk, content chunk, [DONE])
-   |     (Fully testable in isolation, no handler changes yet)
-   |
-   v
-Step 3: src/storage/logging.rs
-   |     - update_streaming_usage() async function
-   |     - spawn_update_streaming_usage() fire-and-forget wrapper
-   |     (Testable in isolation with a test database)
-   |
-   v
-Step 4: src/proxy/handlers.rs -- THE INTEGRATION
-   |     - RequestOutcome gains shared_usage field
-   |     - send_to_provider calls inject_stream_options for streaming
-   |     - handle_streaming_response uses build_intercepted_stream
-   |     - chat_completions streaming path spawns completion task
-   |     (Wires everything together, existing tests must still pass)
-   |
-   v
-Step 5: Integration testing
-         - Mock provider that emits SSE with usage chunk
-         - Verify database row is updated after stream completes
-         - Test partial chunk buffering with realistic SSE data
-         - Test client disconnect handling
-```
-
-**Why this order:**
-- Step 1 is purely additive: new serde field, no behavioral change, all existing tests pass
-- Step 2 is the core new logic, fully unit-testable without touching handlers
-- Step 3 is the database function, testable with a real SQLite database
-- Step 4 is the integration point, where compiler errors guide wiring
-- Step 5 validates the complete flow end-to-end
-
-**Dependency chain:** Steps 1-3 are independent of each other and could be built in parallel. Step 4 depends on all three. Step 5 depends on Step 4.
+---
 
 ## Scalability Considerations
 
-| Concern | Impact | Assessment |
-|---------|--------|------------|
-| One extra Mutex lock per SSE chunk | ~100ns per chunk, 50-200 chunks per response | Negligible. Lock is uncontended (single writer). |
-| SseLineBuffer allocation | One String buffer per stream | Negligible. Buffer is small (SSE lines are typically < 1KB). Freed when stream ends. |
-| Extra database UPDATE per streaming request | One SQLite write after stream completes | Negligible. WAL mode handles concurrent reads during write. Fire-and-forget, non-blocking. |
-| tokio::spawn for completion task | One lightweight task per streaming request | Negligible. Task is mostly idle (awaiting oneshot), then does one DB write. Same pattern as existing spawn_log_write. |
-| stream_options injection | One field added to JSON payload | Negligible. A few extra bytes in the request body. |
+| Concern | Current (local proxy) | If volume grows |
+|---------|----------------------|-----------------|
+| Query latency | Sub-millisecond (SQLite + WAL, small dataset) | Add composite indexes, consider date partitioning |
+| Connection contention | 5 pool connections, reads don't block writes in WAL | Increase pool size if needed |
+| Response payload size | Dozens of rows in GROUP BY results | Add pagination for `/requests`, cap time ranges |
+| Concurrent readers | No issue in WAL mode | No change needed |
 
-**At scale:** Even at 100 concurrent streaming requests, the overhead is 100 Mutex locks (uncontended), 100 oneshot channels, and 100 extra SQLite UPDATEs. This is well within SQLite's capabilities with WAL mode.
+---
 
 ## Sources
 
-- [OpenAI Streaming API Reference](https://platform.openai.com/docs/api-reference/chat-streaming) -- stream_options parameter, usage chunk format, choices=[] on final chunk
-- [OpenAI Usage Stats Announcement](https://community.openai.com/t/usage-stats-now-available-when-using-streaming-with-the-chat-completions-api-or-completions-api/738156) -- include_usage feature availability
-- [OpenAI Streaming Cookbook](https://developers.openai.com/cookbook/examples/how_to_stream_completions/) -- practical examples of stream_options usage
-- [axum Body::from_stream docs](https://docs.rs/axum/latest/axum/body/struct.Body.html) -- Body construction from async streams
-- [axum SSE Middleware Discussion](https://github.com/tokio-rs/axum/discussions/2728) -- patterns for intercepting SSE streams in middleware
-- [Streaming Proxy Blog (Adam Chalmers)](https://blog.adamchalmers.com/streaming-proxy/) -- Rust async streaming proxy patterns
-- [futures StreamExt docs](https://docs.rs/futures/latest/futures/stream/trait.StreamExt.html) -- map, chain, and other stream combinators
-- [tokio oneshot channel docs](https://docs.rs/tokio/latest/tokio/sync/oneshot/fn.channel.html) -- completion signaling
-- [Rust Forum: reqwest byte stream line buffering](https://users.rust-lang.org/t/tokio-reqwest-byte-stream-to-lines/65258) -- chunk boundary issues
-- Direct codebase analysis of arbstr src/ (handlers.rs streaming path, retry.rs Arc<Mutex> pattern, logging.rs fire-and-forget pattern, types.rs request structure)
+- Existing codebase: `src/proxy/server.rs`, `src/proxy/handlers.rs`, `src/storage/logging.rs`, `src/storage/mod.rs` -- **HIGH confidence** (direct inspection)
+- [axum Query extractor docs](https://docs.rs/axum/latest/axum/extract/struct.Query.html) -- **HIGH confidence**
+- [axum Router::nest docs](https://docs.rs/axum/latest/axum/routing/struct.Router.html) -- **HIGH confidence**
+- [sqlx query_as documentation](https://docs.rs/sqlx/latest/sqlx/fn.query_scalar.html) -- **HIGH confidence**
+- [SQLite WAL mode concurrency](https://www.sqlite.org/wal.html) -- **HIGH confidence** (SQLite official docs, already configured in `storage/mod.rs`)
+- axum/sqlx integration patterns from community -- **MEDIUM confidence** (multiple sources agree on patterns)
