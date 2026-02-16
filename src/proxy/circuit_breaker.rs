@@ -9,6 +9,9 @@
 //! associated types. The concurrency wrapper (DashMap registry, watch channel,
 //! ProbeGuard) is added in Plan 13-02.
 
+// Plan 13-02 consumes these types; allow dead_code until then.
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 /// Number of consecutive failures required to trip the circuit.
@@ -110,19 +113,51 @@ pub(crate) struct CircuitBreakerInner {
 impl CircuitBreakerInner {
     /// Create a new circuit breaker in the Closed state.
     pub(crate) fn new() -> Self {
-        todo!("implement in GREEN phase")
+        Self {
+            state: CircuitState::Closed,
+            failure_count: 0,
+            opened_at: None,
+            last_failure_time: None,
+            last_success_time: None,
+            last_error: None,
+            trip_count: 0,
+            probe_in_flight: false,
+        }
     }
 
     /// Check whether a request should be allowed through.
     ///
     /// Implements lazy Open -> Half-Open transition when timeout expires.
     pub(crate) fn check_state(&mut self) -> CheckResult {
-        todo!("implement in GREEN phase")
+        match self.state {
+            CircuitState::Closed => CheckResult::Allowed,
+            CircuitState::Open => {
+                if let Some(opened_at) = self.opened_at {
+                    if tokio::time::Instant::now().duration_since(opened_at) >= OPEN_DURATION {
+                        // Lazy transition: Open -> HalfOpen
+                        self.state = CircuitState::HalfOpen;
+                        self.probe_in_flight = false;
+                        tracing::info!("circuit entering Half-Open: timeout expired");
+                        self.try_acquire_probe()
+                    } else {
+                        CheckResult::Rejected
+                    }
+                } else {
+                    CheckResult::Rejected
+                }
+            }
+            CircuitState::HalfOpen => self.try_acquire_probe(),
+        }
     }
 
     /// Try to acquire the single probe permit in Half-Open state.
     fn try_acquire_probe(&mut self) -> CheckResult {
-        todo!("implement in GREEN phase")
+        if !self.probe_in_flight {
+            self.probe_in_flight = true;
+            CheckResult::ProbePermit
+        } else {
+            CheckResult::WaitForProbe
+        }
     }
 
     /// Record a failure in Closed state. Only call when circuit is Closed.
@@ -135,19 +170,54 @@ impl CircuitBreakerInner {
         error_type: &str,
         message: &str,
     ) {
-        todo!("implement in GREEN phase")
+        self.failure_count += 1;
+        self.last_failure_time = Some(tokio::time::Instant::now());
+        self.last_error = Some(LastError {
+            error_type: error_type.to_string(),
+            message: message.to_string(),
+        });
+
+        if self.failure_count >= FAILURE_THRESHOLD {
+            self.state = CircuitState::Open;
+            self.opened_at = Some(tokio::time::Instant::now());
+            self.trip_count += 1;
+
+            tracing::warn!(
+                provider = %provider_name,
+                failure_count = self.failure_count,
+                last_error = ?self.last_error,
+                trip_count = self.trip_count,
+                "circuit OPENED: {} consecutive failures",
+                self.failure_count,
+            );
+        }
     }
 
     /// Record a success in Closed state. Resets the failure counter.
     pub(crate) fn record_success(&mut self, provider_name: &str) {
-        todo!("implement in GREEN phase")
+        self.failure_count = 0;
+        self.last_success_time = Some(tokio::time::Instant::now());
+
+        tracing::debug!(
+            provider = %provider_name,
+            "circuit breaker: success recorded, failure count reset",
+        );
     }
 
     /// Record that the probe request in Half-Open state succeeded.
     ///
     /// Transitions Half-Open -> Closed.
     pub(crate) fn record_probe_success(&mut self, provider_name: &str) {
-        todo!("implement in GREEN phase")
+        self.state = CircuitState::Closed;
+        self.failure_count = 0;
+        self.probe_in_flight = false;
+        self.last_success_time = Some(tokio::time::Instant::now());
+
+        tracing::info!(
+            provider = %provider_name,
+            trip_count = self.trip_count,
+            "circuit CLOSED: probe succeeded",
+        );
     }
 
     /// Record that the probe request in Half-Open state failed.
@@ -159,7 +229,19 @@ impl CircuitBreakerInner {
         error_type: &str,
         message: &str,
     ) {
-        todo!("implement in GREEN phase")
+        self.state = CircuitState::Open;
+        self.opened_at = Some(tokio::time::Instant::now());
+        self.probe_in_flight = false;
+        self.last_error = Some(LastError {
+            error_type: error_type.to_string(),
+            message: message.to_string(),
+        });
+
+        tracing::warn!(
+            provider = %provider_name,
+            trip_count = self.trip_count,
+            "circuit REOPENED: probe failed",
+        );
     }
 }
 

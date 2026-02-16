@@ -42,6 +42,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 anyhow = "1"
 
+# Concurrency
+dashmap = "6"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
