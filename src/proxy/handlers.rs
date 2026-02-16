@@ -11,7 +11,7 @@ use axum::{
 };
 use tokio::time::{timeout_at, Duration, Instant};
 
-use super::circuit_breaker::{PermitType, ProbeGuard};
+use super::circuit_breaker::{CircuitState, PermitType, ProbeGuard};
 use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
@@ -1116,12 +1116,62 @@ pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// Response body for the enhanced `/health` endpoint.
+#[derive(Debug, serde::Serialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub providers: std::collections::HashMap<String, ProviderHealth>,
+}
+
+/// Per-provider health entry in the `/health` response.
+#[derive(Debug, serde::Serialize)]
+pub struct ProviderHealth {
+    pub state: String,
+    pub failure_count: u32,
+}
+
 /// Handle GET /health
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "ok",
-        "service": "arbstr"
-    }))
+///
+/// Returns per-provider circuit breaker state and a computed top-level status:
+/// - `"ok"` (HTTP 200) when all circuits are closed or zero providers configured
+/// - `"degraded"` (HTTP 200) when some circuits are open or half-open
+/// - `"unhealthy"` (HTTP 503) when ALL circuits are open
+pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let snapshots = state.circuit_breakers.all_states();
+
+    let providers: std::collections::HashMap<String, ProviderHealth> = snapshots
+        .iter()
+        .map(|snap| {
+            (
+                snap.name.clone(),
+                ProviderHealth {
+                    state: snap.state.as_str().to_string(),
+                    failure_count: snap.failure_count,
+                },
+            )
+        })
+        .collect();
+
+    let (status_text, status_code) = if snapshots.is_empty() {
+        ("ok", StatusCode::OK)
+    } else if snapshots.iter().all(|s| s.state == CircuitState::Open) {
+        ("unhealthy", StatusCode::SERVICE_UNAVAILABLE)
+    } else if snapshots
+        .iter()
+        .any(|s| s.state == CircuitState::Open || s.state == CircuitState::HalfOpen)
+    {
+        ("degraded", StatusCode::OK)
+    } else {
+        ("ok", StatusCode::OK)
+    };
+
+    (
+        status_code,
+        Json(HealthResponse {
+            status: status_text.to_string(),
+            providers,
+        }),
+    )
 }
 
 /// Handle GET /providers - arbstr extension to list providers

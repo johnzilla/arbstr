@@ -32,6 +32,25 @@ pub enum CircuitState {
     HalfOpen,
 }
 
+impl CircuitState {
+    /// Lowercase string representation for JSON serialization.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CircuitState::Closed => "closed",
+            CircuitState::Open => "open",
+            CircuitState::HalfOpen => "half_open",
+        }
+    }
+}
+
+/// Snapshot of a single provider's circuit breaker state.
+#[derive(Debug)]
+pub struct CircuitSnapshot {
+    pub name: String,
+    pub state: CircuitState,
+    pub failure_count: u32,
+}
+
 /// Result of a probe request in Half-Open state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeResult {
@@ -430,6 +449,23 @@ impl CircuitBreakerRegistry {
             inner.record_probe_failure(provider_name, error_type, message);
             let _ = cb.probe_watch.send(ProbeResult::Failed);
         }
+    }
+
+    /// Return a snapshot of all provider circuit states.
+    ///
+    /// Uses DashMap::iter() which acquires per-shard locks (not a global lock).
+    pub fn all_states(&self) -> Vec<CircuitSnapshot> {
+        self.breakers
+            .iter()
+            .map(|entry| {
+                let inner = entry.value().inner.lock().unwrap();
+                CircuitSnapshot {
+                    name: entry.key().clone(),
+                    state: inner.state,
+                    failure_count: inner.failure_count,
+                }
+            })
+            .collect()
     }
 
     /// Read-only accessor for circuit state (for Phase 15 health endpoint).
