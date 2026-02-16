@@ -1,0 +1,71 @@
+# Requirements: arbstr
+
+**Defined:** 2026-02-15
+**Core Value:** Smart model selection that minimizes sats spent per request without sacrificing quality
+
+## v1.2 Requirements
+
+Requirements for Streaming Observability milestone. Each maps to roadmap phases.
+
+### Stream Infrastructure
+
+- [ ] **STREAM-01**: Proxy injects `stream_options: {"include_usage": true}` into upstream requests when `stream: true`
+- [ ] **STREAM-02**: SSE line buffering handles data lines split across TCP chunk boundaries without data loss
+
+### Usage Extraction
+
+- [ ] **EXTRACT-01**: Proxy extracts `prompt_tokens` and `completion_tokens` from the final SSE usage chunk
+
+### Cost Tracking
+
+- [ ] **COST-01**: Post-stream database UPDATE writes extracted tokens and calculated cost to the request log entry
+- [ ] **COST-02**: Streaming request latency reflects full stream duration (time-to-last-byte)
+
+### Observability
+
+- [ ] **OBS-01**: Stream completion status distinguishes normal completion, interruption, and error
+- [ ] **OBS-02**: Proxy injects trailing SSE event with `arbstr_cost_sats` and `arbstr_latency_ms` after upstream `[DONE]`
+
+## Future Requirements
+
+Deferred to future release. Tracked but not in current roadmap.
+
+### Streaming Enhancements
+
+- **STREAM-03**: Time-to-first-token (TTFT) metric recorded for streaming requests
+- **STREAM-04**: Output token count estimated by delta accumulation when provider lacks `stream_options` support
+- **STREAM-05**: Early-failure retry for streaming requests (detect error in first chunk before client receives data)
+
+## Out of Scope
+
+Explicitly excluded. Documented to prevent scope creep.
+
+| Feature | Reason |
+|---------|--------|
+| Full SSE parser library (eventsource-stream) | Hand-rolled `strip_prefix("data: ")` parsing sufficient for OpenAI SSE format; library adds dependency weight for zero practical benefit |
+| Client-side tokenizer (tiktoken-rs) | ~20MB vocab files, must match exact model tokenizer; provider-reported usage from `stream_options` is authoritative |
+| Streaming early-failure retry | High complexity; current fail-fast behavior is correct for most cases; deferred to future milestone |
+| Response buffering for stream replay | Violates streaming latency guarantees; observation-only interception is the correct pattern |
+
+## Traceability
+
+Which phases cover which requirements. Updated during roadmap creation.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| STREAM-01 | — | Pending |
+| STREAM-02 | — | Pending |
+| EXTRACT-01 | — | Pending |
+| COST-01 | — | Pending |
+| COST-02 | — | Pending |
+| OBS-01 | — | Pending |
+| OBS-02 | — | Pending |
+
+**Coverage:**
+- v1.2 requirements: 7 total
+- Mapped to phases: 0
+- Unmapped: 7 (pending roadmap creation)
+
+---
+*Requirements defined: 2026-02-15*
+*Last updated: 2026-02-15 after initial definition*
