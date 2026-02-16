@@ -1,12 +1,14 @@
 //! SQLite storage for request logging and metrics.
 
 pub mod logging;
+pub mod logs;
 pub mod stats;
 
 pub use logging::{
     spawn_stream_completion_update, spawn_usage_update, update_stream_completion, update_usage,
     RequestLog,
 };
+pub use logs::{count_logs, query_logs, LogRow};
 pub use stats::{query_aggregate, query_grouped_by_model, AggregateRow, ModelRow};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
