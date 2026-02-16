@@ -10,7 +10,7 @@ pub mod stats;
 pub mod stream;
 pub mod types;
 
-pub use server::{run_server, AppState, RequestId};
+pub use server::{create_router, run_server, AppState, RequestId};
 pub use stream::{wrap_sse_stream, StreamResult, StreamResultHandle, StreamUsage};
 pub use types::{
     ensure_stream_options, ChatCompletionRequest, ChatCompletionResponse, Message, StreamOptions,

@@ -46,7 +46,7 @@ pub async fn query_aggregate(
          TOTAL(cost_sats) as total_cost_sats, \
          TOTAL(input_tokens) as total_input_tokens, \
          TOTAL(output_tokens) as total_output_tokens, \
-         COALESCE(AVG(latency_ms), 0) as avg_latency_ms, \
+         COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms, \
          COUNT(CASE WHEN success = 1 THEN 1 END) as success_count, \
          COUNT(CASE WHEN success = 0 THEN 1 END) as error_count, \
          COUNT(CASE WHEN streaming = 1 THEN 1 END) as streaming_count \
@@ -90,7 +90,7 @@ pub async fn query_grouped_by_model(
          TOTAL(cost_sats) as total_cost_sats, \
          TOTAL(input_tokens) as total_input_tokens, \
          TOTAL(output_tokens) as total_output_tokens, \
-         COALESCE(AVG(latency_ms), 0) as avg_latency_ms, \
+         COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms, \
          COUNT(CASE WHEN success = 1 THEN 1 END) as success_count, \
          COUNT(CASE WHEN success = 0 THEN 1 END) as error_count, \
          COUNT(CASE WHEN streaming = 1 THEN 1 END) as streaming_count \
