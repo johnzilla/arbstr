@@ -94,13 +94,13 @@ sequenceDiagram
 
 ### Key Components
 
-- **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum
+- **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback
 - **Router** (`src/router/`): Provider selection logic, cost optimization
-- **Config** (`src/config.rs`): TOML configuration parsing
+- **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
+- **Storage** (`src/storage/`): SQLite request logging with async fire-and-forget writes
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
 
 **Planned (not yet implemented):**
-- **Storage** (`src/storage/`): SQLite for logging, costs, learned patterns
 - **Policy Engine** (`src/policy/`): Advanced constraint matching (currently in router)
 
 ## Tech Stack
@@ -108,10 +108,11 @@ sequenceDiagram
 - **Runtime**: Tokio async
 - **HTTP Server**: axum
 - **HTTP Client**: reqwest
-- **Database**: SQLite via sqlx
+- **Database**: SQLite via sqlx (embedded migrations)
 - **Serialization**: serde + serde_json
 - **CLI**: clap
-- **Config**: toml + config crate
+- **Config**: toml
+- **Secrets**: secrecy (SecretString with zeroize-on-drop)
 - **Logging**: tracing + tracing-subscriber
 
 ## Code Conventions
@@ -137,7 +138,7 @@ path = "./arbstr.db"
 [[providers]]
 name = "provider-alpha"
 url = "https://api.routstr.com/v1"
-api_key = "cashuA..."  # Cashu token
+api_key = "${ALPHA_KEY}"  # env var reference (recommended)
 models = ["gpt-4o", "claude-3.5-sonnet"]
 input_rate = 10
 output_rate = 30
@@ -146,6 +147,7 @@ base_fee = 1
 [[providers]]
 name = "provider-beta"
 url = "https://other-provider.com/v1"
+# api_key omitted -- arbstr auto-checks ARBSTR_PROVIDER_BETA_API_KEY
 models = ["gpt-4o", "gpt-4o-mini"]
 input_rate = 8
 output_rate = 35
@@ -161,28 +163,43 @@ max_sats_per_1k_output = 50
 keywords = ["code", "function", "implement"]
 ```
 
+### API Key Management
+
+Three ways to provide API keys (most to least recommended):
+
+1. **Convention-based** -- omit `api_key`, set `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY` env var
+2. **Environment variable reference** -- `api_key = "${MY_KEY}"` in config
+3. **Literal** (not recommended) -- plaintext in config; triggers startup warning
+
 ## Database Schema (SQLite)
 
+Schema applied via embedded migrations (`migrations/`).
+
 ```sql
--- Request log for cost tracking and learning
+-- Request log for cost tracking and observability
 CREATE TABLE requests (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correlation_id TEXT NOT NULL,
     timestamp TEXT NOT NULL,
-    policy TEXT,
     model TEXT NOT NULL,
-    provider TEXT NOT NULL,
+    provider TEXT,
+    policy TEXT,
+    streaming BOOLEAN NOT NULL DEFAULT FALSE,
     input_tokens INTEGER,
     output_tokens INTEGER,
-    cost_sats INTEGER,
-    latency_ms INTEGER,
-    success BOOLEAN
+    cost_sats REAL,
+    provider_cost_sats REAL,
+    latency_ms INTEGER NOT NULL,
+    success BOOLEAN NOT NULL,
+    error_status INTEGER,
+    error_message TEXT
 );
 
--- Learned input/output ratios per policy
+-- Learned input/output ratios per policy (populated in future phases)
 CREATE TABLE token_ratios (
     policy TEXT PRIMARY KEY,
-    avg_ratio REAL,
-    sample_count INTEGER
+    avg_ratio REAL NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -193,13 +210,10 @@ CREATE TABLE token_ratios (
 - **Mock mode**: `--mock` flag to use fake providers with configurable delays/costs
 - **Future**: Bitcoin testnet/signet for payment testing
 
-## MVP Milestones
+## Shipped Versions
 
-1. **M1**: Basic proxy pass-through to single hardcoded provider ✅
-2. **M2**: Multiple providers, cheapest selection based on advertised rates ✅
-3. **M3**: Policy constraints (allowed models, max cost per request) ✅
-4. **M4**: Request logging and cost tracking dashboard
-5. **M5**: Heuristic-based automatic policy classification ✅ (basic keyword matching)
+- **v1** -- Reliability and observability: retry with backoff and fallback, SQLite request logging, response metadata headers, corrected cost calculation
+- **v1.1** -- Secrets hardening: SecretString API keys with zeroize-on-drop, `${VAR}` env var expansion, convention-based key auto-discovery, file permission warnings, masked key prefixes, literal key warnings
 
 ## Key Files
 
@@ -207,22 +221,24 @@ CREATE TABLE token_ratios (
 src/
 ├── main.rs           # CLI entry point (serve, check, providers commands)
 ├── lib.rs            # Library root, re-exports
-├── config.rs         # Configuration parsing from TOML
+├── config.rs         # Config parsing, env var expansion, ApiKey/SecretString
 ├── error.rs          # Error types with OpenAI-compatible responses
 ├── proxy/
 │   ├── mod.rs
 │   ├── server.rs     # axum server setup, AppState
 │   ├── handlers.rs   # /v1/chat/completions, /v1/models, /health, /providers
+│   ├── retry.rs      # Retry with exponential backoff and provider fallback
 │   └── types.rs      # OpenAI-compatible request/response types
-└── router/
+├── router/
+│   ├── mod.rs
+│   └── selector.rs   # Provider selection (cheapest, policy constraints)
+└── storage/
     ├── mod.rs
-    └── selector.rs   # Provider selection (cheapest, policy constraints)
-```
-
-**Planned directories:**
-```
-├── storage/          # SQLite logging (not yet implemented)
-└── policy/           # Advanced policy engine (currently in router)
+    └── logging.rs    # Async fire-and-forget SQLite request logging
+tests/
+└── env_expansion.rs  # Integration tests for env var expansion and key discovery
+migrations/
+└── *.sql             # Embedded SQLite schema migrations
 ```
 
 ## Environment Variables
@@ -230,6 +246,7 @@ src/
 - `RUST_LOG`: Log level (e.g., `arbstr=debug,tower_http=trace`)
 - `ARBSTR_CONFIG`: Path to config file (default: `./config.toml`)
 - `DATABASE_URL`: SQLite path (default: `./arbstr.db`)
+- `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`: Convention-based API key per provider (e.g., `ARBSTR_PROVIDER_ALPHA_API_KEY`)
 
 ## Notes for Claude
 

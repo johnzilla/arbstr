@@ -33,6 +33,9 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 - **Streaming support** -- full SSE streaming pass-through
 - **Policy engine** -- constrain routing by allowed models, max cost, and strategy
 - **Keyword heuristics** -- automatic policy matching based on message content
+- **Secret management** -- API keys protected by SecretString with zeroize-on-drop; never exposed in logs, debug output, or API responses
+- **Environment variable expansion** -- use `${VAR}` syntax or omit `api_key` for convention-based `ARBSTR_<NAME>_API_KEY` auto-discovery
+- **Config hygiene warnings** -- file permission checks, plaintext key warnings with actionable suggestions
 - **Per-request correlation IDs** -- UUID tracing for every request through the system
 - **Mock mode** -- test locally without real provider API calls
 
@@ -76,7 +79,7 @@ listen = "127.0.0.1:8080"
 [[providers]]
 name = "provider-alpha"
 url = "https://alpha.routstr.example/v1"
-api_key = "cashuA..."          # optional
+api_key = "${ALPHA_KEY}"       # env var reference (recommended)
 models = ["gpt-4o", "claude-3.5-sonnet"]
 input_rate = 10                # sats per 1k input tokens
 output_rate = 30               # sats per 1k output tokens
@@ -85,6 +88,7 @@ base_fee = 1                   # per-request base fee in sats
 [[providers]]
 name = "provider-beta"
 url = "https://beta.routstr.example/v1"
+# api_key omitted -- arbstr auto-checks ARBSTR_PROVIDER_BETA_API_KEY
 models = ["gpt-4o", "gpt-4o-mini"]
 input_rate = 8
 output_rate = 35
@@ -102,6 +106,33 @@ keywords = ["code", "function", "implement", "debug"]
 ```
 
 See [`config.example.toml`](./config.example.toml) for a full annotated example.
+
+### API Key Management
+
+arbstr supports three ways to provide API keys, from most to least recommended:
+
+1. **Convention-based** (recommended) -- omit `api_key` and set `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`:
+   ```bash
+   export ARBSTR_PROVIDER_ALPHA_API_KEY="cashuA..."
+   ```
+
+2. **Environment variable reference** -- use `${VAR}` syntax in config:
+   ```toml
+   api_key = "${MY_ROUTSTR_KEY}"
+   ```
+
+3. **Literal** (not recommended) -- plaintext in config file. arbstr will warn you:
+   ```toml
+   api_key = "cashuA..."  # triggers startup warning
+   ```
+
+The `check` command reports key status for each provider:
+```bash
+arbstr check -c config.toml
+# Provider key status:
+#   provider-alpha: key from convention (ARBSTR_PROVIDER_ALPHA_API_KEY)
+#   provider-beta: no key (set ARBSTR_PROVIDER_BETA_API_KEY or add api_key to config)
+```
 
 ### Policy Matching
 
@@ -166,23 +197,26 @@ See [CLAUDE.md](./CLAUDE.md) for detailed development documentation including ar
 src/
 ├── main.rs           # CLI entry point (serve, check, providers)
 ├── lib.rs            # Library root
-├── config.rs         # TOML configuration parsing
+├── config.rs         # Configuration, env var expansion, secret types
 ├── error.rs          # Error types (OpenAI-compatible responses)
 ├── proxy/
 │   ├── server.rs     # axum server setup and middleware
 │   ├── handlers.rs   # Request handlers
+│   ├── retry.rs      # Retry with backoff and provider fallback
 │   └── types.rs      # OpenAI-compatible request/response types
-└── router/
-    └── selector.rs   # Provider selection and cost calculation
+├── router/
+│   └── selector.rs   # Provider selection and cost calculation
+└── storage/
+    └── logging.rs    # SQLite request logging (async fire-and-forget)
 ```
 
 ## Roadmap
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Foundation** | Proxy, multi-provider routing, policies, heuristics, correlation IDs | Done |
-| **Intelligence** | Request logging, token ratio learning, cost tracking | Current |
-| **Advanced** | Nostr provider discovery, temporal arbitrage, quality monitoring | Planned |
+| Version | Description | Status |
+|---------|-------------|--------|
+| **v1** | Reliability and observability -- retry with fallback, SQLite logging, response metadata headers, cost calculation | Shipped |
+| **v1.1** | Secrets hardening -- SecretString API keys, env var expansion, convention-based key discovery, output surface hardening | Shipped |
+| **v2** | Intelligence -- cost query endpoints, streaming token extraction, circuit breaker, stream error handling | Planned |
 
 ## Related Projects
 

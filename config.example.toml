@@ -1,5 +1,8 @@
 # arbstr configuration example
 # Copy to config.toml and customize
+#
+# Security: restrict file permissions (arbstr warns if too open)
+#   chmod 600 config.toml
 
 [server]
 # Address to listen on
@@ -16,8 +19,8 @@ path = "./arbstr.db"
 [[providers]]
 name = "example-provider-1"
 url = "https://provider1.example.com/v1"
-# Optional: API key if required by provider
-# api_key = "your-api-key"
+# API key: use ${VAR} to reference an environment variable (recommended)
+api_key = "${PROVIDER1_API_KEY}"
 models = ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet"]
 input_rate = 10   # sats per 1k input tokens
 output_rate = 30  # sats per 1k output tokens
@@ -27,6 +30,8 @@ base_fee = 1
 [[providers]]
 name = "example-provider-2"
 url = "https://provider2.example.com/v1"
+# API key: omit api_key to use convention-based auto-discovery
+# arbstr will check ARBSTR_EXAMPLE_PROVIDER_2_API_KEY automatically
 models = ["gpt-4o", "claude-3.5-sonnet", "claude-3-haiku"]
 input_rate = 8
 output_rate = 35
