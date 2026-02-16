@@ -1,218 +1,195 @@
 # Project Research Summary
 
-**Project:** arbstr - Cost Query API Endpoints
-**Domain:** Read-only analytics/stats API for SQLite-backed LLM routing proxy
+**Project:** arbstr - Per-provider circuit breaker with enhanced /health endpoint
+**Domain:** Resilience layer for LLM routing proxy (Rust/axum/tokio)
 **Researched:** 2026-02-16
 **Confidence:** HIGH
 
 ## Executive Summary
 
-This milestone adds read-only HTTP endpoints to expose aggregate cost and usage statistics from arbstr's existing SQLite request logs. Research shows this is a well-established pattern across LLM proxies (OpenAI Usage API, LiteLLM, Helicone, Portkey) and API gateways. The core approach is straightforward: aggregate SQL queries (COUNT, SUM, AVG, GROUP BY) against the existing `requests` table, exposed via axum GET endpoints with time-range filtering and model/provider breakdown.
+arbstr is adding a per-provider circuit breaker to prevent retry storms when providers fail, building on top of existing retry-with-fallback infrastructure. This is a well-established resilience pattern (3-state machine: Closed/Open/HalfOpen) that tracks consecutive failures per provider, trips circuits after a threshold (5 failures), and automatically recovers after a timeout (30s). The circuit breaker filters unavailable providers from routing decisions before retry logic runs, preventing wasted time hitting known-bad providers.
 
-The recommended implementation requires zero new dependencies. The existing stack (axum 0.7, sqlx 0.8, chrono 0.4, serde) provides every capability needed: axum's `Query` extractor for query parameters, sqlx's `query_as()` for aggregates with typed results, chrono for RFC3339 timestamp parsing, and serde for JSON responses. The architecture separates data access (`storage/stats.rs` with pure query functions) from HTTP concerns (`proxy/handlers.rs` with parameter validation and response formatting), following the existing codebase pattern.
+The recommended approach uses DashMap for per-shard concurrent state access (eliminating cross-provider contention), integrates at the handler level (keeping router and retry modules pure), and treats streaming/non-streaming paths equally (recording failures from both). The most critical design decision is placing circuit checks OUTSIDE the retry loop to avoid amplification, while making circuit-open rejections immediately trigger fallback (not consume retry attempts). The enhanced /health endpoint exposes per-provider circuit state with a three-level health model (ok/degraded/unhealthy).
 
-The primary risks are SQL-specific pitfalls around NULL handling and floating-point precision. SQLite's `SUM(cost_sats)` returns NULL when all rows have NULL costs (streaming requests without usage data), which propagates silently through JSON responses. Use `TOTAL()` instead of `SUM()` to return 0.0 for all-NULL groups. Additionally, long-running analytics queries can starve the proxy's write path by monopolizing the shared connection pool. Prevention requires a separate read-only SQLite pool for analytics. These pitfalls are well-documented and addressable with targeted mitigations in the first implementation phase.
+Key risks include retry storm amplification if circuit checks are placed incorrectly, race conditions in failure counting if atomics are used instead of Mutex, and streaming failures being invisible to circuit state if only initial HTTP responses are tracked. These are all preventable through careful integration points and existing codebase patterns (tokio::time::Instant for testability, fire-and-forget spawned tasks for stream completion).
 
 ## Key Findings
 
 ### Recommended Stack
 
-No new dependencies required. The existing stack fully supports read-only analytics endpoints. Research across sqlx documentation, axum Query extractor patterns, and SQLite aggregate behavior confirms every capability is already present.
-
 **Core technologies:**
-- **axum 0.7**: HTTP server with built-in `Query<T>` extractor for deserializing URL parameters into typed structs. Route registration via `Router::nest()` for `/v1/arbstr/stats/*` endpoints.
-- **sqlx 0.8**: `query_as()` runtime function with `#[derive(FromRow)]` for mapping aggregate SELECT results to typed structs. `query_scalar()` for single-value aggregates. Already configured with SQLite in WAL mode for concurrent read/write.
-- **chrono 0.4**: RFC3339 timestamp parsing (`parse_from_rfc3339()`) for validating and normalizing `since`/`until` query parameters. Already used for timestamp generation throughout the codebase.
-- **serde + serde_json**: Deserialize query params into structs with `#[derive(Deserialize)]`. Serialize response types with `#[derive(Serialize)]`. `axum::Json<T>` handles automatic JSON response wrapping.
+- **DashMap v6** — Concurrent HashMap with per-shard locking for circuit breaker registry. Eliminates cross-provider contention that would occur with RwLock<HashMap> (any write blocks all reads). 170M+ downloads, stable, minimal dependency weight (only hashbrown transitive, already in tree).
+- **tokio::time::Instant** — Monotonic time tracking that responds to tokio::time::pause() for deterministic tests. Critical for testing the 30s Open->HalfOpen timeout without wall-clock waits. Matches existing test patterns (retry.rs uses start_paused = true).
+- **std::sync::Mutex** — Wraps CircuitState struct to ensure atomic multi-field updates (state + failure_count + timestamp). NOT tokio::sync::Mutex — circuit operations are pure state machine transitions with no .await points. Lock duration is nanoseconds.
 
-**Critical finding:** Zero new crates. This milestone uses only existing dependencies. The existing `idx_requests_timestamp` index supports time-range filtering efficiently. Composite indexes (model, provider) can be added later if GROUP BY queries prove slow with large datasets.
+**No changes needed to:** tokio, axum, serde, tracing, reqwest. Existing stack fully supports the circuit breaker.
+
+**Configuration:** Circuit breaker parameters (failure_threshold=5, open_duration=30s, half_open_success_threshold=2) are hardcoded constants initially, NOT in config.toml. Premature configurability forces users to make decisions they lack operational experience to make. Constants are easy to find and change. Promote to config later if users request tuning.
 
 ### Expected Features
 
-Based on patterns from OpenAI Usage API, LiteLLM spend tracking, Helicone cost analytics, and general API gateway monitoring, the feature landscape divides into table stakes (expected from any analytics API) and differentiators (power-user features).
-
 **Must have (table stakes):**
-- **Aggregate summary endpoint** — total requests, total cost, total tokens, avg latency, success rate. Universal across LLM proxies and API gateways.
-- **Time range filtering** — `?start=...&end=...` with ISO 8601 timestamps. Every analytics API supports scoped queries (last hour, today, this month).
-- **Preset time ranges** — `?range=last_24h` shortcuts to avoid epoch math. Common across LiteLLM, Helicone, GitBook analytics.
-- **Per-model breakdown** — GROUP BY model with same aggregate fields. Users need to know which models cost the most.
-- **Per-provider breakdown** — GROUP BY provider. Core value proposition for arbstr as a multi-provider proxy.
-- **Success rate** — `COUNT(success=true) / COUNT(*)`. Standard monitoring metric, essential for multi-provider reliability tracking.
+- 3-state machine (Closed/Open/HalfOpen) — Industry standard from Azure Architecture, implemented by all production proxies (Envoy, Kong, KrakenD). Anything less is just a blocklist.
+- Consecutive failure threshold to trip Open — Simple, deterministic, correct for a local proxy with low traffic volume. Failure-rate sliding windows are overkill (see Anti-Features).
+- Timeout-based transition to HalfOpen — Without recovery mechanism, tripped providers can never recover until process restart.
+- Single probe request in HalfOpen — Allow exactly one request through when timeout expires. Success->Closed, failure->Open.
+- Fail-fast 503 when all circuits open — Standard response code across all proxies. Distinct from 400 "no providers configured" error.
+- Skip open-circuit providers in routing — Core value proposition. Filter in handler before retry starts.
+- Success resets consecutive failure counter — Critical correctness requirement. Without this, accumulated non-consecutive failures trip the circuit.
+- Enhanced /health with per-provider circuit state — Operators need visibility. Kong, Envoy, KrakenD all expose per-backend health. Three-level status: ok/degraded/unhealthy.
 
-**Should have (competitive):**
-- **Time-series bucketed data** — GROUP BY hour/day for trend analysis and dashboards. OpenAI Usage API supports `bucket_width`, Prometheus uses `step`. Medium complexity (SQLite `strftime` grouping).
-- **Request log listing with pagination** — Browse individual requests for debugging. Low complexity, high utility. LiteLLM exposes `/spend/logs`.
-- **Latency percentiles (p50/p95/p99)** — Standard in API gateway monitoring. SQLite lacks native percentile functions, requires in-app computation.
+**Should have (competitive differentiators):**
+- State change logging — Emit tracing::warn! on Open, tracing::info! on recovery. Enables alerting via log aggregation. Practically free to implement.
+- Configurable thresholds in config.toml — Allow global override of failure_threshold and recovery_timeout_secs. Low effort, sensible defaults mean zero-config works.
+- Circuit state in response headers — x-arbstr-circuit-state header shows which providers were filtered. Useful for debugging.
+- Open-since and recovery-at timestamps in /health — Operators can estimate time to recovery without log watching.
 
-**Defer (v2+):**
-- **GraphQL analytics API** — Overkill for a single-user local proxy. Predictable query patterns fit REST endpoints.
-- **Real-time streaming (WebSocket/SSE)** — Marginal value for local tool. Clients can poll.
-- **Export to CSV/Prometheus/OpenTelemetry** — SQLite database is directly accessible. Premature integration.
-- **Budget alerts** — Budget enforcement belongs in policy engine (separate milestone), not query endpoints.
+**Defer (anti-features for v1):**
+- Sliding window failure rate (percentage-based) — Requires time window tracking, ratio computation, tuning. arbstr is a local proxy with 1-10 providers and low-moderate traffic. Consecutive failure counting is sufficient.
+- Active health probing (periodic pings) — Adds background polling, consumes provider API quota, requires health endpoint most LLM providers don't expose. Use passive detection via real request outcomes.
+- Adaptive/ML-based threshold tuning — Massive overengineering for a local proxy.
+- Request queuing/replay — LLM requests are not meaningfully replayable. Fail fast with 503, let client retry.
+- Per-model circuit breakers — Multiplies state space (providers x models). LLM provider failures are almost always infrastructure-level (entire endpoint down), not model-specific.
+- Global circuit breaker — Would prevent routing to healthy providers when only one is down. Keep circuits strictly per-provider.
+- Distributed/shared circuit state — arbstr is single-process local proxy, not a distributed fleet. In-memory state is correct.
 
 ### Architecture Approach
 
-The recommended architecture separates data access from HTTP concerns, following the existing codebase pattern. All SQL queries live in a new `src/storage/stats.rs` module alongside `logging.rs` (write operations). Query functions take `&SqlitePool` and return `Result<T, sqlx::Error>` with typed response structs. Handlers in `src/proxy/handlers.rs` extract query parameters via `axum::Query<T>`, validate time ranges, call storage query functions, and wrap results in `Json<T>` responses.
+The circuit breaker lives in a new `src/proxy/circuit_breaker.rs` module at the proxy layer, NOT in the router (which stays pure: model/cost/policy selection only) or storage (circuit state is ephemeral, in-memory). It integrates with existing code at the handler level, filtering provider candidates BEFORE retry logic runs and recording outcomes AFTER requests complete.
 
 **Major components:**
-1. **`storage/stats.rs`** — Pure data access layer with query functions (`get_summary`, `get_cost_by_model`, `get_cost_by_provider`, `get_recent_requests`) and response types (`Summary`, `ModelStats`, `ProviderStats`, `RequestEntry`). No HTTP dependency, independently testable with in-memory SQLite.
-2. **`proxy/handlers.rs`** — Stats handler functions with query parameter structs (`TimeRangeParams`, `RecentParams`) and time range validation helper (`resolve_time_range`). Extracts `State<AppState>` and `Query<Params>`, validates inputs, calls storage functions, returns `Json<Response>`.
-3. **`proxy/server.rs`** — Route registration via `Router::nest("/v1/arbstr/stats", stats_routes)` with nested routes for `/summary`, `/models`, `/providers`, `/requests`. All routes share `AppState` and middleware.
+1. **CircuitBreakerRegistry** — DashMap<String, ProviderCircuitBreaker> shared via Arc in AppState. Provides filter_available(), record_success(), record_failure(), provider_states() methods. Thread-safe, cheaply cloneable.
+2. **ProviderCircuitBreaker** — Per-provider state machine with CircuitState enum (Closed/Open/HalfOpen), failure_count, opened_at timestamp, half_open_successes counter. Wrapped in Mutex for atomic multi-field updates. Plain fields (not atomics) because DashMap provides per-shard locking.
+3. **Integration hooks** — Handler filters candidates through circuit breaker between router.select_candidates() and retry_with_fallback(). After retry outcome, records success/failure for each attempted provider. Streaming path records outcomes in spawned background task (circuit registry is Send + Sync).
+4. **Enhanced /health handler** — Accepts State<AppState>, queries circuit_breakers.provider_states(), adds database ping, returns structured JSON with per-provider circuit state and overall status (ok/degraded/unhealthy).
 
-**Key patterns:**
-- Use `TOTAL()` instead of `SUM()` for cost aggregations (returns 0.0 for all-NULL groups, not NULL).
-- Normalize user timestamps through `chrono::parse_from_rfc3339()` before SQL to handle `Z` vs `+00:00` format variations.
-- Whitelist column names for `sort_by`/`group_by` parameters using enums (not string interpolation) to prevent SQL injection.
-- Create a separate read-only `SqlitePool` for analytics to avoid starving proxy writes.
+**Request flow:**
+```
+1. chat_completions handler receives request
+2. router.select_candidates() returns Vec<SelectedProvider> sorted cheapest-first
+3. circuit_breakers.filter_available(candidates) removes Open-state providers  <-- NEW
+4. If empty after filter, return 503 immediately (all circuits open)           <-- NEW
+5. retry_with_fallback(filtered_candidates, ...)
+6. send_to_provider() makes HTTP call
+7. Record outcome: circuit_breakers.record_success/failure(provider_name)      <-- NEW
+```
+
+**Lazy state transitions:** Open->HalfOpen transition is checked lazily when is_available() is called, not via background timer. No background tasks to manage. Transition happens exactly when needed (at request time). Simpler to test with tokio::time::pause().
 
 ### Critical Pitfalls
 
-Research identified 13 pitfalls across critical, moderate, and minor severity. The top 5 require explicit mitigation in the first implementation phase.
+1. **Retry storm amplification if circuit checks are inside retry loop** — If circuit breaker checks happen PER-ATTEMPT instead of PRE-ROUTING, a downed provider consumes all 3 retry attempts (plus 1s+2s backoff = 3s minimum) before circuit trips. With 10 concurrent requests, that's 30 failed attempts hammering a downed provider. Prevention: Filter candidates BEFORE entering retry_with_fallback. Circuit-open rejections must trigger immediate fallback, not consume retry attempts. Modify is_retryable() to treat circuit-open as "skip this provider, try next" without backoff.
 
-1. **SUM(cost_sats) returns NULL when all rows have NULL cost** — Streaming requests without usage data have `cost_sats = NULL`. SQLite's `SUM()` returns NULL for all-NULL groups, propagating through JSON responses. Prevention: Use `TOTAL()` function (returns 0.0 instead of NULL) or `COALESCE(SUM(x), 0.0)`. Address in first phase — every aggregate query must use the correct function from the start.
+2. **Race conditions in consecutive failure counting with atomics** — Using AtomicU32 for failure_count and AtomicU8 for state creates TOCTOU races. Two threads can both see count==3 and attempt transition. Worse: success can reset counter while another thread is incrementing, breaking "consecutive" semantics. Prevention: Use Mutex<CircuitState> wrapping ALL mutable fields (state, failure_count, timestamps). Lock duration is nanoseconds (pure state machine transitions, no I/O). Matches existing codebase pattern (Arc<Mutex<Vec<AttemptRecord>>> in retry module).
 
-2. **Analytics queries starve proxy writes via SQLite locking** — The shared 5-connection pool serves both reads (analytics) and writes (proxy logs). Long-running analytics queries monopolize connections, prevent WAL checkpointing, and cause proxy write timeouts. Prevention: Create a separate read-only `SqlitePool` with 2 connections for analytics. Read-only connections in WAL mode never conflict with writes. Address in infrastructure phase before implementing endpoints.
+3. **Streaming failures invisible to circuit breaker** — Streaming path returns 200 OK immediately (provider accepted connection). Real failures (stream interruption, timeout) are discovered in spawned background task AFTER response is returned. If circuit breaker only records initial HTTP status, streaming failures never trip circuits. Prevention: Record outcomes in spawned stream completion task. Circuit registry must be Arc (shared across threads) and methods must be Send + Sync. Only record success when done_received==true. Mid-stream failures count equally toward circuit threshold.
 
-3. **Timestamp range queries fail with inconsistent RFC3339 formatting** — User input may use `Z` vs `+00:00` for UTC. BINARY collation treats `Z` (0x5A) and `+` (0x2B) as different characters, causing incorrect range boundaries. Stored timestamps use `+00:00` (from `chrono::to_rfc3339()`). Prevention: Normalize all user timestamps through `parse_from_rfc3339()` and re-format before SQL. Address in query parameter parsing phase.
+4. **Circuit breaker hides providers from router, creating misleading "no providers" 400 errors** — If all providers for a model have open circuits, filtering returns empty candidate list. Existing error handling treats empty list as Error::NoProviders (400 Bad Request). Clients see "No providers available" which implies misconfiguration, not transient failure. Prevention: New error variant Error::AllCircuitOpen mapping to 503 with Retry-After header. Include x-arbstr-circuit-state response header showing which providers were skipped.
 
-4. **AVG(cost_sats) excludes NULL rows silently** — `AVG()` only considers non-NULL values. If 80% of requests have NULL cost, `AVG()` computes average of the 20% that have costs without indicating coverage. Prevention: Return both `AVG(cost_sats)` and `COUNT(cost_sats)` alongside `COUNT(*)` so consumers know sample size. Address in API design phase.
-
-5. **SQL injection via ORDER BY with dynamic column names** — `sort_by` parameters cannot use `?` binding (SQLite treats `?` as value, not identifier). String interpolation enables injection. Prevention: Whitelist column names using serde enum with `as_sql()` method returning `&'static str`. Reject any value not in enum. Address in implementation phase.
-
-**Additional moderate pitfalls:** Missing composite indexes for GROUP BY (add when measurably slow), COUNT(*) vs COUNT(column) confusion (be explicit about NULL-aware vs total counts), inconsistent JSON response structure (reuse existing `Error` enum), not handling database-disabled case (check `state.db.is_some()` in every handler).
+5. **Half-open probe race — multiple requests enter HalfOpen simultaneously** — When circuit transitions Open->HalfOpen (after 30s timeout), multiple concurrent requests check state simultaneously, all see HalfOpen, and all send probe requests. Recovering provider gets burst instead of single probe. Worse: if some succeed and some fail, last transition wins, causing circuit flapping. Prevention: Use single-permit model with probe_in_flight bool flag. Only first request that atomically claims the permit (inside Mutex) sends probe. All other concurrent requests during HalfOpen rejected as if circuit still Open.
 
 ## Implications for Roadmap
 
-Based on research, this milestone naturally divides into 3 phases with clear dependency ordering. The foundation must establish infrastructure (read pool, response conventions) before implementing table-stakes features, then extend to competitive differentiators.
+Based on research, suggested phase structure:
 
-### Phase 1: Infrastructure and Core Aggregates
-**Rationale:** The read-only connection pool and time range validation are prerequisites for any analytics endpoint. The aggregate summary endpoint is the foundation — time filtering, per-model breakdown, and per-provider breakdown are parameters on this endpoint, not separate endpoints. Build the core before specializing.
+### Phase 1: Circuit Breaker Core (foundation)
+**Rationale:** State machine must exist and be correct before any integration. This is independently testable with no HTTP server, no database, no routes. Pure unit tests with deterministic time control (tokio::test start_paused).
+**Delivers:** src/proxy/circuit_breaker.rs with CircuitState enum, CircuitBreakerConfig, ProviderCircuitBreaker state machine (is_available, record_success, record_failure methods), CircuitBreakerRegistry with DashMap, ProviderHealthInfo struct for /health.
+**Addresses:** 3-state machine, consecutive failure threshold, timeout-based transition, half-open single-probe (table stakes from FEATURES.md).
+**Avoids:** Pitfall 2 (uses Mutex not atomics), Pitfall 5 (single-permit half-open model), Pitfall 9 (uses tokio::time::Instant for testability).
+**Tests:** Pure unit tests for all state transitions, failure threshold boundary behavior, success resets counter, half-open probe logic. Use start_paused = true with tokio::time::advance() for deterministic 30s timeout tests.
 
-**Delivers:**
-- Separate read-only SQLite pool for analytics (prevents proxy write starvation)
-- Time range parameter parsing with RFC3339 normalization
-- `GET /v1/arbstr/stats/summary` endpoint with aggregate fields (total requests, total cost, total tokens, avg latency, success rate)
-- Per-model breakdown (`?group_by=model`)
-- Per-provider breakdown (`?group_by=provider`)
+### Phase 2: Handler Integration (Non-Streaming)
+**Rationale:** Non-streaming path handles all retried requests (majority of traffic). This phase delivers the core circuit protection value. Streaming can be added separately because it uses a completely different code path (execute_request vs retry_with_fallback).
+**Delivers:** Modified src/proxy/handlers.rs chat_completions handler to filter candidates through circuit_breakers.filter_available() BEFORE retry_with_fallback(), return 503 if all circuits open, record success/failure AFTER retry outcome. Modified src/proxy/server.rs to add circuit_breakers to AppState, initialize from config provider names.
+**Addresses:** Skip open-circuit providers in routing, fail-fast 503 when all open, success resets counter (table stakes).
+**Avoids:** Pitfall 1 (filters PRE-ROUTING not inside retry loop), Pitfall 4 (new error variant for all-circuit-open distinct from NoProviders), Pitfall 6 (only count 5xx as circuit failures, reuse is_retryable logic), Pitfall 10 (mandate record_success on every Ok path).
+**Tests:** Integration tests with mock providers. Trigger 5 consecutive failures, verify circuit opens. Verify next request skips open provider and uses fallback. Verify request with all providers open returns 503 immediately.
 
-**Addresses:**
-- Must-have features: aggregate summary, time range filtering, per-model breakdown, per-provider breakdown, success rate
-- Preset time ranges: `?range=last_24h|last_7d|last_30d` as shortcuts
+### Phase 3: Enhanced /health Endpoint
+**Rationale:** Observability surface for external monitoring. Can be implemented in parallel with Phase 2 (no dependency) or immediately after. Low risk, purely additive (new response format, no behavior change).
+**Delivers:** Modified src/proxy/handlers.rs health handler to accept State<AppState>, query circuit_breakers.provider_states(), add database ping, return structured JSON with per-provider circuit state and overall status.
+**Addresses:** Enhanced /health with per-provider circuit state (table stakes).
+**Avoids:** Pitfall 8 (three-level health model: ok when all closed, degraded when some open, unhealthy when all open).
+**Tests:** Integration tests for /health response structure. Verify reflects circuit state changes. Verify top-level status degrades appropriately.
 
-**Avoids:**
-- Pitfall 4 (analytics queries starving proxy) — separate read pool implemented first
-- Pitfall 5 (timestamp format inconsistency) — normalization helper before first endpoint
-- Pitfall 1 (SUM NULL) — use `TOTAL()` from the start
-- Pitfall 10 (database-disabled case) — check `state.db.is_some()` in handlers
+### Phase 4: Streaming Path Integration
+**Rationale:** Streaming path is separate from retry logic (execute_request directly calls router.select, no retry). Lower priority because streaming already has no retry protection, so circuit breaker is additive value but not critical for correctness. Can be deferred if needed.
+**Delivers:** Modified src/proxy/handlers.rs execute_request to check circuit breaker before using selected provider, fall back to select_candidates + filter if primary is circuit-broken. Record outcome in spawned background task after stream completes.
+**Addresses:** Equal treatment of streaming and non-streaming failures for circuit health.
+**Avoids:** Pitfall 3 (streaming failures recorded via spawned task callback).
+**Tests:** Integration tests for streaming path with circuit-broken providers. Verify mid-stream failures count toward threshold.
 
-**Technical notes:**
-- New files: `src/storage/stats.rs` (query functions), route registration in `server.rs`
-- Modified files: `src/storage/mod.rs` (read pool init, re-exports), `src/proxy/handlers.rs` (stats handlers)
-- No new dependencies, no schema changes (existing indexes sufficient)
-
-### Phase 2: Request Log Listing
-**Rationale:** Log listing is a separate access pattern (individual rows, not aggregates) with different concerns (pagination, sorting). Should be implemented after aggregates are proven working. Low complexity but requires pagination design and cursor/offset strategy.
-
-**Delivers:**
-- `GET /v1/arbstr/stats/requests` endpoint with pagination
-- Filtering by model, provider, success, streaming
-- Sorting by timestamp, cost, latency
-- Pagination metadata (page, per_page, total, has_more)
-
-**Addresses:**
-- Should-have feature: request log listing with pagination
-- Top-N expensive requests (special case: `?sort=cost_desc&per_page=10`)
-
-**Avoids:**
-- Pitfall 11 (unbounded result sets) — default LIMIT 100 with max cap 1000
-- Pitfall 8 (SQL injection) — enum whitelist for sort_by parameter
-
-**Technical notes:**
-- Uses same read pool and time range helpers from Phase 1
-- `RequestEntry` struct with `#[derive(sqlx::FromRow)]` for direct row mapping
-- Cursor-based pagination (using `after=<id>`) preferred over OFFSET for large datasets
-
-### Phase 3: Time-Series Bucketing (Differentiator)
-**Rationale:** Time-series data is only valuable once someone builds a dashboard or monitoring integration. Medium complexity (SQLite `strftime` for grouping by hour/day) and not required for basic cost visibility. Defer to validate demand first.
-
-**Delivers:**
-- `GET /v1/arbstr/stats/timeseries` endpoint
-- Bucketing by hour (`?bucket=1h`) or day (`?bucket=1d`)
-- Same aggregate fields as summary, grouped by time bucket
-- Array response with `{start, end, total_cost_sats, avg_latency_ms, ...}` per bucket
-
-**Addresses:**
-- Should-have feature: time-series bucketed data for trend analysis
-
-**Avoids:**
-- Pitfall 12 (timezone assumptions) — document UTC-only bucketing, defer timezone support
-
-**Technical notes:**
-- SQL: `GROUP BY strftime('%Y-%m-%d %H:00:00', timestamp)` for hourly buckets
-- Response includes explicit `bucket` field and `period.start/end` for clarity
-- Can reuse aggregate field calculations from Phase 1
+### Phase 5: Polish and Observability
+**Rationale:** Nice-to-haves that improve debugging and monitoring but are not blocking. Can be done incrementally.
+**Delivers:** State change logging (tracing::info! on transitions), x-arbstr-circuit-state response header, open-since and recovery-at timestamps in /health response, Error::CircuitOpen variant for clearer error messages.
+**Addresses:** Differentiators from FEATURES.md (state change logging, circuit state in response headers).
+**Avoids:** N/A (polish phase).
+**Tests:** Verify logs emit on state transitions with correct structured fields. Verify response headers appear when filtering occurs.
 
 ### Phase Ordering Rationale
 
-- **Infrastructure first:** The read-only connection pool (Phase 1) prevents analytics queries from degrading proxy performance. Must be in place before any endpoint ships. Time range normalization (Phase 1) prevents silent bugs from format mismatches. These are non-negotiable prerequisites.
+- Phase 1 first because state machine is foundation — all integration depends on it. Independently testable with no integration risk.
+- Phase 2 next because non-streaming path is highest value (handles all retried requests). This delivers core circuit protection.
+- Phase 3 can run concurrently with Phase 2 (no dependency) or immediately after. Purely additive, low risk.
+- Phase 4 deferred because streaming path is lower priority (already no retry, so circuit breaker is additive value but not critical).
+- Phase 5 last because polish is not blocking. Can be done incrementally or deferred to v2.
 
-- **Aggregates before details:** The summary endpoint (Phase 1) answers the primary user question: "How much have I spent?" Log listing (Phase 2) is a debugging/audit feature that depends on the same filtering and time range logic. Build the main use case first.
-
-- **Differentiation after validation:** Time-series bucketing (Phase 3) is only valuable with a dashboard consumer. Shipping Phase 1 and Phase 2 provides complete cost visibility. Phase 3 can be deferred or skipped if demand does not materialize.
-
-- **Dependency ordering:** Phase 2 and 3 both depend on Phase 1's infrastructure (read pool, time helpers). Phase 2 and 3 are independent of each other and could be swapped or parallelized.
+Phases 1-3 deliver complete circuit breaker protection for non-streaming requests plus full observability. This is the MVP. Phase 4 extends to streaming. Phase 5 is polish.
 
 ### Research Flags
 
 Phases with standard patterns (skip research-phase):
-- **Phase 1-3:** All phases use well-documented patterns (axum Query extractor, sqlx aggregate queries, SQLite text timestamp comparison). No niche domains or sparse documentation. The research files provide implementation-ready guidance with SQL examples, Rust patterns, and pitfall checklists.
+- **Phase 1:** Circuit breaker state machine is well-documented pattern (Azure Architecture Center, Martin Fowler, Resilience4j). Implementation is straightforward Rust state machine.
+- **Phase 2:** Integration points identified through direct codebase analysis (retry.rs, handlers.rs, selector.rs all read and understood).
+- **Phase 3:** /health endpoint enhancement is trivial JSON serialization of circuit state snapshot.
+- **Phase 4:** Streaming path integration follows same pattern as Phase 2, just different code path.
+- **Phase 5:** Logging and headers are standard axum/tracing patterns.
 
-**No additional phase research needed.** This project research is comprehensive and implementation-ready. The STACK.md provides zero-dependency confirmation, FEATURES.md includes endpoint design with query parameters and response shapes, ARCHITECTURE.md specifies file structure and data flow, and PITFALLS.md includes prevention strategies with code examples.
+**No phases need /gsd:research-phase.** All patterns are established and integration points are known from codebase analysis.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Verified against existing Cargo.toml, sqlx/axum/chrono docs, and codebase patterns. Zero new dependencies confirmed. |
-| Features | HIGH | Cross-referenced OpenAI Usage API, LiteLLM, Helicone, Portkey, and API gateway patterns. Table stakes vs differentiators validated across multiple sources. |
-| Architecture | HIGH | Based on direct codebase analysis (existing handlers, AppState, storage module structure). Patterns match existing write-path implementation. |
-| Pitfalls | HIGH | Sourced from SQLite official docs (SUM/TOTAL, WAL concurrency), sqlx aggregate issues (GitHub, docs.rs), and chrono RFC3339 formatting behavior. All critical pitfalls have verified prevention strategies. |
+| Stack | HIGH | DashMap verified as standard concurrent map (170M+ downloads). tokio::time::Instant verified as correct for deterministic tests (existing retry.rs tests use start_paused). Mutex vs atomics decision based on direct analysis of race conditions. |
+| Features | HIGH | Table stakes features verified against Azure Architecture Center (canonical circuit breaker reference), Kong/Envoy/KrakenD docs (production proxy implementations). Anti-features justified based on arbstr's context (local proxy, low traffic volume, no distributed coordination). |
+| Architecture | HIGH | Integration points identified through direct codebase inspection (retry.rs, handlers.rs, stream.rs, selector.rs, server.rs all read). Handler-level integration (not router or middleware) matches existing patterns. Lazy state transitions match existing time-based logic. |
+| Pitfalls | HIGH | Retry amplification math is deterministic (MAX_RETRIES=2 means 3 attempts). Race conditions verified against Rust Atomics and Locks reference. Streaming invisibility verified from actual fire-and-forget spawned task pattern in handlers.rs. Half-open race documented in Azure/Resilience4j sources. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-No critical gaps. All areas are implementation-ready. Minor considerations for future phases:
+No significant gaps. Research is complete and actionable.
 
-- **Latency percentiles (deferred):** SQLite lacks native PERCENTILE_CONT. If needed later, compute in-app by fetching sorted latency values and picking indices. Performance concern at scale — requires loading all latency values into memory. Not essential for v1.
-
-- **Cost savings estimate (deferred):** Requires cross-referencing request data with provider config rates to compute "max cost - actual cost" savings. Compelling metric but not essential for basic cost visibility. Can be added after Phase 1-3 ship.
-
-- **Composite indexes (conditional):** Research recommends NOT adding `idx_requests_model_timestamp` or `idx_requests_provider_timestamp` preemptively. The existing `idx_requests_timestamp` index covers time-range filtering. Add composite indexes only after EXPLAIN QUERY PLAN shows table scans on measurably slow queries. Each index slows INSERT performance.
-
-- **Bucketing timezones (deferred):** Phase 3 time-series bucketing uses UTC-only. Timezone support requires `strftime('%Y-%m-%d', timestamp, '+N hours')` offset math and adds API complexity. Document UTC-only in v1, add timezone parameter in future if requested.
+Minor areas to validate during implementation:
+- **Exact circuit-open error handling in retry module:** The retry_with_fallback function may need a small modification to distinguish "circuit open, skip to fallback" from "request failed, retry with backoff." The is_retryable() function provides a template, but circuit-open may need a third outcome ("skip" vs "retry" vs "abort"). This is a small implementation detail, not a research gap.
+- **Mock provider 503 behavior in tests:** Integration tests will need mock providers that deterministically return 503 to trip circuits. The existing mock mode may need minor extension. Not a blocker — mock server can be inline in test.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Existing codebase: `Cargo.toml`, `src/proxy/handlers.rs`, `src/proxy/server.rs`, `src/storage/logging.rs`, `src/storage/mod.rs`, `src/error.rs`, `migrations/*.sql` — verified via direct file inspection
-- [SQLite Aggregate Functions Reference](https://sqlite.org/lang_aggfunc.html) — SUM vs TOTAL, COUNT(*) vs COUNT(column), AVG NULL-skipping
-- [SQLite Write-Ahead Logging](https://sqlite.org/wal.html) — WAL concurrency, checkpoint blocking, read/write isolation
-- [SQLite Floating Point Numbers](https://sqlite.org/floatingpoint.html) — IEEE 754 precision limitations
-- [sqlx query_as documentation](https://docs.rs/sqlx/latest/sqlx/fn.query_as.html) — runtime query_as with FromRow
-- [axum Query extractor](https://docs.rs/axum/latest/axum/extract/struct.Query.html) — query string deserialization patterns
-- [chrono to_rfc3339](https://docs.rs/chrono/latest/chrono/struct.DateTime.html#method.to_rfc3339) — output format (+00:00 vs Z)
-- [OpenAI Usage API Reference](https://platform.openai.com/docs/api-reference/usage) — bucket_width, group_by patterns
-- [OpenAI Costs API Reference](https://developers.openai.com/api/reference/resources/organization/subresources/audit_logs/methods/get_costs) — cost tracking endpoint design
+- Local codebase analysis: Cargo.toml, src/proxy/server.rs (AppState), src/proxy/handlers.rs (health handler, send_to_provider, streaming path), src/proxy/retry.rs (retry pattern, start_paused tests, is_retryable), src/router/selector.rs (select_candidates), src/proxy/stream.rs (spawned task pattern) — all read and verified
+- [Circuit Breaker Pattern - Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker) — Definitive reference for 3-state machine, counter approaches, concurrency considerations, half-open permit model
+- [Martin Fowler - Circuit Breaker](https://martinfowler.com/bliki/CircuitBreaker.html) — Canonical pattern description
+- [DashMap documentation](https://docs.rs/dashmap/latest/dashmap/struct.DashMap.html) — Per-shard locking confirmed
+- [DashMap on crates.io](https://crates.io/crates/dashmap) — 170M+ downloads, version 6.x stable
+- [tokio::time::Instant docs](https://docs.rs/tokio/latest/tokio/time/struct.Instant.html) — Virtual time control for testing confirmed
 
 ### Secondary (MEDIUM confidence)
-- [LiteLLM Spend Tracking](https://docs.litellm.ai/docs/proxy/cost_tracking) — per-model/provider breakdown patterns
-- [Helicone Cost Tracking](https://docs.helicone.ai/guides/cookbooks/cost-tracking) — analytics patterns for LLM proxies
-- [Portkey Cost Management](https://portkey.ai/docs/product/observability/cost-management) — filtering by provider/model/timeframe
-- [SQLite Forum: Numerical stability of SUM](https://sqlite.org/forum/info/a0b458d8e) — Kahan summation discussion
-- [Battling with SQLite in a Concurrent Environment](https://www.drmhse.com/posts/battling-with-sqlite-in-a-concurrent-environment/) — connection pool contention patterns
-- [Prometheus Query Range API](https://prometheus.io/docs/prometheus/latest/querying/basics/) — time-series bucketing with start/end/step
-- [GitBook Events Aggregation API](https://gitbook.com/docs/guides/docs-analytics/track-advanced-analytics-with-gitbooks-events-aggregation-api) — preset time range enums
+- [Retry Storm Antipattern - Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/antipatterns/retry-storm/) — Retry amplification, circuit breaker as mitigation
+- [Resilience4j CircuitBreaker Documentation](https://resilience4j.readme.io/docs/circuitbreaker) — Atomic state management, sliding window (anti-pattern for arbstr), half-open permit model
+- [Circuit Breaker - KrakenD API Gateway](https://www.krakend.io/docs/backends/circuit-breaker/) — Real-world gateway using consecutive errors per backend
+- [Health checks and circuit breakers - Kong Gateway](https://docs.konghq.com/gateway/latest/how-kong-works/health-checks/) — Active vs passive health checking, per-upstream status
+- [Circuit Breakers - Tyk Documentation](https://tyk.io/docs/planning-for-production/ensure-high-availability/circuit-breakers/) — Per-endpoint circuit breaking, 503 on open
+- [Outlier detection - Envoy Proxy](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier) — Per-upstream host ejection based on consecutive errors
+- [Resilience Design Patterns - Codecentric](https://www.codecentric.de/en/knowledge-hub/blog/resilience-design-patterns-retry-fallback-timeout-circuit-breaker) — Pattern composition guidance
+- [Linkerd Circuit Breaking](https://linkerd.io/2-edge/reference/circuit-breaking/) — Per-endpoint circuit breaking in proxy context
+
+### Tertiary (LOW confidence)
+- [failsafe crate docs](https://docs.rs/failsafe/latest/failsafe/) — Evaluated but architectural mismatch (call-wrapping API conflicts with retry architecture)
+- [tower-circuitbreaker docs](https://docs.rs/tower-circuitbreaker/latest/tower_circuitbreaker/) — Evaluated but wrong abstraction (Tower Service middleware operates on individual requests, not routing decisions)
 
 ---
 *Research completed: 2026-02-16*

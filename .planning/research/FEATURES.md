@@ -1,381 +1,249 @@
-# Feature Landscape: Cost Querying API Endpoints
+# Feature Landscape: Circuit Breaker and Enhanced /health
 
-**Domain:** Read-only analytics/cost query endpoints for an LLM routing proxy
+**Domain:** Per-provider circuit breaker and health reporting for LLM routing proxy
 **Researched:** 2026-02-16
-**Overall confidence:** HIGH (well-established patterns across OpenAI Usage API, LiteLLM, Helicone, Portkey, and general API gateway analytics)
+**Overall confidence:** HIGH
 
 ## Current State Summary
 
-arbstr already logs every request to SQLite with: model, provider, policy, streaming (bool), input_tokens, output_tokens, cost_sats (f64), provider_cost_sats, latency_ms, stream_duration_ms, success (bool), error_status, error_message, and timestamp. The `requests` table has indexes on `correlation_id` and `timestamp`. However, there are **zero query endpoints** -- the only way to see this data is via direct SQLite access. This milestone adds read-only HTTP endpoints to expose aggregated and filtered views of the logged data.
+arbstr already has a robust retry-with-fallback system in `src/proxy/retry.rs`:
+- Up to 3 attempts (1 initial + 2 retries) on the primary provider with exponential backoff (1s, 2s)
+- Single fallback attempt on the next-cheapest provider after primary exhausts retries
+- 30-second total timeout wrapping the entire retry+fallback chain
+- Retryable errors: 500, 502, 503, 504 (server errors); 4xx errors fail immediately
+- Attempt tracking via `Arc<Mutex<Vec<AttemptRecord>>>` that survives timeout cancellation
+- Streaming requests do NOT use the retry system (fail fast, no retry)
+
+The current `/health` endpoint returns a static `{"status": "ok", "service": "arbstr"}` with no provider-level information.
+
+**What's missing:** There is no mechanism to remember that a provider has been failing across multiple request lifecycles. Each new request starts fresh -- the retry module has no memory of previous failures. A provider returning 503 on every request will be retried 3 times on every single request, wasting time and bandwidth. The circuit breaker closes this gap by tracking failure history across requests and skipping known-bad providers.
 
 ---
 
 ## Table Stakes
 
-Features every analytics API in this domain provides. Missing any of these makes the analytics endpoints feel incomplete or unusable.
+Features users expect from a circuit breaker in a proxy/gateway. Missing any of these means the circuit breaker is incomplete or misleading.
 
-| Feature | Why Expected | Complexity | Depends On | Notes |
-|---------|--------------|------------|------------|-------|
-| **Aggregate summary endpoint** | Every LLM proxy (LiteLLM, Helicone, Portkey) and API gateway (Kong, Tyk) exposes a single endpoint returning totals: total_requests, total_cost, total_tokens, avg_latency, success_rate. OpenAI's own `/organization/costs` endpoint follows this pattern. Without it, users cannot answer "how much have I spent?" | Low | Existing `requests` table, SQLite pool in AppState | Single SQL query with `COUNT`, `SUM`, `AVG`. Return JSON. Path: `GET /stats` or `GET /v1/stats`. |
-| **Time range filtering** | Universal across all analytics APIs. OpenAI uses `start_time`/`end_time` (unix timestamps). LiteLLM uses `start_date`/`end_date` (ISO date strings). Prometheus uses `start`/`end`/`step`. Users need to scope queries to "last hour", "today", "this month". Without time filtering, the summary is always an all-time total, which becomes less useful over time. | Low | Aggregate summary endpoint | Query params: `start` and `end` as ISO 8601 timestamps (e.g., `2026-02-16T00:00:00Z`). Add `WHERE timestamp >= ? AND timestamp < ?` to queries. arbstr already stores timestamps as ISO 8601 text, and SQLite text comparison works correctly for ISO 8601 ordering. |
-| **Preset time range shortcuts** | LiteLLM, Helicone, GitBook, and Adobe Analytics all offer preset ranges alongside custom date ranges. Users want `?range=last_24h` without computing epoch math. Common presets: `last_1h`, `last_24h`, `last_7d`, `last_30d`. | Low | Time range filtering | Resolve presets to `start`/`end` on the server. Accept `range` query param as an alternative to explicit `start`/`end`. If both provided, `start`/`end` takes precedence. |
-| **Per-model breakdown** | OpenAI groups by `model` in their Usage API. LiteLLM's `/user/daily/activity` response includes a `breakdown.models` object keyed by model name. Helicone tracks cost-per-model as a core metric. Users need to know which models cost the most. | Low | Aggregate summary endpoint | `GROUP BY model` in SQL. Return an array of objects, each with model name + same aggregate fields (request_count, total_cost, total_input_tokens, total_output_tokens, avg_latency, success_rate). |
-| **Per-provider breakdown** | Unique to multi-provider proxies like arbstr. LiteLLM's daily activity includes `breakdown.providers`. Since arbstr's core value is routing across providers, users need to see which providers are cheapest, fastest, and most reliable. | Low | Aggregate summary endpoint | `GROUP BY provider`. Same aggregate fields as per-model breakdown. Provider is nullable in the schema (pre-route errors), so include a null/unknown bucket. |
-| **Success rate** | Every monitoring system tracks this. Calculated as `COUNT(success=true) / COUNT(*)`. Users need to know if a provider or model is failing frequently. Particularly important for arbstr where retry/fallback masks failures from the client. | Low | Aggregate summary endpoint | `CAST(SUM(CASE WHEN success THEN 1 ELSE 0 END) AS REAL) / COUNT(*)`. Return as a float 0.0-1.0. |
-
-### Aggregate Response Fields (Table Stakes)
-
-Based on the data available in arbstr's `requests` table and patterns from OpenAI, LiteLLM, and Helicone, the aggregate summary should include:
-
-| Field | Type | SQL | Notes |
-|-------|------|-----|-------|
-| `total_requests` | integer | `COUNT(*)` | All requests in range |
-| `total_cost_sats` | float | `SUM(cost_sats)` | Total spend in satoshis |
-| `total_input_tokens` | integer | `SUM(input_tokens)` | May be null if tokens unavailable |
-| `total_output_tokens` | integer | `SUM(output_tokens)` | May be null if tokens unavailable |
-| `avg_latency_ms` | float | `AVG(latency_ms)` | Mean latency across all requests |
-| `avg_cost_sats` | float | `AVG(cost_sats)` | Mean cost per request |
-| `success_rate` | float | see above | 0.0 to 1.0 |
-| `total_errors` | integer | `SUM(CASE WHEN NOT success ...)` | Count of failed requests |
-| `streaming_requests` | integer | `SUM(CASE WHEN streaming ...)` | Streaming vs non-streaming split |
-
-**Confidence:** HIGH -- these fields map directly to columns already in the `requests` table and match patterns from OpenAI Usage API, LiteLLM spend tracking, and Helicone cost analytics.
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| 3-state machine (Closed/Open/Half-Open) | Industry standard from Microsoft Azure reference architecture, implemented by Envoy, Kong, KrakenD, Tyk, HAProxy. Anything less is just a blocklist with no recovery path. | Medium | State stored per-provider in shared concurrent structure. Each provider gets an independent circuit. |
+| Consecutive failure threshold to trip Open | Simplest correct approach for a local proxy with low traffic volume. Failure-rate sliding windows are overkill here (see Anti-Features). KrakenD uses consecutive errors for their per-backend circuit breaker. | Low | User spec: 3 consecutive failures. Only count retryable errors (5xx, connection timeouts), not 4xx client errors -- consistent with existing `is_retryable()` in retry.rs. |
+| Timeout-based transition to Half-Open | Standard recovery mechanism across all implementations. Without it, a tripped provider can never recover until process restart. | Low | User spec: 30s. Use `tokio::time::Instant` for monotonic tracking. Store the instant when Open state was entered; check elapsed time on next routing decision. |
+| Single probe request in Half-Open | Allow exactly one request through when timeout expires. Success transitions to Closed, failure transitions back to Open (restart timer). Azure and KrakenD both use this approach. | Medium | Must serialize probe access -- only one in-flight probe per provider at a time. Use a `probe_in_flight: bool` flag or AtomicBool within the Half-Open state. |
+| Fail-fast with 503 when all circuits open | When the only available provider(s) have open circuits, return 503 Service Unavailable immediately. This is the standard response code across Envoy, Tyk, HAProxy, and Spring Cloud Gateway for open circuit conditions. | Low | Must use OpenAI-compatible error format (`{"error": {"message": ..., "type": "arbstr_error", "code": 503}}`). New `Error::CircuitOpen` variant. |
+| Skip open-circuit providers in routing | Router must exclude providers with open circuits from the candidate list during selection. This is the core value proposition of the circuit breaker. | Medium | Filter in `select_candidates()` after model/policy filtering, before cost sorting. Pass `CircuitBreakerRegistry` reference into the method. |
+| Success resets consecutive failure counter | When a request succeeds on a provider, its failure counter resets to zero. Without this, a provider that had 2 failures followed by 100 successes would trip on its next single failure. | Low | Critical correctness requirement. Reset happens on every success, not just transitions. |
+| Enhanced /health with per-provider circuit state | Operators need visibility into which providers are healthy vs tripped. The current `/health` returns no provider-level information. Kong, Envoy, and KrakenD all expose per-backend health status. | Low | Return provider name, circuit state enum (closed/open/half_open), and consecutive failure count. Top-level status degrades: "ok" -> "degraded" (some open) -> "unhealthy" (all open). |
 
 ---
 
 ## Differentiators
 
-Features that go beyond the basics. Not expected from a v1 analytics API, but signal maturity and are valued by power users.
+Features that go beyond the baseline. Not required for correctness but add clear value.
 
-| Feature | Value Proposition | Complexity | Depends On | Notes |
-|---------|-------------------|------------|------------|-------|
-| **Time-series bucketed data** | OpenAI's Usage API supports `bucket_width` of `1m`, `1h`, `1d`. Prometheus uses `step`. This lets users plot cost/usage over time rather than seeing a single aggregate. Essential for dashboards and trend analysis. | Medium | Time range filtering | `GROUP BY strftime('%Y-%m-%d %H:00:00', timestamp)` for hourly buckets. Support `bucket` param: `1h`, `1d`. Return array of `{start_time, end_time, ...aggregate_fields}`. SQLite's `strftime` handles this natively. |
-| **Group-by parameter** | OpenAI accepts `group_by=["model","project_id"]`. LiteLLM supports grouping by tags, teams, users. A generic `group_by` param lets one endpoint serve multiple breakdowns: `?group_by=model`, `?group_by=provider`, `?group_by=model,provider`. | Medium | Aggregate summary endpoint | Dynamic SQL construction (allowlisted column names only to prevent injection). Validate that `group_by` values are in `{model, provider, policy, streaming}`. Return nested grouping in response. |
-| **Latency percentiles (p50, p95, p99)** | Standard in API gateway monitoring (AWS API Gateway, Datadog, Grafana). `AVG` hides outliers; percentiles reveal tail latency. P95 is the most common SLO target. P99 exposes architectural bottlenecks. | Medium | Aggregate summary endpoint | SQLite does not have native percentile functions. Options: (a) use `PERCENTILE_CONT` via a SQLite extension, (b) compute in Rust by fetching sorted latency values and picking indices, (c) use `NTILE` window function approximation. Option (b) is simplest for SQLite -- fetch `SELECT latency_ms FROM requests WHERE ... ORDER BY latency_ms` and compute percentiles in application code. Performance concern at scale (loading all latency values). |
-| **Request log listing with pagination** | Beyond aggregates, let users browse individual request logs. LiteLLM exposes `/spend/logs` with pagination. Useful for debugging specific requests, auditing costs, finding outliers. | Low | Existing data | `SELECT * FROM requests WHERE ... ORDER BY timestamp DESC LIMIT ? OFFSET ?`. Return `{data: [...], total: N, page: N, per_page: N}`. Support filtering by model, provider, success, streaming. |
-| **Top-N expensive requests** | Show the N most expensive individual requests. Useful for identifying runaway costs, unexpected large prompts, or misconfigured models. | Low | Request log listing | `SELECT * FROM requests WHERE ... ORDER BY cost_sats DESC LIMIT ?`. A specific sorting preset of the log listing endpoint. |
-| **Cost savings estimate** | Since arbstr routes to the cheapest provider, show how much was saved compared to the most expensive provider for the same model. Requires comparing `cost_sats` against what the most expensive provider would have charged. | Medium | Per-model + per-provider breakdown, config access | For each logged request, compute `max_cost = output_tokens * max_output_rate_for_model / 1000`. Savings = `SUM(max_cost - actual_cost)`. Requires joining against provider config (rates). Valuable for justifying arbstr's existence to users. |
-
-### Differentiator Priority
-
-1. **Time-series bucketed data** -- Medium complexity but high value. Without this, users cannot see trends. Essential for any dashboard or monitoring integration.
-2. **Request log listing with pagination** -- Low complexity, high utility for debugging. A natural complement to aggregate stats.
-3. **Group-by parameter** -- Avoids endpoint proliferation. One flexible endpoint instead of separate per-model, per-provider endpoints.
-4. **Latency percentiles** -- Medium complexity due to SQLite limitations, but percentiles are standard in monitoring. Defer if performance is a concern with large datasets.
-5. **Top-N expensive requests** -- Nearly free once log listing exists.
-6. **Cost savings estimate** -- Compelling "arbstr paid for itself" metric but requires more complex queries.
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| State change logging/tracing events | Emit structured log events on every transition (Closed->Open, Open->Half-Open, Half-Open->Closed, Half-Open->Open). Azure reference explicitly recommends monitoring state changes. Enables alerting via log aggregation. | Low | `tracing::warn!` for Open, `tracing::info!` for recovery. Include provider name, previous state, trigger reason. Practically free to implement. |
+| Configurable thresholds in config.toml | Allow global override of `failure_threshold` (default 3) and `recovery_timeout_secs` (default 30) in config. | Low | Add optional `[circuit_breaker]` section. Sensible defaults mean zero-config works. Per-provider overrides are a future option. |
+| Circuit state in response headers | `x-arbstr-circuit: provider-alpha=closed,provider-beta=open` lets clients see circuit state without polling /health. | Low | Lightweight addition to the existing header attachment logic. Useful for debugging in development. |
+| Open-since and recovery-at timestamps in /health | Show when a circuit opened and when the Half-Open probe will be attempted. Operators can estimate time to recovery without watching logs. | Low | `"open_since": "2026-02-16T10:30:00Z"`, `"recovery_at": "2026-02-16T10:30:30Z"`. Natural extension of the /health response. |
+| Half-Open success threshold > 1 | Require N consecutive successes in Half-Open before transitioning to Closed. Prevents flapping when a provider recovers intermittently. Azure pattern specifically recommends this. | Low | Default to 1 for simplicity (matches user spec), make configurable later. |
+| Circuit state in /v1/stats response | Include current per-provider circuit state alongside cost/latency aggregates in the existing stats endpoint. | Low | Natural extension of the analytics surface. Minimal new code. |
+| Last error details in /health | Track what kind of failures tripped the circuit (timeout, 502, 503, connection refused). Displayed in /health response for diagnostics. | Low | Store last error code and message per provider. Helps operators distinguish between provider-down vs rate-limiting. |
 
 ---
 
 ## Anti-Features
 
-Features to deliberately NOT build for the analytics API.
+Features to explicitly NOT build for this milestone.
 
-| Anti-Feature | Why Other Products Have It | Why arbstr Should NOT Build It | What to Do Instead |
-|--------------|---------------------------|-------------------------------|--------------------|
-| **GraphQL analytics API** | Kong uses GraphQL for flexible aggregate queries. Allows clients to request exactly the fields and groupings they need without multiple REST endpoints. | arbstr is a single-user local proxy, not a multi-tenant SaaS platform. GraphQL adds a dependency (async-graphql or juniper), schema maintenance, and complexity disproportionate to the use case. The query patterns are predictable and finite. | Use REST endpoints with query parameters for filtering and grouping. The number of useful query patterns is small enough to serve with 2-3 endpoints. |
-| **Real-time streaming analytics (WebSocket/SSE)** | Datadog and Helicone offer real-time dashboards with live-updating metrics. | arbstr runs locally. The user is making requests and can refresh manually. Real-time push adds complexity (connection management, state synchronization) for marginal value in a local tool. | Serve point-in-time HTTP responses. Clients poll if they want updates. |
-| **User/team/organization multi-tenancy in analytics** | LiteLLM has hierarchical budget tracking (Org > Team > User > Key). Portkey tracks per-user spend. | arbstr is a single-user local proxy. There is no concept of teams, organizations, or API keys. The `requests` table has no user column (other than the OpenAI `user` field, which is optional and client-controlled). | If user-level tracking is needed later, add it as a filter on the existing `user` field from OpenAI requests. Do not build a multi-tenant auth system. |
-| **Export to CSV/Prometheus/OpenTelemetry** | Enterprise API gateways export metrics to monitoring stacks. | Premature integration. arbstr's SQLite database is directly accessible for any export tool. Adding export formats increases maintenance surface for each output format. | Expose JSON endpoints. Users who need Prometheus metrics can use a sidecar exporter that queries the JSON API. The SQLite file is also directly queryable. |
-| **Budget alerts and notifications** | LiteLLM and Portkey support budget limits with email/webhook alerts when spend exceeds thresholds. | arbstr is a local proxy without a notification infrastructure. Budget enforcement (blocking requests over a limit) is a separate feature from querying past costs. Mixing enforcement into query endpoints conflates read and write concerns. | Build query endpoints as pure reads. Budget enforcement, if desired, belongs in the policy engine as a separate milestone. |
-| **Caching/materialized views for analytics** | Large-scale analytics platforms pre-compute aggregates for performance. | arbstr's SQLite database is local and small. A single-user proxy might generate hundreds to low thousands of requests per day. SQLite can aggregate tens of thousands of rows in milliseconds. Pre-computation adds complexity (cache invalidation, staleness) without measurable benefit. | Use direct SQL queries against the `requests` table. Add indexes if specific queries prove slow. SQLite handles this scale trivially. |
-| **Custom date format support** | Some APIs accept multiple date formats (unix epoch, ISO 8601, relative strings like "2 hours ago"). | Supporting multiple formats increases parsing complexity and testing surface. Pick one format and document it. | Use ISO 8601 exclusively (the format arbstr already stores). Accept `range` presets as the only shorthand. |
+| Anti-Feature | Why Avoid | What to Do Instead |
+|--------------|-----------|-------------------|
+| Sliding window failure rate (percentage-based) | Requires tracking request counts over time windows, computing ratios, and tuning window sizes. Resilience4j and SmallRye use this approach because they handle high-throughput distributed services where occasional failures are normal. arbstr is a local proxy with 1-10 providers and low-to-moderate traffic -- a provider failing 3 times in a row is a clear signal, not statistical noise. | Use consecutive failure counter. Simple, deterministic, no tuning required. |
+| Active health probing (periodic pings) | Adds a background polling loop, consumes provider API quota (LLM providers charge per request), and requires a health check endpoint that most LLM providers do not expose. Kong supports this but it is designed for services you control. | Use passive detection via real request outcomes. The Half-Open probe uses a real user request, not a synthetic ping. |
+| Adaptive/ML-based threshold tuning | Azure docs mention AI-based threshold adjustment as a modern option. Massive overengineering for a local proxy with a handful of providers and straightforward failure modes. | Use static configurable thresholds. Humans can adjust the 2 parameters (failure_threshold, recovery_timeout) if needed. |
+| Request queuing/replay when circuit opens | Some patterns buffer requests and replay them when the circuit closes. Adds complexity (queue sizing, ordering, staleness, memory pressure) and LLM requests are often not meaningfully replayable (context changes, user has moved on). | Fail fast with 503 and let the client retry. OpenAI SDKs and other LLM clients already have built-in retry logic. |
+| Per-model circuit breakers | A provider might serve multiple models, and theoretically one model could fail while others work. Per-model granularity multiplies state space (providers x models) and complicates routing. | Use per-provider circuit breakers. LLM provider failures are almost always infrastructure-level (the whole endpoint is down), not model-level. If real-world usage shows otherwise, per-model can be added later. |
+| Global circuit breaker | Some patterns have a "global" circuit that trips when the entire system is degraded. In arbstr, providers are independent -- a global circuit would prevent routing to healthy providers when only one is down. | Keep circuits strictly per-provider. The "all circuits open" case is handled by returning 503 -- this is the correct global degradation signal. |
+| Distributed/shared circuit state | No need for cross-instance state coordination. arbstr is a single-process local proxy, not a distributed fleet. | In-memory state per process. Simple, correct, no external dependencies. |
+| Exponential backoff on recovery timeout | Some implementations double the Open-state timeout on each consecutive trip (30s -> 60s -> 120s). Adds complexity and delays recovery detection. | Use fixed timeout. If a provider keeps failing on Half-Open probes, it will cycle through Open/Half-Open states at the fixed interval, which is acceptable behavior for a local proxy. Can add exponential backoff later if needed. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-GET /stats (aggregate summary)
+Circuit breaker state machine (core)
   |
-  +-- Time range filtering (?start=...&end=... or ?range=last_24h)
+  +-> Router integration (filter open circuits from candidates)
   |     |
-  |     +-- Time-series buckets (?bucket=1h) [differentiator]
+  |     +-> Outcome recording (feed success/failure back to circuit breaker)
+  |     |     |
+  |     |     +-> Non-streaming path: after retry+fallback completes
+  |     |     |
+  |     |     +-> Streaming path: after stream background task completes
+  |     |
+  |     +-> 503 fail-fast when all providers have open circuits
+  |           |
+  |           +-> New Error::CircuitOpen variant (maps to 503)
   |
-  +-- Per-model breakdown (?group_by=model)
+  +-> Enhanced /health endpoint (reads circuit state)
   |
-  +-- Per-provider breakdown (?group_by=provider)
-  |
-  +-- Success rate (included in aggregate fields)
+  +-> State change logging (emits tracing events on transitions)
 
-GET /stats/requests (log listing) [differentiator]
+Optional config support
   |
-  +-- Pagination (?page=1&per_page=50)
-  |
-  +-- Filtering (?model=gpt-4o&provider=alpha&success=true)
-  |
-  +-- Top-N expensive (?sort=cost_desc&per_page=10)
-
-Latency percentiles (p50/p95/p99) [differentiator]
-  |
-  +-- Included in aggregate response when feasible
-  |
-  +-- OR separate field in summary (requires in-app computation)
-
-Database indexes
-  |
-  +-- idx_requests_timestamp (already exists)
-  |
-  +-- idx_requests_model (NEW -- speeds up GROUP BY model)
-  |
-  +-- idx_requests_provider (NEW -- speeds up GROUP BY provider)
+  +-> Circuit breaker state machine (provides threshold overrides)
 ```
 
-Key dependency insight: **The aggregate summary endpoint is the foundation.** Time range filtering and group-by are parameters on that endpoint, not separate endpoints. Build the aggregate endpoint first with hardcoded groupings (model, provider), then generalize to a `group_by` parameter if needed.
+**Critical dependency chain:**
+1. Circuit breaker state machine MUST exist before router integration
+2. Router integration MUST work before outcome recording (the router decides which providers to try; outcomes flow back)
+3. Both MUST work before /health can report meaningful state
+4. Config is independent -- can provide defaults and add config support in any order
+5. State change logging is a side effect of the state machine -- implement alongside it
 
 ---
 
-## Endpoint Design Recommendations
+## Integration Points with Existing Code
 
-Based on patterns from OpenAI Usage API, LiteLLM, and Helicone, here are the recommended endpoints and response shapes.
+### 1. Router (`src/router/selector.rs`)
 
-### Endpoint 1: `GET /stats` -- Aggregate Summary
+The `select_candidates()` method currently filters by model and policy constraints, then sorts by cost:
 
-The core endpoint. Returns aggregate metrics over a time range with optional grouping.
-
-**Query Parameters:**
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `start` | ISO 8601 string | (none = all time) | Inclusive start of time range |
-| `end` | ISO 8601 string | (none = now) | Exclusive end of time range |
-| `range` | enum string | (none) | Preset: `last_1h`, `last_24h`, `last_7d`, `last_30d`. Ignored if `start`/`end` provided. |
-| `group_by` | comma-separated | (none) | Fields to group by: `model`, `provider`, `policy`, `streaming` |
-| `model` | string | (none) | Filter to specific model |
-| `provider` | string | (none) | Filter to specific provider |
-
-**Response (no grouping):**
-
-```json
-{
-  "period": {
-    "start": "2026-02-15T00:00:00Z",
-    "end": "2026-02-16T00:00:00Z"
-  },
-  "stats": {
-    "total_requests": 1247,
-    "total_cost_sats": 34521.50,
-    "total_input_tokens": 2450000,
-    "total_output_tokens": 890000,
-    "avg_latency_ms": 1823.4,
-    "avg_cost_sats": 27.68,
-    "success_rate": 0.982,
-    "total_errors": 22,
-    "streaming_requests": 980
-  }
-}
+```
+Current:  providers -> filter(model) -> filter(policy) -> sort(cost) -> deduplicate
+With CB:  providers -> filter(model) -> filter(policy) -> filter(circuit_not_open) -> sort(cost) -> deduplicate
 ```
 
-**Response (with `?group_by=model`):**
+**Design decision:** Pass `CircuitBreakerRegistry` reference into `select_candidates()` as a new parameter rather than storing it in the Router. This keeps Router stateless and testable. The handler passes the registry from AppState.
+
+**Half-Open handling:** A provider in Half-Open state should NOT be filtered out. It should be available for selection so that the probe request can flow through. Only Open-state providers are excluded.
+
+**Edge case:** If all providers for a model are in Open state, `select_candidates()` returns an empty list. The handler must distinguish this from the existing "no providers for model" error (400) and return 503 instead.
+
+### 2. Retry Module (`src/proxy/retry.rs`)
+
+The retry module currently records `AttemptRecord` (provider name + status code). Circuit breaker does NOT change the retry module's internal logic -- it operates at a higher level:
+
+- **Before retry:** The router has already filtered out Open providers, so the retry module only sees Closed/Half-Open candidates.
+- **After retry:** The handler reads the retry outcome and the attempt history, then feeds results to the circuit breaker:
+  - For each failed attempt: call `registry.record_failure(provider_name)`
+  - For successful final outcome: call `registry.record_success(provider_name)`
+
+**Important:** The retry module may attempt a request on a provider, fail, and fall back to another provider. Both providers' circuit breakers must be updated: failures recorded for the first, success recorded for the second.
+
+### 3. Streaming Path (`src/proxy/handlers.rs`)
+
+The streaming path does NOT use retry (`execute_request` -> `Router::select` -> `send_to_provider`). Circuit breaker still applies:
+
+- **Selection:** `Router::select` must filter Open providers (same as `select_candidates`)
+- **Outcome recording:** The spawned background task already determines success/failure. Add `registry.record_success/failure()` calls in the same code path.
+- **503 fast-fail:** If `Router::select` finds no available providers after circuit filtering, return 503 immediately.
+
+### 4. AppState (`src/proxy/server.rs`)
+
+Add `circuit_breakers: Arc<CircuitBreakerRegistry>` to `AppState`. Initialize in `run_server()` from the provider list (one circuit per provider name).
+
+### 5. Health Handler (`src/proxy/handlers.rs`)
+
+Current `/health` handler is a one-liner returning static JSON. Enhanced version:
 
 ```json
 {
-  "period": {
-    "start": "2026-02-15T00:00:00Z",
-    "end": "2026-02-16T00:00:00Z"
-  },
-  "stats": {
-    "total_requests": 1247,
-    "total_cost_sats": 34521.50
-  },
-  "groups": [
+  "status": "ok",
+  "service": "arbstr",
+  "providers": [
     {
-      "model": "gpt-4o",
-      "total_requests": 800,
-      "total_cost_sats": 28000.00,
-      "total_input_tokens": 1800000,
-      "total_output_tokens": 600000,
-      "avg_latency_ms": 2100.5,
-      "avg_cost_sats": 35.00,
-      "success_rate": 0.975
+      "name": "provider-alpha",
+      "circuit": "closed",
+      "consecutive_failures": 0
     },
     {
-      "model": "gpt-4o-mini",
-      "total_requests": 447,
-      "total_cost_sats": 6521.50,
-      "total_input_tokens": 650000,
-      "total_output_tokens": 290000,
-      "avg_latency_ms": 1330.2,
-      "avg_cost_sats": 14.59,
-      "success_rate": 0.996
+      "name": "provider-beta",
+      "circuit": "open",
+      "consecutive_failures": 3,
+      "open_since": "2026-02-16T10:30:00Z",
+      "recovery_at": "2026-02-16T10:30:30Z"
     }
   ]
 }
 ```
 
-**Design rationale:** This follows OpenAI's pattern of a single endpoint with `group_by` rather than separate `/stats/models` and `/stats/providers` endpoints. The `period` object makes the effective time range explicit (important when presets are used). The top-level `stats` always contains the un-grouped totals even when groups are present -- this follows LiteLLM's daily activity response pattern.
+Top-level `status` values:
+- `"ok"` -- all circuits closed
+- `"degraded"` -- some circuits open, at least one closed
+- `"unhealthy"` -- all circuits open (or no providers configured)
 
-### Endpoint 2: `GET /stats/timeseries` -- Bucketed Time Series (Differentiator)
+### 6. Error Types (`src/error.rs`)
 
-Returns the same aggregate fields bucketed by time period. Essential for plotting trends.
+Add `Error::CircuitOpen` variant:
 
-**Query Parameters:** Same as `/stats` plus:
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `bucket` | enum string | `1d` | Bucket width: `1h`, `1d` |
-
-**Response:**
-
-```json
-{
-  "period": {
-    "start": "2026-02-09T00:00:00Z",
-    "end": "2026-02-16T00:00:00Z"
-  },
-  "bucket": "1d",
-  "data": [
-    {
-      "start": "2026-02-09T00:00:00Z",
-      "end": "2026-02-10T00:00:00Z",
-      "total_requests": 156,
-      "total_cost_sats": 4200.00,
-      "avg_latency_ms": 1900.0,
-      "success_rate": 0.99
-    },
-    {
-      "start": "2026-02-10T00:00:00Z",
-      "end": "2026-02-11T00:00:00Z",
-      "total_requests": 203,
-      "total_cost_sats": 5100.00,
-      "avg_latency_ms": 1750.0,
-      "success_rate": 0.985
-    }
-  ]
-}
+```rust
+#[error("All providers for model '{model}' have open circuits")]
+CircuitOpen { model: String },
 ```
 
-### Endpoint 3: `GET /stats/requests` -- Request Log Listing (Differentiator)
-
-Browse individual requests with filtering and pagination.
-
-**Query Parameters:**
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `start` / `end` / `range` | as above | as above | Time range |
-| `model` | string | (none) | Filter by model |
-| `provider` | string | (none) | Filter by provider |
-| `success` | bool | (none) | Filter by success |
-| `streaming` | bool | (none) | Filter by streaming |
-| `sort` | enum | `timestamp_desc` | Sort: `timestamp_desc`, `timestamp_asc`, `cost_desc`, `latency_desc` |
-| `page` | integer | 1 | Page number |
-| `per_page` | integer | 50 | Results per page (max 100) |
-
-**Response:**
-
-```json
-{
-  "period": {
-    "start": "2026-02-15T00:00:00Z",
-    "end": "2026-02-16T00:00:00Z"
-  },
-  "pagination": {
-    "page": 1,
-    "per_page": 50,
-    "total": 1247,
-    "total_pages": 25
-  },
-  "data": [
-    {
-      "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
-      "timestamp": "2026-02-15T14:32:01Z",
-      "model": "gpt-4o",
-      "provider": "provider-alpha",
-      "policy": null,
-      "streaming": false,
-      "input_tokens": 150,
-      "output_tokens": 300,
-      "cost_sats": 42.50,
-      "latency_ms": 1523,
-      "stream_duration_ms": null,
-      "success": true,
-      "error_message": null
-    }
-  ]
-}
-```
-
----
-
-## Time Range Conventions
-
-Based on research across OpenAI, LiteLLM, Prometheus, GitBook, and Adobe Analytics APIs:
-
-| Approach | Used By | Convention | Recommended for arbstr |
-|----------|---------|------------|----------------------|
-| Unix timestamps (seconds) | OpenAI Usage API, Prometheus | `start_time=1730419200` | No -- harder for humans to construct in curl/browser |
-| ISO 8601 strings | LiteLLM, general REST APIs | `start_date=2026-02-15` | **Yes** -- matches arbstr's existing timestamp format, human-readable |
-| Preset enums | GitBook, Adobe, Helicone dashboards | `range=last_24h` | **Yes** -- convenience shorthand |
-| Relative durations | Prometheus, Grafana | `duration=24h` | No -- less common in REST APIs, harder to validate |
-
-**Recommendation:** Accept ISO 8601 strings for `start`/`end` and preset enums for `range`. This balances human usability (easy to construct in curl), machine usability (parseable), and compatibility with existing timestamp format in the database.
-
-**Presets to support:** `last_1h`, `last_24h`, `last_7d`, `last_30d`, `all`. These cover the most common monitoring windows and map to established patterns from Helicone and GitBook's analytics APIs.
+Maps to 503 Service Unavailable in `IntoResponse`. Distinct from `Error::NoProviders` (400) which means no provider is configured for the model at all.
 
 ---
 
 ## MVP Recommendation
 
-For the first version of cost querying endpoints:
+**Prioritize (this milestone):**
 
-### Must Have
+1. **Circuit breaker state machine** -- The `CircuitBreakerRegistry` with per-provider `CircuitState` enum (Closed { consecutive_failures }, Open { since, consecutive_failures }, HalfOpen { probe_in_flight }), transition methods, and thread-safe access. This is the foundation.
 
-1. **`GET /stats` with aggregate summary** -- The core endpoint. Returns total_requests, total_cost_sats, total_input_tokens, total_output_tokens, avg_latency_ms, success_rate, total_errors, streaming_requests. No grouping in v1. Single SQL query, simple handler.
+2. **Router integration** -- Filter Open-state providers from `select_candidates()` and `select()`. Preserve Half-Open providers for probe requests.
 
-2. **Time range filtering on `/stats`** -- `?start=...&end=...` and `?range=last_24h`. Resolves presets server-side. Adds `WHERE` clause to query.
+3. **Outcome recording** -- After every request completes (both streaming and non-streaming paths), record success/failure to the circuit breaker for the provider that handled the request. Also record failures for providers that failed during retry attempts.
 
-3. **Per-model breakdown on `/stats`** -- `?group_by=model`. Returns the same aggregate fields grouped by model name. Essential for answering "which model costs the most?"
+4. **503 fail-fast** -- New `Error::CircuitOpen` variant. When router returns empty candidates after circuit filtering (all providers Open), return 503 with OpenAI-compatible error body.
 
-4. **Per-provider breakdown on `/stats`** -- `?group_by=provider`. Returns aggregate fields grouped by provider. Essential for arbstr's multi-provider value proposition.
+5. **Enhanced /health** -- Per-provider circuit state, consecutive failure count, and top-level status degradation (ok/degraded/unhealthy).
 
-### Should Have
+6. **State change logging** -- Emit `tracing::warn!` on Open transitions, `tracing::info!` on Close transitions. Include provider name, previous state, and trigger. Practically free.
 
-5. **`GET /stats/requests` with pagination** -- Browse individual request logs. Low complexity, high debugging value.
+**Defer (future milestone):**
 
-6. **Preset time ranges** -- `?range=last_1h|last_24h|last_7d|last_30d`. Convenience feature that avoids requiring users to compute ISO timestamps.
-
-7. **Model/provider filter params** -- `?model=gpt-4o` and `?provider=alpha` on the `/stats` endpoint. Narrow aggregates to a specific model or provider without needing group_by.
-
-### Defer
-
-8. **Time-series bucketed data** (`GET /stats/timeseries`) -- Medium complexity (SQLite `strftime` grouping), only valuable once someone builds a dashboard or monitoring integration. Ship it in a follow-up.
-
-9. **Latency percentiles (p50/p95/p99)** -- Requires either loading all latency values into memory or a SQLite extension. Defer until aggregate latency proves insufficient.
-
-10. **Cost savings estimate** -- Requires cross-referencing request data with provider config rates. Compelling but not essential for basic cost visibility.
+- **Configurable thresholds in config.toml** -- Hardcode defaults (3 failures, 30s timeout) for now. Config section can be added without any behavioral changes.
+- **Circuit state in response headers** -- Low effort but not in the user's original spec.
+- **Half-Open success threshold > 1** -- Start with 1. Add if flapping is observed.
+- **Circuit state in /v1/stats** -- Natural extension but not blocking.
+- **Last error details in /health** -- Nice for diagnostics, defer to reduce scope.
 
 ---
 
-## Complexity Estimates
+## Complexity Assessment
 
-| Feature | New Code (est.) | New Files | Touches Existing | Risk |
-|---------|----------------|-----------|-----------------|------|
-| Aggregate summary handler | ~80 lines | stats handler module | server.rs (add route) | Low -- single SQL query, JSON response |
-| Time range filtering | ~40 lines | (in stats module) | (none) | Low -- WHERE clause + date parsing |
-| Preset time ranges | ~30 lines | (in stats module) | (none) | Low -- enum match to UTC calculations |
-| Group-by model/provider | ~60 lines | (in stats module) | (none) | Low -- GROUP BY in SQL, array response |
-| Request log listing | ~80 lines | (in stats module) | server.rs (add route) | Low -- paginated SELECT |
-| New DB indexes | ~5 lines | new migration | (none) | Low -- CREATE INDEX IF NOT EXISTS |
-| Query parameter types | ~50 lines | (in stats module) | (none) | Low -- serde deserialize structs for axum |
+| Component | Complexity | Risk | Notes |
+|-----------|-----------|------|-------|
+| CircuitBreakerRegistry data structure | Low | Thread safety must be correct | Enum + counter + timestamp per provider. `RwLock<HashMap<String, CircuitState>>` or `DashMap`. Unit-testable in isolation. |
+| State transition logic | Low | Edge cases around concurrent transitions | Deterministic rules: 3 failures -> Open, 30s elapsed -> Half-Open, 1 success in Half-Open -> Closed, 1 failure in Half-Open -> Open. |
+| Router filter integration | Low | Must not break existing model/policy filtering | One additional `.filter()` call. Existing tests should still pass with all-Closed circuits. |
+| Outcome recording (non-streaming) | Low-Medium | Two integration points in handler | After retry+fallback completes, iterate attempt records for failures, check final outcome for success. |
+| Outcome recording (streaming) | Medium | Asynchronous in spawned background task | Must handle the case where circuit state changes between request start and stream completion. The spawned task already has provider name and success/failure determination. |
+| Half-Open probe serialization | Medium | Concurrent requests competing for probe slot | Only one request should be the probe. Others should either wait or be routed elsewhere. AtomicBool or state enum flag. |
+| Enhanced /health endpoint | Low | None | JSON serialization of circuit state map. Reads only. |
+| Error::CircuitOpen variant | Low | Must distinguish from NoProviders | New enum variant + match arm in IntoResponse. |
+| Integration tests | Medium | Timing-sensitive for timeout transitions | Use `tokio::test(start_paused = true)` for deterministic time control, matching existing retry test patterns. Mock providers that fail deterministically. |
 
-**Total estimated new code:** ~280 lines for Must Have, ~400 lines with Should Have.
-
-**New migration required:** Yes, for `CREATE INDEX` on `model` and `provider` columns to speed up GROUP BY queries.
+**Total estimated effort:** Small-to-medium milestone. 2-3 phases. The state machine is conceptually straightforward; most complexity is in correctly wiring outcome recording through both the streaming and non-streaming handler paths.
 
 ---
 
 ## Sources
 
-- [OpenAI Usage API Reference](https://platform.openai.com/docs/api-reference/usage) -- HIGH confidence. Documents `/organization/usage/completions` with `bucket_width` (1m/1h/1d), `group_by` (model, project_id, user_id), `start_time`/`end_time` parameters, and bucketed response format.
-- [OpenAI Costs API Reference](https://developers.openai.com/api/reference/resources/organization/subresources/audit_logs/methods/get_costs) -- HIGH confidence. Documents `/organization/costs` endpoint with `bucket_width`, `group_by` (line_item, project_id), response with `amount.value` and `amount.currency`.
-- [OpenAI Usage API Cookbook](https://cookbook.openai.com/examples/completions_usage_api) -- HIGH confidence. Practical examples of querying usage and cost data programmatically.
-- [LiteLLM Spend Tracking](https://docs.litellm.ai/docs/proxy/cost_tracking) -- MEDIUM confidence. Documents `/global/spend/report` with `start_date`/`end_date`, `/user/daily/activity` with per-model and per-provider breakdown response.
-- [LiteLLM Daily Spend Metrics](https://docs.litellm.ai/docs/proxy/metrics) -- MEDIUM confidence. Documents daily spend and usage metrics endpoint.
-- [Helicone Cost Tracking](https://docs.helicone.ai/guides/cookbooks/cost-tracking) -- MEDIUM confidence. Documents cost analytics patterns: per-model, per-request, per-user cost tracking.
-- [Portkey Cost Management](https://portkey.ai/docs/product/observability/cost-management) -- MEDIUM confidence. Documents analytics tab with filtering by provider, model, and timeframe.
-- [Moesif REST API Design - Filtering, Sorting, Pagination](https://www.moesif.com/blog/technical/api-design/REST-API-Design-Filtering-Sorting-and-Pagination/) -- MEDIUM confidence. General REST API design patterns for query parameters.
-- [GitBook Events Aggregation API](https://gitbook.com/docs/guides/docs-analytics/track-advanced-analytics-with-gitbooks-events-aggregation-api) -- MEDIUM confidence. Documents preset time ranges: lastYear, last3Months, last30Days, last7Days, last24Hours.
-- [Prometheus Query Range API](https://prometheus.io/docs/prometheus/latest/querying/basics/) -- HIGH confidence. Documents `start`, `end`, `step` parameters for time-series bucketing.
-- [P50 vs P95 vs P99 Latency](https://oneuptime.com/blog/post/2025-09-15-p50-vs-p95-vs-p99-latency-percentiles/view) -- MEDIUM confidence. Explains why percentiles matter more than averages for API monitoring.
-- [TrueFoundry - Observability in AI Gateway](https://www.truefoundry.com/blog/observability-in-ai-gateway) -- MEDIUM confidence. Documents common metrics tracked by AI gateways: p50/p95/p99 latency, error rates, token usage, cost.
+- [Circuit Breaker Pattern - Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker) -- Definitive reference for 3-state machine, counter approaches, failure counting, recoverability, and design considerations. Updated 2025-02-05. (HIGH confidence)
+- [Circuit Breaker - KrakenD API Gateway](https://www.krakend.io/docs/backends/circuit-breaker/) -- Real-world gateway implementation using consecutive errors per backend, with interval, timeout, max_errors configuration (HIGH confidence)
+- [Health checks and circuit breakers - Kong Gateway](https://docs.konghq.com/gateway/latest/how-kong-works/health-checks/) -- Active vs passive health checking patterns, per-upstream health status (HIGH confidence)
+- [Circuit Breaker vs. Retry Pattern - GeeksforGeeks](https://www.geeksforgeeks.org/system-design/circuit-breaker-vs-retry-pattern/) -- Interaction: retry handles transient failures, circuit breaker handles prolonged outages. Retry should abandon when circuit is open. (MEDIUM confidence)
+- [Designing Resilient Systems: Circuit Breakers or Retries? - Grab Engineering](https://engineering.grab.com/designing-resilient-systems-part-1) -- Real-world retry + circuit breaker interaction at scale (MEDIUM confidence)
+- [Circuit Breakers - Tyk Documentation](https://tyk.io/docs/planning-for-production/ensure-high-availability/circuit-breakers/) -- Per-endpoint circuit breaking, failure rate approach, 503 on open (HIGH confidence)
+- [Protect services with a circuit breaker - ngrok](https://ngrok.com/blog/circuit-breaker-api-gateway) -- Circuit breaker integration at API gateway level with health checks (MEDIUM confidence)
+- [503 Service Unavailable for open circuit breaker - GitHub](https://github.com/zalando/problem-spring-web/issues/265) -- Industry consensus on 503 status code for open circuits (MEDIUM confidence)
+- [API Circuit Breaker Best Practices - Unkey](https://www.unkey.com/glossary/api-circuit-breaker) -- Setting appropriate thresholds, integrating with health checks (MEDIUM confidence)
+- [Outlier detection - Envoy Proxy](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier) -- Per-upstream host ejection based on consecutive errors or success rate (HIGH confidence)
+- [CircuitBreaker - Resilience4j](https://resilience4j.readme.io/docs/circuitbreaker) -- Sliding window (count-based and time-based) approach for high-throughput services (HIGH confidence, used for anti-feature rationale)
+- [Circuit Breaker Pattern - Box Piper](https://www.boxpiper.com/posts/circuit-breaker-pattern/) -- Comprehensive overview with examples (MEDIUM confidence)
+- [Failsafe Circuit Breaker](https://failsafe.dev/circuit-breaker/) -- Consecutive failures vs failure rate approaches (MEDIUM confidence)

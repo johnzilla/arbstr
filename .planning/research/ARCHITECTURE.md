@@ -1,8 +1,8 @@
-# Architecture Patterns: Cost Querying API Endpoints
+# Architecture Patterns: Per-Provider Circuit Breaker and Enhanced /health
 
-**Domain:** Read-only analytics/stats endpoints in existing Rust/axum/sqlx proxy
+**Domain:** Resilience layer for existing Rust/axum/tokio LLM proxy
 **Researched:** 2026-02-16
-**Overall confidence:** HIGH (patterns verified against existing codebase, axum Query extractor well-documented, sqlx aggregate queries are standard SQL)
+**Overall confidence:** HIGH (patterns verified against existing codebase, circuit breaker is a well-established pattern, integration points identified through direct code inspection)
 
 ## Current Architecture (Baseline)
 
@@ -11,602 +11,860 @@
 ```
 src/
   proxy/
-    server.rs     -- AppState { router, http_client, config, db: Option<SqlitePool> }
+    server.rs     -- AppState { router, http_client, config, db, read_db }
                      create_router() builds axum::Router with routes + state
-    handlers.rs   -- chat_completions, list_models, health, list_providers (all pub)
+    handlers.rs   -- chat_completions, list_models, health, list_providers, stats, logs
+    retry.rs      -- retry_with_fallback(), AttemptRecord, CandidateInfo, is_retryable()
+    stream.rs     -- SseObserver, wrap_sse_stream(), StreamResultHandle
+    stats.rs      -- /v1/stats handler
+    logs.rs       -- /v1/requests handler
+    types.rs      -- OpenAI-compatible request/response types
     mod.rs        -- declares modules, re-exports public items
-  storage/
-    mod.rs        -- init_pool(), re-exports from logging
-    logging.rs    -- RequestLog struct, insert/update functions (write-only)
   router/
-    selector.rs   -- Router, SelectedProvider, actual_cost_sats
-  error.rs        -- Error enum with IntoResponse for OpenAI-compatible errors
+    selector.rs   -- Router, SelectedProvider, select(), select_candidates()
+  storage/
+    mod.rs        -- init_pool(), init_read_pool()
+    logging.rs    -- RequestLog, spawn_log_write(), spawn_stream_completion_update()
+    stats.rs      -- Aggregate queries for /v1/stats
+    logs.rs       -- Paginated queries for /v1/requests
   config.rs       -- Config, ProviderConfig, PolicyRule
+  error.rs        -- Error enum with IntoResponse
   lib.rs          -- pub mod declarations
 ```
 
-### How Handlers Access the Database Today
+### Current Request Flow (What Circuit Breaker Must Integrate With)
 
-Every handler follows the same pattern:
+The non-streaming chat completions path is the critical integration point:
 
-```rust
-pub async fn chat_completions(
-    State(state): State<AppState>,    // axum extracts AppState from shared state
-    Extension(request_id): Extension<RequestId>,
-    headers: HeaderMap,
-    Json(request): Json<ChatCompletionRequest>,
-) -> Result<Response, Error> {
-    // ...
-    if let Some(pool) = &state.db {
-        spawn_log_write(pool, log_entry);   // fire-and-forget write
-    }
-}
+```
+1. chat_completions handler receives request
+2. router.select_candidates() returns Vec<SelectedProvider> sorted cheapest-first
+3. CandidateInfo list built from candidates (just name field)
+4. retry_with_fallback(candidates, attempts, send_request) called within 30s timeout
+5. retry module: tries primary up to 3 times (1s, 2s backoff), then fallback once
+6. send_to_provider() makes HTTP call to selected provider
+7. Result logged to SQLite
 ```
 
-Key observations:
-- `state.db` is `Option<SqlitePool>` -- database may not be initialized
-- All current database access is **write-only** (INSERT, UPDATE)
-- No read queries exist anywhere in the codebase today
-- The `Error::Database` variant already exists for sqlx errors
-- SQLite pool uses WAL mode with max 5 connections -- reads and writes do not block each other in WAL mode
+Key observations for circuit breaker integration:
 
-### Existing Route Registration
+- **Provider selection is pure:** `select_candidates()` filters by model/policy/cost only. It has no awareness of provider health. This is where circuit breaker filtering must inject.
+- **Retry is per-request:** The retry module iterates over a pre-selected candidate list. It does not consult any global state about provider health. Failed attempts are recorded in a per-request `Arc<Mutex<Vec<AttemptRecord>>>`.
+- **Fallback is limited:** Only the first two candidates are ever tried (primary + 1 fallback). The circuit breaker should prevent known-bad providers from even appearing in this list.
+- **Streaming path has no retry:** The streaming path calls `execute_request()` which uses `router.select()` (single best provider, no fallback). This path also benefits from circuit breaker filtering.
+- **AppState is Clone + shared via axum:** All handlers receive `State<AppState>`. The circuit breaker state must live inside `AppState` or be reachable from it.
 
-```rust
-pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models", get(handlers::list_models))
-        .route("/health", get(handlers::health))
-        .route("/providers", get(handlers::list_providers))
-        .with_state(state)
-        .layer(TraceLayer::new_for_http().make_span_with(/* ... */))
-        .layer(middleware::from_fn(inject_request_id))
-}
-```
+### How Providers Are Identified
 
-### Database Schema (requests table)
+Providers are identified by their `name: String` field throughout the codebase:
+- `ProviderConfig.name` (config)
+- `SelectedProvider.name` (router output)
+- `CandidateInfo.name` (retry module)
+- `AttemptRecord.provider_name` (failure tracking)
+- `RequestLog.provider` (database)
 
-```sql
-CREATE TABLE requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    correlation_id TEXT NOT NULL,
-    timestamp TEXT NOT NULL,          -- RFC3339 string, indexed
-    model TEXT NOT NULL,
-    provider TEXT,
-    policy TEXT,
-    streaming BOOLEAN NOT NULL DEFAULT FALSE,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cost_sats REAL,
-    provider_cost_sats REAL,
-    latency_ms INTEGER NOT NULL,
-    stream_duration_ms INTEGER,
-    success BOOLEAN NOT NULL,
-    error_status INTEGER,
-    error_message TEXT
-);
-
-CREATE INDEX idx_requests_correlation_id ON requests(correlation_id);
-CREATE INDEX idx_requests_timestamp ON requests(timestamp);
-```
-
-The `timestamp` column stores RFC3339 strings. SQLite comparison operators work correctly on ISO 8601 / RFC3339 strings for range queries (`WHERE timestamp >= ? AND timestamp < ?`) because lexicographic ordering matches chronological ordering for these formats.
+The circuit breaker should key on provider name, consistent with the rest of the codebase.
 
 ---
 
 ## Recommended Architecture
 
-### Where New Code Lives
+### New Component: `src/proxy/circuit_breaker.rs`
 
-**Decision: Create a new `src/storage/stats.rs` module alongside `logging.rs`.**
+**Decision: Create a new module `src/proxy/circuit_breaker.rs` for the circuit breaker state machine.**
 
 Rationale:
-- Query functions need `&SqlitePool` -- they belong in `storage/`, the data access layer
-- `logging.rs` is exclusively write operations (INSERT/UPDATE). Mixing reads muddies its purpose
-- A `stats.rs` file keeps read concerns isolated and testable independently
-- The `storage/mod.rs` already serves as the namespace root and can re-export query types
+- The circuit breaker is a proxy-layer concern -- it determines whether a provider should be tried, sitting between the router (selection) and the HTTP call (execution)
+- It does not belong in `router/` because the router is about cost/model/policy selection, not health tracking
+- It does not belong in `storage/` because it is in-memory state, not persistent data
+- It lives alongside `retry.rs` because both are resilience mechanisms in the proxy layer
 
-**Do NOT create a new top-level `src/stats/` module.** The data access pattern (SqlitePool in, typed results out) is the same as `logging.rs`. The storage module is the right home.
-
-**Handler functions go in `src/proxy/handlers.rs`** -- the same file as all other handlers. The stats handlers will be simple and short (extract query params, call storage function, return JSON). There is no reason to split into a separate `stats_handlers.rs` until handlers.rs becomes unwieldy, which it will not with 3-5 new endpoints of ~15 lines each.
-
-### File Change Summary
+### Modified Components
 
 | File | Change | What |
 |------|--------|------|
-| `src/storage/stats.rs` | **NEW** | Query functions: `get_summary`, `get_cost_by_model`, `get_cost_by_provider`, `get_recent_requests` |
-| `src/storage/mod.rs` | MODIFY | Add `pub mod stats;` and re-export key types |
-| `src/proxy/handlers.rs` | MODIFY | Add stats handler functions + query param structs |
-| `src/proxy/server.rs` | MODIFY | Register new routes in `create_router()` |
-| `src/proxy/mod.rs` | MODIFY | Nothing visible (handlers are already `mod handlers`) |
+| `src/proxy/circuit_breaker.rs` | **NEW** | `CircuitBreakerRegistry` (shared state), `ProviderCircuitBreaker` (per-provider state machine), `CircuitState` enum |
+| `src/proxy/server.rs` | MODIFY | Add `circuit_breakers: Arc<CircuitBreakerRegistry>` to `AppState`, initialize in `run_server()` |
+| `src/proxy/handlers.rs` | MODIFY | After request success/failure, call `circuit_breakers.record_success/failure()`. Filter candidates through circuit breaker before retry. Enhanced `/health` handler. |
+| `src/proxy/mod.rs` | MODIFY | Add `pub mod circuit_breaker;` declaration |
+| `src/error.rs` | MODIFY | Add `Error::CircuitOpen { provider: String }` variant (optional, for logging clarity) |
 
-No changes to: `error.rs` (Database variant exists), `config.rs`, `router/`, `lib.rs`.
+**No changes to:** `router/selector.rs`, `retry.rs`, `config.rs`, `storage/`, `stream.rs`.
+
+This is a critical design constraint: the router and retry modules remain untouched. The circuit breaker wraps around them at the handler level.
 
 ### Component Boundaries
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  proxy/handlers.rs                                  │
-│                                                     │
-│  stats_summary(State, Query<TimeRange>)             │
-│    -> calls storage::stats::get_summary(&pool, ...) │
-│    -> returns Json<SummaryResponse>                 │
-│                                                     │
-│  stats_by_model(State, Query<TimeRange>)            │
-│    -> calls storage::stats::get_cost_by_model(...)  │
-│    -> returns Json<ModelBreakdown>                  │
-│                                                     │
-│  stats_by_provider(State, Query<TimeRange>)         │
-│    -> calls storage::stats::get_cost_by_provider()  │
-│    -> returns Json<ProviderBreakdown>               │
-│                                                     │
-│  stats_recent(State, Query<RecentParams>)           │
-│    -> calls storage::stats::get_recent_requests()   │
-│    -> returns Json<RecentRequests>                  │
-│                                                     │
-└─────────────────┬───────────────────────────────────┘
-                  │ calls
-                  ▼
-┌─────────────────────────────────────────────────────┐
-│  storage/stats.rs                                   │
-│                                                     │
-│  Response types: SummaryRow, ModelCostRow, etc.     │
-│  Query functions: async fn -> Result<T, sqlx::Error>│
-│  Pure data access, no HTTP concerns                 │
-│                                                     │
-└─────────────────┬───────────────────────────────────┘
-                  │ sqlx queries
-                  ▼
-┌─────────────────────────────────────────────────────┐
-│  SQLite (requests table, WAL mode)                  │
-└─────────────────────────────────────────────────────┘
+                           chat_completions handler
+                                    |
+                    1. router.select_candidates(model, policy, prompt)
+                                    |
+                          Vec<SelectedProvider>
+                                    |
+                    2. circuit_breakers.filter_available(candidates)
+                                    |
+                     Vec<SelectedProvider> (healthy only)
+                                    |
+                    3. retry_with_fallback(filtered_candidates, ...)
+                                    |
+                    4. send_to_provider(provider, request)
+                                    |
+                          success or failure
+                                    |
+                    5. circuit_breakers.record_outcome(provider_name, success/failure)
 ```
 
-### Data Flow for a Stats Request
-
 ```
-GET /v1/arbstr/stats/summary?since=2026-02-01T00:00:00Z&until=2026-02-16T00:00:00Z
-
-1. axum extracts State<AppState> and Query<TimeRange>
-2. Handler checks state.db is Some (returns 503 if None)
-3. Handler calls storage::stats::get_summary(&pool, since, until)
-4. stats.rs executes SQL aggregate query
-5. sqlx returns typed result (SummaryRow or Vec<ModelCostRow>)
-6. Handler wraps in Json() and returns
++-------------------------------------------+
+|  proxy/circuit_breaker.rs                  |
+|                                            |
+|  CircuitBreakerRegistry                    |
+|    breakers: DashMap<String, ProviderCB>   |
+|    config: CircuitBreakerConfig            |
+|                                            |
+|    fn filter_available(&self,              |
+|       candidates: Vec<SelectedProvider>)   |
+|       -> Vec<SelectedProvider>             |
+|                                            |
+|    fn record_success(&self, provider: &str)|
+|    fn record_failure(&self, provider: &str)|
+|    fn provider_states(&self)               |
+|       -> Vec<ProviderHealthInfo>           |
+|                                            |
+|  ProviderCircuitBreaker                    |
+|    state: CircuitState                     |
+|    failure_count: u32                      |
+|    last_failure: Option<Instant>           |
+|    success_count: u32                      |
+|    last_state_change: Instant              |
+|                                            |
+|  CircuitState { Closed, Open, HalfOpen }   |
+|  CircuitBreakerConfig                      |
+|    failure_threshold: u32                  |
+|    open_duration: Duration                 |
+|    half_open_max_calls: u32               |
++-------------------------------------------+
+          |                    |
+    used by handlers     used by /health
 ```
+
+### Where It Does NOT Live
+
+The circuit breaker does NOT modify the `Router` in `selector.rs`. This is deliberate:
+
+- The router answers "which providers can serve this model at what cost?" -- a static question based on config
+- The circuit breaker answers "which of those providers are currently healthy?" -- a dynamic runtime question
+- Mixing these concerns would make the router stateful and harder to test
+- The filtering happens in the handler, between selection and retry, which is the natural composition point
+
+### Why Not a Tower Middleware/Layer?
+
+Tower middleware would intercept at the HTTP layer, wrapping individual `send_to_provider` calls. This is the wrong abstraction because:
+
+1. The circuit breaker needs to **filter the candidate list before retry starts**, not fail individual calls
+2. Tower layers operate on individual requests, not on the routing decision
+3. The retry module already handles per-call failure logic -- the circuit breaker operates at a higher level (provider availability)
+4. Adding a Tower layer would require restructuring the retry module, violating the "no changes to retry.rs" constraint
 
 ---
 
-## Endpoint Design
+## Data Structures
 
-### URL Structure: `/v1/arbstr/stats/*`
-
-Use the `/v1/arbstr/` prefix for arbstr-specific extensions. This is consistent with the existing arbstr extension pattern (the project already adds `arbstr_provider` to response bodies and uses `x-arbstr-*` headers). The `/v1/` prefix signals API versioning. The `stats/` segment groups all analytics endpoints.
-
-Endpoints:
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/v1/arbstr/stats/summary` | Overall totals: request count, tokens, cost, latency |
-| GET | `/v1/arbstr/stats/models` | Cost and usage broken down by model |
-| GET | `/v1/arbstr/stats/providers` | Cost and usage broken down by provider |
-| GET | `/v1/arbstr/stats/requests` | Recent individual request log entries |
-
-### Route Registration Pattern
-
-Use `axum::Router::nest` to group stats routes under a prefix, then merge into the main router. This keeps `create_router()` clean:
+### CircuitState Enum
 
 ```rust
-pub fn create_router(state: AppState) -> Router {
-    let stats_routes = Router::new()
-        .route("/summary", get(handlers::stats_summary))
-        .route("/models", get(handlers::stats_by_model))
-        .route("/providers", get(handlers::stats_by_provider))
-        .route("/requests", get(handlers::stats_recent));
-
-    Router::new()
-        .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models", get(handlers::list_models))
-        .route("/health", get(handlers::health))
-        .route("/providers", get(handlers::list_providers))
-        .nest("/v1/arbstr/stats", stats_routes)
-        .with_state(state)
-        .layer(/* ... */)
+/// The three canonical circuit breaker states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    /// Normal operation. Requests flow through. Failures are counted.
+    Closed,
+    /// Provider is considered unhealthy. Requests are blocked.
+    /// Transitions to HalfOpen after `open_duration` elapses.
+    Open,
+    /// Probing state. A limited number of requests are allowed through.
+    /// Success -> Closed. Failure -> Open.
+    HalfOpen,
 }
 ```
 
-Note: `nest()` strips the prefix from the nested router's perspective, so routes inside are registered as `/summary`, `/models`, etc. The full path is `/v1/arbstr/stats/summary`. All nested routes share the same `AppState` and middleware layers applied after nesting.
-
----
-
-## Query Parameter Design
-
-### axum Query Extractor Pattern
-
-The `axum::extract::Query<T>` extractor deserializes URL query parameters into a struct `T` that implements `serde::Deserialize`. For optional parameters, use `Option<T>` fields with `#[serde(default)]`:
+### ProviderCircuitBreaker
 
 ```rust
-use axum::extract::Query;
-use serde::Deserialize;
-
-/// Query parameters for time-ranged stats endpoints.
-#[derive(Debug, Deserialize)]
-pub struct TimeRangeParams {
-    /// Start of time range (RFC3339). Defaults to 24 hours ago if omitted.
-    pub since: Option<String>,
-    /// End of time range (RFC3339). Defaults to now if omitted.
-    pub until: Option<String>,
-}
-
-/// Query parameters for the recent requests endpoint.
-#[derive(Debug, Deserialize)]
-pub struct RecentParams {
-    /// Maximum number of results. Defaults to 50, max 500.
-    #[serde(default = "default_limit")]
-    pub limit: u32,
-    /// Start of time range (RFC3339). Optional.
-    pub since: Option<String>,
-    /// End of time range (RFC3339). Optional.
-    pub until: Option<String>,
-}
-
-fn default_limit() -> u32 { 50 }
-```
-
-**Why String instead of chrono::DateTime for timestamps:** The `timestamp` column in SQLite stores RFC3339 strings. Keeping query params as strings avoids a parse-format round-trip. The handler validates the format, and the SQL uses string comparison directly. If a client sends a malformed timestamp, the handler returns a 400 error before reaching the database.
-
-**How axum handles missing query strings:** When no query string is present at all, axum passes an empty string `""` to serde. With all-optional fields (`Option<T>`) this deserializes successfully with all fields as `None`. No need for `axum_extra::OptionalQuery`.
-
-### Handler Pattern
-
-```rust
-pub async fn stats_summary(
-    State(state): State<AppState>,
-    Query(params): Query<TimeRangeParams>,
-) -> Result<impl IntoResponse, Error> {
-    let pool = state.db.as_ref().ok_or_else(|| {
-        Error::Internal("Database not available".to_string())
-    })?;
-
-    let (since, until) = resolve_time_range(params.since, params.until)?;
-
-    let summary = crate::storage::stats::get_summary(pool, &since, &until)
-        .await
-        .map_err(Error::Database)?;
-
-    Ok(Json(summary))
-}
-```
-
-Key design choices:
-- Return `Error::Internal` for missing database (503 semantics via the Error enum, or add a dedicated variant)
-- `resolve_time_range()` is a shared helper that applies defaults (24h ago / now) and validates RFC3339 format
-- The `?` operator with `Error::Database` converts `sqlx::Error` naturally (the `From` impl exists)
-
----
-
-## Storage Query Layer Design
-
-### stats.rs Structure
-
-```rust
-//! Read-only analytics queries against the requests table.
-
-use serde::Serialize;
-use sqlx::SqlitePool;
-
-/// Overall summary statistics for a time range.
-#[derive(Debug, Serialize)]
-pub struct Summary {
-    pub total_requests: i64,
-    pub successful_requests: i64,
-    pub failed_requests: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-    pub total_cost_sats: f64,
-    pub avg_latency_ms: f64,
-    pub since: String,
-    pub until: String,
-}
-
-/// Cost and usage breakdown for a single model.
-#[derive(Debug, Serialize)]
-pub struct ModelStats {
-    pub model: String,
-    pub request_count: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-    pub total_cost_sats: f64,
-    pub avg_latency_ms: f64,
-}
-
-/// Cost and usage breakdown for a single provider.
-#[derive(Debug, Serialize)]
-pub struct ProviderStats {
-    pub provider: String,
-    pub request_count: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-    pub total_cost_sats: f64,
-    pub avg_latency_ms: f64,
-    pub success_rate: f64,
-}
-
-/// A single request log entry for the recent requests endpoint.
-#[derive(Debug, Serialize)]
-pub struct RequestEntry {
-    pub correlation_id: String,
-    pub timestamp: String,
-    pub model: String,
-    pub provider: Option<String>,
-    pub policy: Option<String>,
-    pub streaming: bool,
-    pub input_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
-    pub cost_sats: Option<f64>,
-    pub latency_ms: i64,
-    pub success: bool,
-    pub error_message: Option<String>,
-}
-```
-
-### Query Functions
-
-Each function takes `&SqlitePool` and time range bounds, returns `Result<T, sqlx::Error>`:
-
-```rust
-pub async fn get_summary(
-    pool: &SqlitePool,
-    since: &str,
-    until: &str,
-) -> Result<Summary, sqlx::Error> {
-    // Use sqlx::query_as or manual query + FromRow
-    let row: (i64, i64, i64, Option<i64>, Option<i64>, Option<f64>, Option<f64>) =
-        sqlx::query_as(
-            "SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
-                SUM(input_tokens),
-                SUM(output_tokens),
-                SUM(cost_sats),
-                AVG(latency_ms)
-            FROM requests
-            WHERE timestamp >= ? AND timestamp < ?"
-        )
-        .bind(since)
-        .bind(until)
-        .fetch_one(pool)
-        .await?;
-
-    Ok(Summary {
-        total_requests: row.0,
-        successful_requests: row.1,
-        failed_requests: row.2,
-        total_input_tokens: row.3.unwrap_or(0),
-        total_output_tokens: row.4.unwrap_or(0),
-        total_cost_sats: row.5.unwrap_or(0.0),
-        avg_latency_ms: row.6.unwrap_or(0.0),
-        since: since.to_string(),
-        until: until.to_string(),
-    })
-}
-```
-
-**Why `query_as` with tuples instead of `FromRow` derive:** The aggregate results (SUM, AVG, COUNT) do not directly map to a table row. Using tuple extraction with `query_as` is the simplest approach for aggregate queries. The `FromRow` derive macro is better suited for selecting full rows (used in `get_recent_requests`).
-
-**Why `Option` for SUM/AVG columns:** SQLite aggregate functions return NULL when no rows match the filter. Using `Option<i64>` / `Option<f64>` and `.unwrap_or(0)` handles this cleanly.
-
-### Using FromRow for Recent Requests
-
-For the recent requests endpoint, which selects individual rows rather than aggregates, use `sqlx::FromRow`:
-
-```rust
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct RequestEntry {
-    pub correlation_id: String,
-    pub timestamp: String,
-    pub model: String,
-    pub provider: Option<String>,
-    // ... etc
-}
-
-pub async fn get_recent_requests(
-    pool: &SqlitePool,
-    since: &str,
-    until: &str,
-    limit: u32,
-) -> Result<Vec<RequestEntry>, sqlx::Error> {
-    sqlx::query_as::<_, RequestEntry>(
-        "SELECT correlation_id, timestamp, model, provider, policy,
-                streaming, input_tokens, output_tokens, cost_sats,
-                latency_ms, success, error_message
-         FROM requests
-         WHERE timestamp >= ? AND timestamp < ?
-         ORDER BY timestamp DESC
-         LIMIT ?"
-    )
-    .bind(since)
-    .bind(until)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-}
-```
-
----
-
-## Patterns to Follow
-
-### Pattern 1: Graceful Database Absence
-
-The existing codebase treats `state.db` as optional. Stats endpoints should follow the same pattern but with different semantics:
-
-- **Write endpoints (chat_completions):** Skip logging silently when db is None. The primary function (proxying) still works.
-- **Read endpoints (stats):** Return an error when db is None. Stats are the primary function; they cannot work without a database.
-
-Return a 503 Service Unavailable (not 500) because this is a transient/configuration issue, not a bug:
-
-```rust
-let pool = state.db.as_ref().ok_or_else(|| {
-    Error::Internal("Database not configured; stats unavailable".to_string())
-})?;
-```
-
-Consider adding an `Error::ServiceUnavailable(String)` variant that maps to HTTP 503, or handle the mapping in the handler with a manual Response. The existing `Error::Internal` maps to 500, which is slightly wrong semantically but acceptable for v1.
-
-### Pattern 2: Time Range Resolution Helper
-
-A shared helper function to apply defaults and validate timestamps, used by all stats handlers:
-
-```rust
-/// Resolve optional time range parameters into concrete RFC3339 bounds.
+/// Per-provider circuit breaker state machine.
 ///
-/// Defaults: since = 24 hours ago, until = now.
-fn resolve_time_range(
-    since: Option<String>,
-    until: Option<String>,
-) -> Result<(String, String), Error> {
-    let now = chrono::Utc::now();
-    let default_since = (now - chrono::Duration::hours(24)).to_rfc3339();
-    let default_until = now.to_rfc3339();
-
-    let since = since.unwrap_or(default_since);
-    let until = until.unwrap_or(default_until);
-
-    // Validate RFC3339 format by attempting parse
-    chrono::DateTime::parse_from_rfc3339(&since)
-        .map_err(|_| Error::BadRequest(format!("Invalid 'since' timestamp: {}", since)))?;
-    chrono::DateTime::parse_from_rfc3339(&until)
-        .map_err(|_| Error::BadRequest(format!("Invalid 'until' timestamp: {}", until)))?;
-
-    Ok((since, until))
+/// All fields are plain (non-atomic) because access is serialized through
+/// DashMap's per-key lock. No interior mutability needed.
+#[derive(Debug, Clone)]
+pub struct ProviderCircuitBreaker {
+    state: CircuitState,
+    /// Consecutive failure count in Closed state. Reset on success.
+    failure_count: u32,
+    /// When the circuit last transitioned to Open state.
+    opened_at: Option<Instant>,
+    /// Number of successful probe calls in HalfOpen state.
+    half_open_successes: u32,
+    /// Timestamp of last state transition (for observability).
+    last_state_change: Instant,
 }
 ```
 
-This gives clear 400 errors for malformed input, uses chrono (already in Cargo.toml), and keeps the validated string as the query parameter (no DateTime-to-string round-trip needed).
+**Why plain fields, not atomics:** `DashMap` provides per-shard locking. When we access a provider's entry via `breakers.get_mut("provider-name")`, we hold an exclusive lock on that shard. No concurrent mutation is possible for that key, so atomics would be redundant overhead.
 
-### Pattern 3: Consistent JSON Response Wrapping
-
-Follow the existing pattern from `list_models` and `list_providers`: top-level JSON object with a descriptive key, not a bare array:
+### CircuitBreakerConfig
 
 ```rust
-// Good: consistent with existing endpoints
-Json(serde_json::json!({
-    "summary": summary,
-    "since": since,
-    "until": until,
-}))
-
-// Good: for array results
-Json(serde_json::json!({
-    "models": model_stats,
-    "since": since,
-    "until": until,
-}))
-
-// Bad: bare array at top level
-Json(model_stats)
+/// Configuration for circuit breaker behavior.
+///
+/// Hardcoded initially (not in config.toml). Can be promoted to config later
+/// if users need to tune these values.
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerConfig {
+    /// Number of consecutive failures before opening the circuit.
+    /// Default: 5
+    pub failure_threshold: u32,
+    /// How long the circuit stays open before transitioning to HalfOpen.
+    /// Default: 30 seconds
+    pub open_duration: Duration,
+    /// Number of successful probes needed in HalfOpen to close the circuit.
+    /// Default: 2
+    pub half_open_success_threshold: u32,
+}
 ```
+
+**Why hardcoded initially:** The circuit breaker is new. Getting the thresholds right requires operational experience. Hardcoding with good defaults avoids premature config surface area. Constants at the top of the file make them easy to find and change. Promote to `config.toml` in a future milestone if users request tuning.
+
+### CircuitBreakerRegistry
+
+```rust
+use dashmap::DashMap;
+
+/// Shared registry of per-provider circuit breakers.
+///
+/// Thread-safe via DashMap's internal sharded locking. Cheap to clone
+/// (DashMap is internally Arc'd). Created once at startup and shared
+/// through AppState.
+pub struct CircuitBreakerRegistry {
+    breakers: DashMap<String, ProviderCircuitBreaker>,
+    config: CircuitBreakerConfig,
+}
+```
+
+**Why DashMap over RwLock<HashMap>:** DashMap provides per-shard locking, meaning recording a failure for "provider-alpha" does not block checking "provider-beta". With `RwLock<HashMap>`, any mutation takes a write lock that blocks all readers. For a proxy handling concurrent requests to different providers, this contention matters. DashMap is a well-established crate (170M+ downloads) and adds minimal dependency weight.
+
+**Why not per-provider Mutex:** A `HashMap<String, Mutex<ProviderCircuitBreaker>>` requires a read lock on the outer HashMap to access any provider, then a Mutex lock on the inner state. Two lock acquisitions per operation. DashMap does this in one step with better ergonomics.
+
+---
+
+## State Machine Transitions
+
+```
+              success
+    +--------+-------+
+    |        |       |
+    v        |       |
+ CLOSED -----+    HALF-OPEN
+    |                ^  |
+    | failure_count  |  | failure
+    | >= threshold   |  |
+    |                |  v
+    +-----> OPEN ----+
+         (timeout expires)
+```
+
+### Transition Rules
+
+| From | To | Trigger |
+|------|----|---------|
+| Closed | Open | `failure_count >= failure_threshold` (consecutive) |
+| Open | HalfOpen | `Instant::now() >= opened_at + open_duration` |
+| HalfOpen | Closed | `half_open_successes >= half_open_success_threshold` |
+| HalfOpen | Open | Any failure during probing |
+| Closed | Closed | Success (resets `failure_count` to 0) |
+| Open | Open | No-op (requests blocked, time not elapsed) |
+
+### The "Time-Based Transition" Design Decision
+
+The Open -> HalfOpen transition is **checked lazily** when `is_available()` is called, not via a background timer. This means:
+
+1. `is_available("provider-alpha")` checks: is state Open AND has `open_duration` elapsed?
+2. If yes: transition to HalfOpen and return `true` (allow one probe)
+3. If no: return `false` (still blocked)
+
+**Why lazy, not timer-based:**
+- No background tasks to manage or cancel
+- No risk of timer drift or missed state transitions
+- State transition happens exactly when needed (at request time)
+- Simpler to test (control time via `tokio::time::pause()`)
+- If no requests come in while a provider is Open, there is no wasted probe -- the transition happens on the next actual request
+
+---
+
+## Integration with Existing Handler Flow
+
+### Non-Streaming Path (Primary Integration Point)
+
+Current flow in `chat_completions` (handlers.rs, lines 234-474):
+
+```rust
+// Current: get candidates from router
+let candidates = state.router.select_candidates(&request.model, ...)?;
+
+// Current: build CandidateInfo for retry module
+let candidate_infos: Vec<CandidateInfo> = candidates.iter()
+    .map(|c| CandidateInfo { name: c.name.clone() })
+    .collect();
+
+// Current: retry with fallback
+let timeout_result = timeout_at(deadline,
+    retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
+        send_to_provider(&state, &request, provider, &correlation_id, false)
+    })
+).await;
+```
+
+Modified flow (additions marked with `// NEW`):
+
+```rust
+// Unchanged: get candidates from router
+let candidates = state.router.select_candidates(&request.model, ...)?;
+
+// NEW: filter through circuit breaker
+let candidates = state.circuit_breakers.filter_available(candidates);
+
+// NEW: handle case where all providers are circuit-broken
+if candidates.is_empty() {
+    // Return 503 Service Unavailable with circuit breaker info
+    // (distinct from the router's 400 "no providers for model")
+    return Ok(service_unavailable_response(...));
+}
+
+// Unchanged: build CandidateInfo for retry module
+let candidate_infos: Vec<CandidateInfo> = candidates.iter()
+    .map(|c| CandidateInfo { name: c.name.clone() })
+    .collect();
+
+// Unchanged: retry with fallback (retry.rs is NOT modified)
+let timeout_result = timeout_at(deadline,
+    retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
+        send_to_provider(&state, &request, provider, &correlation_id, false)
+    })
+).await;
+
+// NEW: record outcome based on retry result
+match &timeout_result {
+    Ok(retry_outcome) => match &retry_outcome.result {
+        Ok(outcome) => {
+            state.circuit_breakers.record_success(&outcome.provider_name);
+        }
+        Err(outcome_err) => {
+            if let Some(ref name) = outcome_err.provider_name {
+                state.circuit_breakers.record_failure(name);
+            }
+        }
+    },
+    Err(_timeout) => {
+        // Record failures for all providers that were attempted
+        for attempt in recorded_attempts.iter() {
+            state.circuit_breakers.record_failure(&attempt.provider_name);
+        }
+    }
+}
+```
+
+### Streaming Path
+
+The streaming path uses `execute_request()` which calls `router.select()` (single provider). Modification:
+
+```rust
+// In execute_request(), after provider selection:
+let provider = state.router.select(&request.model, policy_name, user_prompt)?;
+
+// NEW: check circuit breaker for this specific provider
+if !state.circuit_breakers.is_available(&provider.name) {
+    // Try select_candidates and filter, fall back to error
+    let candidates = state.router.select_candidates(&request.model, policy_name, user_prompt)?;
+    let available = state.circuit_breakers.filter_available(candidates);
+    let provider = available.into_iter().next().ok_or_else(|| {
+        RequestError { /* all providers circuit-broken */ }
+    })?;
+}
+```
+
+### Recording Granularity: Per-Request, Not Per-Attempt
+
+The circuit breaker records the **final outcome** of the request for a provider, not every retry attempt. This is intentional:
+
+- The retry module already handles transient failures (503 -> retry with backoff)
+- A provider that returns 503 once but succeeds on retry is not unhealthy
+- Only persistent failures (all retries exhausted) should count toward the circuit breaker threshold
+- This prevents a single slow response from prematurely tripping the circuit
+
+However, **timeouts are an exception**: if the 30s deadline expires, we should record failures for all attempted providers, because the proxy has evidence of systemic unavailability.
+
+---
+
+## Enhanced /health Endpoint
+
+### Current Implementation
+
+```rust
+pub async fn health() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "arbstr"
+    }))
+}
+```
+
+### Enhanced Implementation
+
+```rust
+pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let provider_health = state.circuit_breakers.provider_states();
+    let db_healthy = match &state.db {
+        Some(pool) => sqlx::query("SELECT 1").fetch_one(pool).await.is_ok(),
+        None => false,
+    };
+
+    let all_providers_healthy = provider_health.iter()
+        .all(|p| p.state == CircuitState::Closed);
+
+    let overall_status = if !db_healthy {
+        "degraded"
+    } else if !all_providers_healthy {
+        "degraded"
+    } else {
+        "ok"
+    };
+
+    // Use 200 for ok/degraded, only 503 if completely non-functional
+    let status_code = StatusCode::OK;
+
+    Json(serde_json::json!({
+        "status": overall_status,
+        "service": "arbstr",
+        "components": {
+            "database": {
+                "status": if db_healthy { "ok" } else { "unavailable" }
+            },
+            "providers": provider_health.iter().map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "circuit_state": format!("{:?}", p.state),
+                    "failure_count": p.failure_count,
+                    "last_state_change_secs_ago": p.last_state_change_secs_ago,
+                })
+            }).collect::<Vec<_>>()
+        }
+    }))
+}
+```
+
+### ProviderHealthInfo
+
+```rust
+/// Read-only snapshot of a provider's circuit breaker state for the /health endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderHealthInfo {
+    pub name: String,
+    pub state: CircuitState,
+    pub failure_count: u32,
+    pub last_state_change_secs_ago: u64,
+}
+```
+
+The `provider_states()` method on `CircuitBreakerRegistry` iterates over the DashMap and produces a `Vec<ProviderHealthInfo>` snapshot. This is a read-only operation that holds each shard lock briefly.
+
+### Health Endpoint Design Decisions
+
+1. **Always return 200 OK** even when degraded. Kubernetes/monitoring tools should use the `status` field value, not the HTTP status code. A 503 from `/health` would cause load balancers to remove arbstr itself, which is the wrong response to a provider being unhealthy.
+
+2. **Include circuit breaker states per provider.** This is the primary diagnostic value: operators can see which providers are open, how many failures triggered it, and how long ago the state changed.
+
+3. **Include database status.** A simple `SELECT 1` ping. If it fails, stats/logging are degraded but proxying still works.
+
+4. **Do not include latency metrics in /health.** Those belong in `/v1/stats`. The health endpoint answers "is the system functional?" not "how is it performing?"
+
+---
+
+## AppState Changes
+
+### Current
+
+```rust
+#[derive(Clone)]
+pub struct AppState {
+    pub router: Arc<ProviderRouter>,
+    pub http_client: Client,
+    pub config: Arc<Config>,
+    pub db: Option<SqlitePool>,
+    pub read_db: Option<SqlitePool>,
+}
+```
+
+### Modified
+
+```rust
+#[derive(Clone)]
+pub struct AppState {
+    pub router: Arc<ProviderRouter>,
+    pub http_client: Client,
+    pub config: Arc<Config>,
+    pub db: Option<SqlitePool>,
+    pub read_db: Option<SqlitePool>,
+    pub circuit_breakers: Arc<CircuitBreakerRegistry>,  // NEW
+}
+```
+
+**Why `Arc<CircuitBreakerRegistry>`:** `AppState` must be `Clone` (axum requirement). `DashMap` is internally `Arc`'d, but `CircuitBreakerRegistry` also holds `CircuitBreakerConfig`. Wrapping in `Arc` makes the whole thing cheaply cloneable. `Clone` on `Arc` is just a reference count increment.
+
+### Initialization in `run_server()`
+
+```rust
+pub async fn run_server(config: Config) -> anyhow::Result<()> {
+    // ... existing setup ...
+
+    // NEW: Initialize circuit breaker registry with one entry per configured provider
+    let circuit_breakers = Arc::new(CircuitBreakerRegistry::new(
+        CircuitBreakerConfig::default(),
+        config.providers.iter().map(|p| p.name.clone()),
+    ));
+
+    let state = AppState {
+        router: Arc::new(provider_router),
+        http_client,
+        config: Arc::new(config),
+        db,
+        read_db,
+        circuit_breakers,  // NEW
+    };
+    // ...
+}
+```
+
+Pre-populating the registry with known provider names avoids lazy initialization and ensures `/health` reports all providers from the start, even before any requests are made.
+
+---
+
+## New Dependency: DashMap
+
+Add to `Cargo.toml`:
+
+```toml
+dashmap = "6"
+```
+
+DashMap v6 is the current stable release. It has no transitive dependencies beyond `hashbrown` (which is already a transitive dependency of many crates in the tree). Minimal dependency weight.
+
+**Alternatives considered:**
+- `std::sync::RwLock<HashMap>`: Write-lock contention on any state mutation. Poor for concurrent multi-provider proxying.
+- `tokio::sync::RwLock<HashMap>`: Async lock, but unnecessary -- circuit breaker operations are fast (no I/O), so sync locks are preferred to avoid holding locks across `.await` points.
+- No external dependency (inline sharded map): More code to maintain, DashMap is battle-tested.
 
 ---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Blocking Queries on the Tokio Runtime
+### Anti-Pattern 1: Circuit Breaker Inside the Router
 
-**What:** Using synchronous SQLite calls or CPU-intensive post-processing on query results in an async handler.
-**Why bad:** Blocks the Tokio executor thread, starving other tasks (including the proxying pipeline).
-**Instead:** Use sqlx's async API exclusively (which this architecture does). If post-processing is needed (e.g., percentile calculations), keep it cheap or use `tokio::task::spawn_blocking`.
+**What:** Adding health state to `Router` in `selector.rs`, making `select_candidates()` filter by circuit state.
+**Why bad:** Violates single responsibility. The router becomes stateful, harder to test, and the circuit breaker logic cannot be tested independently.
+**Instead:** Keep the router pure (model/cost/policy). Filter at the handler level.
 
-### Anti-Pattern 2: Query Logic in Handlers
+### Anti-Pattern 2: Recording Every Retry Attempt
 
-**What:** Writing SQL queries directly inside handler functions.
-**Why bad:** Handlers become untestable without a live database. SQL gets scattered across the proxy layer.
-**Instead:** All SQL lives in `storage/stats.rs`. Handlers call typed functions. Storage functions are independently testable with in-memory SQLite (existing test pattern in `logging.rs`).
+**What:** Calling `record_failure()` on every failed attempt within `retry_with_fallback()`.
+**Why bad:** A provider that returns 503 once then succeeds on retry is not unhealthy. Recording all attempts would trip the circuit prematurely.
+**Instead:** Record only the final outcome per provider per request. This means the retry module (`retry.rs`) is not modified.
 
-### Anti-Pattern 3: Creating New Database Connections per Request
+### Anti-Pattern 3: Background Health Probes
 
-**What:** Opening a new SQLite connection for each stats query.
-**Why bad:** Connection overhead, no connection reuse, no WAL benefit.
-**Instead:** Use the shared `SqlitePool` from `AppState.db`. sqlx manages connection pooling automatically. The existing pool has `max_connections(5)` which is adequate for a local proxy; reads in WAL mode do not block writes.
+**What:** Spawning a `tokio::spawn` loop that periodically pings providers to check if they are alive.
+**Why bad:** Adds complexity (task management, cancellation), may not use the same code path as real requests, and wastes resources when no requests are being made.
+**Instead:** Use lazy transition (Open -> HalfOpen checked on next request). The "probe" is a real request, which is the most accurate health signal.
 
-### Anti-Pattern 4: Unparameterized SQL with String Formatting
+### Anti-Pattern 4: Mutex Around the Entire Registry
 
-**What:** Building SQL queries with `format!("... WHERE timestamp >= '{}'", since)`.
-**Why bad:** SQL injection risk, no query plan caching.
-**Instead:** Always use `sqlx::query().bind()` with parameterized queries (existing codebase pattern).
+**What:** Using `Mutex<HashMap<String, ProviderCircuitBreaker>>` for the registry.
+**Why bad:** Any mutation (recording a failure for provider A) blocks all reads (checking availability of provider B). Under concurrent load, this serializes all circuit breaker operations.
+**Instead:** DashMap with per-shard locking. Operations on different providers do not contend.
+
+### Anti-Pattern 5: Making the Circuit Breaker Async
+
+**What:** Using `tokio::sync::Mutex` or `tokio::sync::RwLock` for circuit breaker state.
+**Why bad:** Circuit breaker operations are pure state machine transitions (compare timestamps, increment counters). They complete in nanoseconds. Async locks are designed for operations that hold locks across `.await` points. Using async locks here adds unnecessary overhead and requires all callers to `.await` the lock.
+**Instead:** Synchronous `DashMap` access. The lock is held for microseconds.
 
 ---
 
-## Index Considerations
+## Patterns to Follow
 
-The existing `idx_requests_timestamp` index on the `timestamp` column already supports the primary access pattern (time-range filtering). For the GROUP BY queries (`model`, `provider`), SQLite will perform a table scan within the time range and then group. This is acceptable for a local proxy with moderate volume.
+### Pattern 1: Lazy State Transition
 
-If performance becomes an issue with large datasets (unlikely for a local proxy), add:
+**What:** Check and transition Open -> HalfOpen inside `is_available()`, not via a timer.
+**When:** Every call to `filter_available()` or `is_available()`.
+**Example:**
 
-```sql
-CREATE INDEX idx_requests_model_timestamp ON requests(model, timestamp);
-CREATE INDEX idx_requests_provider_timestamp ON requests(provider, timestamp);
+```rust
+impl ProviderCircuitBreaker {
+    fn is_available(&mut self, config: &CircuitBreakerConfig) -> bool {
+        match self.state {
+            CircuitState::Closed => true,
+            CircuitState::Open => {
+                if let Some(opened_at) = self.opened_at {
+                    if Instant::now().duration_since(opened_at) >= config.open_duration {
+                        // Transition to HalfOpen
+                        self.state = CircuitState::HalfOpen;
+                        self.half_open_successes = 0;
+                        self.last_state_change = Instant::now();
+                        tracing::info!(provider = %"...", "Circuit breaker: Open -> HalfOpen");
+                        true  // Allow one probe request
+                    } else {
+                        false  // Still blocked
+                    }
+                } else {
+                    false
+                }
+            }
+            CircuitState::HalfOpen => true,  // Allow probe requests
+        }
+    }
+}
 ```
 
-**Do not add these indexes now.** Premature optimization for a local proxy. The timestamp index already narrows the scan. Measure first.
+### Pattern 2: Structured Logging on State Transitions
+
+**What:** Log at `info` level on every state transition, `debug` on every recorded event.
+**When:** Every call to `record_success()`, `record_failure()`, or state transition.
+**Example:**
+
+```rust
+tracing::info!(
+    provider = %name,
+    from = ?old_state,
+    to = ?new_state,
+    failure_count = breaker.failure_count,
+    "Circuit breaker state transition"
+);
+```
+
+This is critical for observability. Operators need to know when a provider trips and recovers without checking `/health` constantly.
+
+### Pattern 3: Filter, Don't Reject
+
+**What:** The circuit breaker filters the candidate list rather than rejecting individual requests.
+**When:** Before building the `CandidateInfo` list for retry.
+**Why:** This naturally falls back to the next cheapest provider. If provider A is circuit-broken but provider B is healthy, the request succeeds transparently. The caller (user's application) never sees a circuit breaker error unless ALL providers are down.
+
+### Pattern 4: Response Header for Circuit Breaker Events
+
+**What:** Add `x-arbstr-circuit-state: provider-name=open` header when a provider was skipped due to circuit breaker.
+**When:** Any request where circuit breaker filtering removed candidates.
+**Why:** Gives client applications visibility into routing decisions without checking `/health`.
 
 ---
 
 ## Build Order
 
-Implement in this sequence because each step depends on the previous:
+Implement in this sequence, where each step depends on the previous:
 
-1. **`src/storage/stats.rs`** -- Query functions and response types. No HTTP dependency. Independently testable with in-memory SQLite.
-2. **`src/storage/mod.rs`** -- Add `pub mod stats;` declaration and re-exports.
-3. **`src/proxy/handlers.rs`** -- Add query param structs (`TimeRangeParams`, `RecentParams`), helper function (`resolve_time_range`), and handler functions. Depends on storage::stats types.
-4. **`src/proxy/server.rs`** -- Register new routes in `create_router()`. Depends on handler functions existing.
-5. **Integration tests** -- Full HTTP tests against test server with pre-populated data.
+### Phase 1: Circuit Breaker Core (no handler changes)
 
-### Testing Strategy
+1. **Add `dashmap = "6"` to Cargo.toml**
+2. **Create `src/proxy/circuit_breaker.rs`:**
+   - `CircuitState` enum
+   - `CircuitBreakerConfig` with `Default` impl
+   - `ProviderCircuitBreaker` struct with state machine methods:
+     - `is_available(&mut self, config) -> bool`
+     - `record_success(&mut self, config)` (transitions HalfOpen -> Closed)
+     - `record_failure(&mut self, config)` (transitions Closed -> Open, HalfOpen -> Open)
+   - `CircuitBreakerRegistry` struct:
+     - `new(config, provider_names) -> Self`
+     - `filter_available(&self, candidates) -> Vec<SelectedProvider>`
+     - `record_success(&self, provider_name)`
+     - `record_failure(&self, provider_name)`
+     - `provider_states(&self) -> Vec<ProviderHealthInfo>`
+     - `is_available(&self, provider_name) -> bool`
+   - `ProviderHealthInfo` struct for /health
+   - Unit tests for all state transitions (use `tokio::time::pause()` for time-dependent tests)
+3. **Update `src/proxy/mod.rs`:** Add `pub mod circuit_breaker;`
 
-Unit tests for `storage/stats.rs` follow the exact pattern from `logging.rs` tests:
+**Tests at this point:** Pure unit tests. The circuit breaker module has no dependencies on axum, reqwest, or sqlx. All methods are synchronous. Test state transitions, threshold counting, timeout behavior.
+
+### Phase 2: AppState Integration
+
+4. **Modify `src/proxy/server.rs`:**
+   - Add `circuit_breakers: Arc<CircuitBreakerRegistry>` to `AppState`
+   - Initialize in `run_server()` from config provider names
+   - For `--mock` mode: initialize with mock provider names
+
+**Tests at this point:** Verify `AppState` still constructs and clones correctly.
+
+### Phase 3: Handler Integration (Non-Streaming)
+
+5. **Modify `src/proxy/handlers.rs` (non-streaming path):**
+   - After `select_candidates()`: filter through `circuit_breakers.filter_available()`
+   - Handle empty-after-filter case (503 response)
+   - After retry outcome: call `record_success()` or `record_failure()`
+   - Add `x-arbstr-circuit-state` response header when filtering occurs
+
+**Tests at this point:** Integration tests. Spin up test server with mock providers, trigger failures to open circuit, verify subsequent requests skip the failed provider.
+
+### Phase 4: Handler Integration (Streaming)
+
+6. **Modify `src/proxy/handlers.rs` (streaming path):**
+   - In `execute_request()`: check circuit breaker before using selected provider
+   - Fall back to `select_candidates()` + filter if primary is circuit-broken
+   - Record outcome after streaming completes (in the spawned background task)
+
+**Tests at this point:** Integration tests for streaming path with circuit-broken providers.
+
+### Phase 5: Enhanced /health Endpoint
+
+7. **Modify `src/proxy/handlers.rs` (health handler):**
+   - Change signature to accept `State<AppState>`
+   - Add provider circuit breaker states to response
+   - Add database ping
+   - Return structured health response with `status`, `components`
+
+**Tests at this point:** Integration tests for `/health` response structure, verify it reflects circuit breaker state changes.
+
+### Phase 6: Polish and Edge Cases
+
+8. **Add `x-arbstr-circuit-state` header to response** when circuit breaker filtering occurs
+9. **Handle provider added/removed at runtime** (if applicable) -- for now, providers are static from config
+10. **Add `Error::CircuitOpen` variant** to `error.rs` if needed for cleaner error messages
+
+### Why This Order
+
+- Phase 1 is independently testable with no integration risk
+- Phase 2 is a trivial structural change (add field to struct)
+- Phase 3 is the highest-value integration (non-streaming handles all retried requests)
+- Phase 4 extends to streaming (lower priority because streaming already has no retry)
+- Phase 5 is purely additive (new response format, no behavior change)
+- Phase 6 is polish that can happen any time after Phase 3
+
+---
+
+## Testing Strategy
+
+### Unit Tests (circuit_breaker.rs)
 
 ```rust
-async fn test_pool() -> SqlitePool {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-    pool
+#[test]
+fn test_closed_allows_requests() {
+    let config = CircuitBreakerConfig::default();
+    let mut cb = ProviderCircuitBreaker::new();
+    assert!(cb.is_available(&config));
 }
 
-#[tokio::test]
-async fn test_get_summary_empty_db() {
-    let pool = test_pool().await;
-    let summary = get_summary(&pool, "2026-01-01T00:00:00Z", "2026-12-31T00:00:00Z")
-        .await
-        .unwrap();
-    assert_eq!(summary.total_requests, 0);
-    assert_eq!(summary.total_cost_sats, 0.0);
+#[test]
+fn test_failures_trip_circuit() {
+    let config = CircuitBreakerConfig { failure_threshold: 3, ..Default::default() };
+    let mut cb = ProviderCircuitBreaker::new();
+    cb.record_failure(&config);
+    cb.record_failure(&config);
+    assert!(cb.is_available(&config)); // 2 < 3
+    cb.record_failure(&config);
+    assert!(!cb.is_available(&config)); // 3 >= 3, now Open
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_open_transitions_to_half_open_after_timeout() {
+    let config = CircuitBreakerConfig {
+        failure_threshold: 1,
+        open_duration: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let mut cb = ProviderCircuitBreaker::new();
+    cb.record_failure(&config); // -> Open
+    assert!(!cb.is_available(&config));
+
+    tokio::time::advance(Duration::from_secs(31)).await;
+    assert!(cb.is_available(&config)); // -> HalfOpen
+    assert_eq!(cb.state(), CircuitState::HalfOpen);
+}
+
+#[test]
+fn test_success_resets_failure_count() {
+    let config = CircuitBreakerConfig { failure_threshold: 3, ..Default::default() };
+    let mut cb = ProviderCircuitBreaker::new();
+    cb.record_failure(&config);
+    cb.record_failure(&config);
+    cb.record_success(&config);
+    assert_eq!(cb.failure_count(), 0); // Reset
+    assert!(cb.is_available(&config));
+}
+
+#[test]
+fn test_half_open_failure_reopens() {
+    // ... trip to Open, advance time to HalfOpen, record failure -> Open again
+}
+
+#[test]
+fn test_half_open_success_closes() {
+    // ... trip to Open, advance time to HalfOpen, record enough successes -> Closed
 }
 ```
 
-Insert test rows using the existing `RequestLog::insert()` method, then verify aggregates.
+### Registry Tests
+
+```rust
+#[test]
+fn test_filter_available_removes_open_providers() {
+    let registry = CircuitBreakerRegistry::new(
+        CircuitBreakerConfig { failure_threshold: 1, ..Default::default() },
+        ["alpha", "beta"].iter().map(|s| s.to_string()),
+    );
+
+    registry.record_failure("alpha");
+
+    let candidates = vec![
+        mock_selected_provider("alpha"),
+        mock_selected_provider("beta"),
+    ];
+
+    let filtered = registry.filter_available(candidates);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].name, "beta");
+}
+```
+
+### Integration Tests (tests/circuit_breaker.rs)
+
+Full HTTP tests using the same pattern as existing `tests/stats.rs` and `tests/logs.rs`:
+
+```rust
+// 1. Start test server with mock providers
+// 2. Configure one provider to always return 503
+// 3. Send enough requests to trip the circuit
+// 4. Verify next request uses fallback provider
+// 5. Check /health shows the tripped provider as Open
+// 6. Advance time (or wait), verify HalfOpen transition
+```
 
 ---
 
 ## Scalability Considerations
 
-| Concern | Current (local proxy) | If volume grows |
-|---------|----------------------|-----------------|
-| Query latency | Sub-millisecond (SQLite + WAL, small dataset) | Add composite indexes, consider date partitioning |
-| Connection contention | 5 pool connections, reads don't block writes in WAL | Increase pool size if needed |
-| Response payload size | Dozens of rows in GROUP BY results | Add pagination for `/requests`, cap time ranges |
-| Concurrent readers | No issue in WAL mode | No change needed |
+| Concern | At current scale (local proxy) | At scale |
+|---------|-------------------------------|----------|
+| DashMap contention | Negligible (few providers, microsecond locks) | Still fine -- sharding means parallel provider ops don't contend |
+| Memory | ~100 bytes per provider entry | Negligible even with hundreds of providers |
+| State persistence | In-memory only, reset on restart | Could persist to SQLite if restart recovery matters |
+| Clock precision | `Instant::now()` is sufficient | No change needed |
+| Circuit breaker thundering herd | HalfOpen allows probes; only 1-2 requests go to recovering provider | Could add jitter to open_duration if many instances exist |
 
 ---
 
 ## Sources
 
-- Existing codebase: `src/proxy/server.rs`, `src/proxy/handlers.rs`, `src/storage/logging.rs`, `src/storage/mod.rs` -- **HIGH confidence** (direct inspection)
-- [axum Query extractor docs](https://docs.rs/axum/latest/axum/extract/struct.Query.html) -- **HIGH confidence**
-- [axum Router::nest docs](https://docs.rs/axum/latest/axum/routing/struct.Router.html) -- **HIGH confidence**
-- [sqlx query_as documentation](https://docs.rs/sqlx/latest/sqlx/fn.query_scalar.html) -- **HIGH confidence**
-- [SQLite WAL mode concurrency](https://www.sqlite.org/wal.html) -- **HIGH confidence** (SQLite official docs, already configured in `storage/mod.rs`)
-- axum/sqlx integration patterns from community -- **MEDIUM confidence** (multiple sources agree on patterns)
+- Existing codebase: `src/proxy/server.rs`, `src/proxy/handlers.rs`, `src/proxy/retry.rs`, `src/router/selector.rs`, `src/proxy/stream.rs` -- **HIGH confidence** (direct code inspection)
+- [Circuit Breaker Pattern - Microsoft Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker) -- **HIGH confidence** (canonical reference for the pattern)
+- [Martin Fowler - Circuit Breaker](https://martinfowler.com/bliki/CircuitBreaker.html) -- **HIGH confidence** (original pattern description)
+- [DashMap documentation](https://docs.rs/dashmap/latest/dashmap/struct.DashMap.html) -- **HIGH confidence** (official crate docs)
+- [Resilience Design Patterns: Retry, Fallback, Timeout, Circuit Breaker](https://www.codecentric.de/en/knowledge-hub/blog/resilience-design-patterns-retry-fallback-timeout-circuit-breaker) -- **MEDIUM confidence** (architectural guidance on pattern composition)
+- [Linkerd Circuit Breaking](https://linkerd.io/2-edge/reference/circuit-breaking/) -- **MEDIUM confidence** (per-endpoint circuit breaking in a proxy context)
+- [circuitbreaker-rs crate](https://docs.rs/circuitbreaker-rs) -- **LOW confidence** (evaluated but not recommended; rolling our own is simpler for this use case and avoids an unnecessary dependency)
+- [tower-circuitbreaker crate](https://lib.rs/crates/tower-circuitbreaker) -- **LOW confidence** (evaluated but Tower layer is wrong abstraction for this use case, as explained above)
