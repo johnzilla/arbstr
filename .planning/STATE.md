@@ -5,13 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-15)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Planning next milestone
+**Current focus:** v1.2 Streaming Observability
 
 ## Current Position
 
-Phase: 7 of 7 -- all milestones complete
-Status: v1.1 Secrets Hardening shipped 2026-02-15
-Last activity: 2026-02-15 -- Shipped v1.1 milestone
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-15 — Milestone v1.2 started
 
 Progress: [####################] 14/14 plans (v1: 10, v1.1: 4)
 
@@ -44,10 +45,10 @@ None.
 ### Blockers/Concerns
 
 - Research flag: Cashu token double-spend semantics during retry need verification before production use
-- Research flag: Routstr SSE streaming format (usage field in final chunk) affects future v2 streaming work
+- Research flag: Routstr SSE streaming format (usage field in final chunk) affects future v1.2 streaming work
 
 ## Session Continuity
 
 Last session: 2026-02-15
-Stopped at: Shipped v1.1 milestone
+Stopped at: Starting v1.2 milestone
 Resume file: .planning/MILESTONES.md

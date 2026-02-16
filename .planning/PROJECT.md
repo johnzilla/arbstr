@@ -8,7 +8,14 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: Planning next milestone
+## Current Milestone: v1.2 Streaming Observability
+
+**Goal:** Complete the logging story by extracting token counts and costs from streaming responses, ensuring every request — streamed or not — has accurate observability data.
+
+**Target features:**
+- Token count extraction from SSE streaming responses
+- Post-stream log updates with accurate cost data
+- Streaming cost surfaced in response metadata
 
 ## Requirements
 
@@ -74,7 +81,8 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - **Current architecture**: Config models "multiple providers" with different URLs, but actual usage is one Routstr endpoint with multiple models at different price points. The multi-provider abstraction supports future flexibility.
 - **Shipped v1**: Working proxy with routing, policy engine, SQLite logging, response metadata headers, retry with fallback.
 - **Shipped v1.1**: API keys protected by SecretString type with zeroize-on-drop. Environment variable expansion (`${VAR}`) and convention-based auto-discovery (`ARBSTR_<NAME>_API_KEY`). File permission warnings, masked key prefixes, literal key warnings. 3,892 lines Rust, 69 automated tests, clippy clean.
-- **Known concerns**: Streaming token extraction not yet implemented (tokens logged as None), streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification.
+- **Shipped v1.2 target**: Streaming token extraction — currently tokens logged as None for streamed responses, cost tracking blind spot.
+- **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification.
 
 ## Constraints
 
@@ -111,4 +119,4 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | check_file_permissions returns Option | Caller controls warning format (tracing vs println) | ✓ Good — clean separation of detection vs reporting |
 
 ---
-*Last updated: 2026-02-15 after v1.1 milestone complete*
+*Last updated: 2026-02-15 after v1.2 milestone started*
