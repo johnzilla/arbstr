@@ -8,15 +8,7 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: v1.4 Circuit Breaker
-
-**Goal:** Per-provider circuit breaker that stops sending to unhealthy providers, with enhanced /health reporting.
-
-**Target features:**
-- Per-provider circuit breaker with 3-state machine (Closed → Open → Half-Open)
-- Opens after 3 consecutive failures, recovers via 30s half-open probe
-- Router skips providers with open circuits; 503 fail-fast when no alternatives
-- Enhanced /health endpoint with per-provider circuit state and failure counts
+## Current Milestone: Planning next milestone
 
 ## Requirements
 
@@ -64,15 +56,16 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - ✓ Model and provider filtering on stats endpoints — v1.3
 - ✓ Paginated request log listing with filtering and sorting — v1.3
 - ✓ Read-only analytics pool isolated from proxy writes — v1.3
+- ✓ Per-provider circuit breaker in AppState (Closed/Open/Half-Open states) — v1.4
+- ✓ Circuit opens after 3 consecutive failures — v1.4
+- ✓ Half-open probe after 30s timeout, success closes circuit — v1.4
+- ✓ Router skips open-circuit providers during selection — v1.4
+- ✓ 503 fail-fast when all providers for a model have open circuits — v1.4
+- ✓ Enhanced /health endpoint with per-provider circuit state and failure counts — v1.4
 
 ### Active
 
-- [ ] Per-provider circuit breaker in AppState (Closed/Open/Half-Open states)
-- [ ] Circuit opens after 3 consecutive failures
-- [ ] Half-open probe after 30s timeout, success closes circuit
-- [ ] Router skips open-circuit providers during selection
-- [ ] 503 fail-fast when all providers for a model have open circuits
-- [ ] Enhanced /health endpoint with per-provider circuit state and failure counts
+(None — planning next milestone)
 
 ### Future
 
@@ -101,6 +94,7 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - **Shipped v1.1**: API keys protected by SecretString type with zeroize-on-drop. Environment variable expansion (`${VAR}`) and convention-based auto-discovery (`ARBSTR_<NAME>_API_KEY`). File permission warnings, masked key prefixes, literal key warnings. 3,892 lines Rust, 69 automated tests, clippy clean.
 - **Shipped v1.2**: Streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status. Clients receive trailing SSE event with arbstr cost/latency metadata. ~5,000 lines Rust, 94 automated tests, clippy clean.
 - **Shipped v1.3**: Cost querying API — GET /v1/stats for aggregate cost/performance data with time range presets, model/provider filtering, per-model breakdown. GET /v1/requests for paginated request log browsing with filtering and sorting. Read-only analytics pool isolated from proxy writes. ~6,000 lines Rust, 137 automated tests, clippy clean.
+- **Shipped v1.4**: Circuit breaker — per-provider 3-state circuit breaker (Closed/Open/Half-Open) with DashMap-backed registry, queue-and-wait half-open recovery with ProbeGuard RAII, handler-level filtering that skips open circuits before retry loop with 503 fail-fast. Enhanced /health endpoint with per-provider circuit state and computed ok/degraded/unhealthy status. ~9,900 lines Rust, 183 automated tests, clippy clean.
 - **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification. Routstr provider stream_options support unknown — safe degradation (NULL usage) prevents regression.
 
 ## Constraints
@@ -152,6 +146,12 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | Two-query pagination (COUNT + SELECT) | COUNT(*) OVER() returns 0 when OFFSET exceeds rows | ✓ Good — correct total on all pages |
 | Zero new dependencies for v1.3 | Existing stack (axum, sqlx, chrono, serde) covers everything | ✓ Good — no dependency bloat |
 | Nested response sections (tokens/cost/timing/error) | Group related fields, hide internal columns | ✓ Good — clean API surface |
+| DashMap for per-provider circuit state | Per-shard locking, no cross-provider contention | ✓ Good — lock-free reads for uncontended providers |
+| std::sync::Mutex (not tokio::sync::Mutex) for inner state | No .await points in state transitions | ✓ Good — simpler, no async overhead |
+| Handler-level circuit integration | Not router or middleware — handler has retry context | ✓ Good — filter before retry loop prevents storm amplification |
+| Single-permit half-open model | probe_in_flight flag prevents burst during recovery | ✓ Good — controlled recovery, no thundering herd |
+| Lazy Open→HalfOpen transitions | Checked on request, no background timer | ✓ Good — zero overhead when no traffic |
+| Hardcoded circuit constants (threshold=3, timeout=30s) | Defer configurability to future milestone | ✓ Good — simplicity, can add config later |
 
 ---
-*Last updated: 2026-02-16 after v1.4 milestone started*
+*Last updated: 2026-02-16 after v1.4 milestone complete*

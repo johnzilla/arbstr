@@ -118,3 +118,32 @@
 
 ---
 
+
+## v1.4 Circuit Breaker (Shipped: 2026-02-16)
+
+**Delivered:** Per-provider circuit breaker that stops sending to unhealthy providers, with automatic half-open recovery and enhanced /health reporting for operator visibility.
+
+**Phases completed:** 13-15 (3 phases, 5 plans, 10 tasks)
+
+**Key accomplishments:**
+
+- Per-provider 3-state circuit breaker (Closed/Open/Half-Open) with DashMap-backed registry and consecutive failure tracking
+- Queue-and-wait half-open recovery with ProbeGuard RAII for stuck-probe prevention
+- Handler-level circuit filtering — skip open circuits before retry loop, 503 fail-fast when all providers down
+- Streaming and non-streaming outcome recording for circuit state updates
+- Enhanced /health endpoint with per-provider circuit state, failure counts, and computed ok/degraded/unhealthy status
+- 46 new tests (16 unit + 21 integration + 9 circuit routing), 183 total automated tests, zero clippy warnings
+
+**Stats:**
+
+- 9,863 lines of Rust
+- 3 phases, 5 plans, 10 tasks
+- 26 files changed (+4,840 / -94 lines)
+- 1 day from start to ship (2026-02-16)
+
+**Git range:** `f58c00f` (feat(13-01)) → `55512bd` (docs(phase-15): complete)
+
+**What's next:** Planning next milestone
+
+---
+
