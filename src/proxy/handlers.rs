@@ -134,6 +134,179 @@ fn attach_arbstr_headers(
     }
 }
 
+/// Shared context for a chat completion request.
+struct RequestContext {
+    correlation_id: String,
+    model: String,
+    policy_name: Option<String>,
+    is_streaming: bool,
+    start: std::time::Instant,
+}
+
+/// Result of candidate resolution and circuit breaker filtering.
+struct ResolvedCandidates {
+    candidates: Vec<crate::router::SelectedProvider>,
+    probe_provider: Option<String>,
+}
+
+/// Map a routing error to an HTTP status code.
+fn routing_error_status(e: &Error) -> u16 {
+    match e {
+        Error::NoProviders { .. } | Error::NoPolicyMatch | Error::BadRequest(_) => 400,
+        _ => 500,
+    }
+}
+
+/// Log a failed request to the database (fire-and-forget).
+fn log_error_to_db(
+    state: &AppState,
+    ctx: &RequestContext,
+    latency_ms: i64,
+    provider: Option<String>,
+    status_code: u16,
+    message: String,
+) {
+    if let Some(pool) = &state.db {
+        spawn_log_write(
+            pool,
+            RequestLog {
+                correlation_id: ctx.correlation_id.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                model: ctx.model.clone(),
+                provider,
+                policy: ctx.policy_name.clone(),
+                streaming: ctx.is_streaming,
+                input_tokens: None,
+                output_tokens: None,
+                cost_sats: None,
+                provider_cost_sats: None,
+                latency_ms,
+                success: false,
+                error_status: Some(status_code),
+                error_message: Some(message),
+            },
+        );
+    }
+}
+
+/// Log a successful request outcome to the database (fire-and-forget).
+fn log_success_to_db(
+    state: &AppState,
+    ctx: &RequestContext,
+    latency_ms: i64,
+    outcome: &RequestOutcome,
+) {
+    if let Some(pool) = &state.db {
+        spawn_log_write(
+            pool,
+            RequestLog {
+                correlation_id: ctx.correlation_id.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                model: ctx.model.clone(),
+                provider: Some(outcome.provider_name.clone()),
+                policy: ctx.policy_name.clone(),
+                streaming: ctx.is_streaming,
+                input_tokens: outcome.input_tokens,
+                output_tokens: outcome.output_tokens,
+                cost_sats: outcome.cost_sats,
+                provider_cost_sats: outcome.provider_cost_sats,
+                latency_ms,
+                success: true,
+                error_status: None,
+                error_message: None,
+            },
+        );
+    }
+}
+
+/// Attach the `x-arbstr-retries` header if present.
+fn attach_retries_header(response: &mut Response, retries_header: &Option<String>) {
+    if let Some(retries_val) = retries_header {
+        response.headers_mut().insert(
+            HeaderName::from_static(ARBSTR_RETRIES_HEADER),
+            HeaderValue::from_str(retries_val).unwrap(),
+        );
+    }
+}
+
+/// Select candidates and filter through circuit breakers.
+///
+/// Handles routing errors and all-circuits-open with logging and response
+/// building. Returns filtered candidates or an early-return error response.
+async fn resolve_candidates(
+    state: &AppState,
+    ctx: &RequestContext,
+    user_prompt: Option<&str>,
+) -> Result<ResolvedCandidates, Response> {
+    let candidates =
+        match state
+            .router
+            .select_candidates(&ctx.model, ctx.policy_name.as_deref(), user_prompt)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let latency_ms = ctx.start.elapsed().as_millis() as i64;
+                let status_code = routing_error_status(&e);
+                let message = e.to_string();
+                log_error_to_db(state, ctx, latency_ms, None, status_code, message);
+                let mut response = e.into_response();
+                attach_arbstr_headers(
+                    &mut response,
+                    &ctx.correlation_id,
+                    latency_ms,
+                    None,
+                    None,
+                    ctx.is_streaming,
+                );
+                return Err(response);
+            }
+        };
+
+    let mut filtered = Vec::new();
+    let mut probe_provider: Option<String> = None;
+    for candidate in &candidates {
+        match state.circuit_breakers.acquire_permit(&candidate.name).await {
+            Ok(PermitType::Normal) => filtered.push(candidate.clone()),
+            Ok(PermitType::Probe) => {
+                probe_provider = Some(candidate.name.clone());
+                filtered.insert(0, candidate.clone());
+            }
+            Err(open_err) => {
+                tracing::debug!(
+                    provider = %candidate.name,
+                    reason = %open_err.reason,
+                    streaming = ctx.is_streaming,
+                    "Skipping provider: circuit open"
+                );
+            }
+        }
+    }
+
+    if filtered.is_empty() {
+        let latency_ms = ctx.start.elapsed().as_millis() as i64;
+        let message = format!("All providers have open circuits for model '{}'", ctx.model);
+        log_error_to_db(state, ctx, latency_ms, None, 503, message);
+        let circuit_error = Error::CircuitOpen {
+            model: ctx.model.clone(),
+        };
+        let mut response = circuit_error.into_response();
+        attach_arbstr_headers(
+            &mut response,
+            &ctx.correlation_id,
+            latency_ms,
+            None,
+            None,
+            ctx.is_streaming,
+        );
+        return Err(response);
+    }
+
+    Ok(ResolvedCandidates {
+        candidates: filtered,
+        probe_provider,
+    })
+}
+
 /// Handle POST /v1/chat/completions
 pub async fn chat_completions(
     State(state): State<AppState>,
@@ -160,604 +333,273 @@ pub async fn chat_completions(
         "Received chat completion request"
     );
 
+    let ctx = RequestContext {
+        correlation_id,
+        model,
+        policy_name,
+        is_streaming,
+        start,
+    };
+
+    let resolved = match resolve_candidates(&state, &ctx, user_prompt).await {
+        Ok(r) => r,
+        Err(response) => return Ok(response),
+    };
+
     if is_streaming {
-        // Streaming path: select candidates and filter through circuit breaker
+        handle_streaming_path(state, ctx, request, resolved).await
+    } else {
+        handle_non_streaming_path(state, ctx, request, resolved).await
+    }
+}
 
-        // Get ordered candidate list
-        let candidates = match state.router.select_candidates(
-            &request.model,
-            policy_name.as_deref(),
-            user_prompt,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                let latency_ms = start.elapsed().as_millis() as i64;
-                let (status_code, message) = match &e {
-                    Error::NoProviders { .. } => (400u16, e.to_string()),
-                    Error::NoPolicyMatch => (400, e.to_string()),
-                    Error::BadRequest(_) => (400, e.to_string()),
-                    _ => (500, e.to_string()),
-                };
+/// Streaming path: single attempt on the cheapest available candidate.
+async fn handle_streaming_path(
+    state: AppState,
+    ctx: RequestContext,
+    request: ChatCompletionRequest,
+    resolved: ResolvedCandidates,
+) -> Result<Response, Error> {
+    let provider = &resolved.candidates[0];
 
-                if let Some(pool) = &state.db {
-                    spawn_log_write(
-                        pool,
-                        RequestLog {
-                            correlation_id: correlation_id.clone(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            model: model.clone(),
-                            provider: None,
-                            policy: policy_name.clone(),
-                            streaming: true,
-                            input_tokens: None,
-                            output_tokens: None,
-                            cost_sats: None,
-                            provider_cost_sats: None,
-                            latency_ms,
-                            success: false,
-                            error_status: Some(status_code),
-                            error_message: Some(message),
-                        },
-                    );
-                }
+    tracing::info!(
+        provider = %provider.name,
+        url = %provider.url,
+        output_rate = %provider.output_rate,
+        "Selected provider (streaming)"
+    );
 
-                let mut error_response = e.into_response();
-                attach_arbstr_headers(
-                    &mut error_response,
-                    &correlation_id,
-                    latency_ms,
-                    None,
-                    None,
-                    true,
-                );
-                return Ok(error_response);
-            }
-        };
+    let probe_guard: Option<ProbeGuard<'_>> = resolved
+        .probe_provider
+        .as_ref()
+        .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
 
-        // Filter through circuit breaker (RTG-01)
-        let mut filtered_candidates = Vec::new();
-        let mut probe_provider: Option<String> = None;
-        for candidate in &candidates {
-            match state.circuit_breakers.acquire_permit(&candidate.name).await {
-                Ok(PermitType::Normal) => {
-                    filtered_candidates.push(candidate.clone());
-                }
-                Ok(PermitType::Probe) => {
-                    probe_provider = Some(candidate.name.clone());
-                    // Probe candidate goes first -- it IS the probe request
-                    filtered_candidates.insert(0, candidate.clone());
-                }
-                Err(open_err) => {
-                    tracing::debug!(
-                        provider = %candidate.name,
-                        reason = %open_err.reason,
-                        "Skipping provider: circuit open (streaming)"
-                    );
+    let result = send_to_provider(&state, &request, provider, &ctx.correlation_id, true).await;
+
+    // Record circuit breaker outcome
+    match &result {
+        Ok(outcome) => {
+            state
+                .circuit_breakers
+                .record_success(&outcome.provider_name);
+            if let Some(guard) = probe_guard {
+                if outcome.provider_name == resolved.probe_provider.as_deref().unwrap_or("") {
+                    guard.success();
+                } else {
+                    guard.failure("not_reached", "different provider succeeded");
                 }
             }
         }
-
-        // Fail-fast if all circuits are open (RTG-02)
-        if filtered_candidates.is_empty() {
-            let latency_ms = start.elapsed().as_millis() as i64;
-
-            if let Some(pool) = &state.db {
-                spawn_log_write(
-                    pool,
-                    RequestLog {
-                        correlation_id: correlation_id.clone(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        model: model.clone(),
-                        provider: None,
-                        policy: policy_name.clone(),
-                        streaming: true,
-                        input_tokens: None,
-                        output_tokens: None,
-                        cost_sats: None,
-                        provider_cost_sats: None,
-                        latency_ms,
-                        success: false,
-                        error_status: Some(503),
-                        error_message: Some(format!(
-                            "All providers have open circuits for model '{}'",
-                            model
-                        )),
-                    },
+        Err(outcome_err) => {
+            if is_circuit_failure(outcome_err.status_code) {
+                state.circuit_breakers.record_failure(
+                    outcome_err.provider_name.as_deref().unwrap_or("unknown"),
+                    "5xx",
+                    &format!("HTTP {}", outcome_err.status_code),
                 );
             }
+            if let Some(guard) = probe_guard {
+                if is_circuit_failure(outcome_err.status_code) {
+                    guard.failure("5xx", &format!("HTTP {}", outcome_err.status_code));
+                } else {
+                    guard.failure("non_5xx", &format!("HTTP {}", outcome_err.status_code));
+                }
+            }
+        }
+    }
 
-            let circuit_error = Error::CircuitOpen {
-                model: model.clone(),
-            };
-            let mut error_response = circuit_error.into_response();
+    let latency_ms = ctx.start.elapsed().as_millis() as i64;
+
+    match result {
+        Ok(outcome) => {
+            log_success_to_db(&state, &ctx, latency_ms, &outcome);
+            let mut response = outcome.response;
+            attach_arbstr_headers(
+                &mut response,
+                &ctx.correlation_id,
+                latency_ms,
+                Some(&outcome.provider_name),
+                outcome.cost_sats,
+                true,
+            );
+            Ok(response)
+        }
+        Err(outcome_err) => {
+            log_error_to_db(
+                &state,
+                &ctx,
+                latency_ms,
+                outcome_err.provider_name.clone(),
+                outcome_err.status_code,
+                outcome_err.message.clone(),
+            );
+            let mut error_response = outcome_err.error.into_response();
             attach_arbstr_headers(
                 &mut error_response,
-                &correlation_id,
+                &ctx.correlation_id,
                 latency_ms,
-                None,
+                outcome_err.provider_name.as_deref(),
                 None,
                 true,
             );
-            return Ok(error_response);
+            Ok(error_response)
         }
+    }
+}
 
-        // Streaming path uses the first (cheapest) available candidate, no retry
-        let provider = &filtered_candidates[0];
+/// Non-streaming path: retry with fallback and 30-second deadline.
+async fn handle_non_streaming_path(
+    state: AppState,
+    ctx: RequestContext,
+    request: ChatCompletionRequest,
+    resolved: ResolvedCandidates,
+) -> Result<Response, Error> {
+    let candidate_infos: Vec<CandidateInfo> = resolved
+        .candidates
+        .iter()
+        .map(|c| CandidateInfo {
+            name: c.name.clone(),
+        })
+        .collect();
 
-        tracing::info!(
-            provider = %provider.name,
-            url = %provider.url,
-            output_rate = %provider.output_rate,
-            "Selected provider (streaming)"
-        );
+    let probe_guard: Option<ProbeGuard<'_>> = resolved
+        .probe_provider
+        .as_ref()
+        .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
 
-        // Create ProbeGuard before send_to_provider (RTG-04)
-        let probe_guard: Option<ProbeGuard<'_>> = probe_provider
-            .as_ref()
-            .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
+    let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let deadline = Instant::now() + RETRY_TIMEOUT;
 
-        let result = send_to_provider(&state, &request, provider, &correlation_id, true).await;
+    let timeout_result = timeout_at(
+        deadline,
+        retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
+            let provider = resolved
+                .candidates
+                .iter()
+                .find(|c| c.name == info.name)
+                .expect("candidate info must match a provider");
+            send_to_provider(&state, &request, provider, &ctx.correlation_id, false)
+        }),
+    )
+    .await;
 
-        // Record circuit breaker outcome (RTG-04)
-        match &result {
-            Ok(outcome) => {
-                state.circuit_breakers.record_success(&outcome.provider_name);
-                if let Some(guard) = probe_guard {
-                    if outcome.provider_name == probe_provider.as_deref().unwrap_or("") {
-                        guard.success();
-                    } else {
-                        guard.failure("not_reached", "different provider succeeded");
-                    }
-                }
-            }
-            Err(outcome_err) => {
-                if is_circuit_failure(outcome_err.status_code) {
-                    state.circuit_breakers.record_failure(
-                        outcome_err.provider_name.as_deref().unwrap_or("unknown"),
-                        "5xx",
-                        &format!("HTTP {}", outcome_err.status_code),
-                    );
-                }
-                if let Some(guard) = probe_guard {
-                    if is_circuit_failure(outcome_err.status_code) {
-                        guard.failure("5xx", &format!("HTTP {}", outcome_err.status_code));
-                    } else {
-                        // Non-5xx error (e.g., 4xx) -- don't trip circuit, but probe didn't succeed
-                        guard.failure("non_5xx", &format!("HTTP {}", outcome_err.status_code));
-                    }
-                }
-            }
+    let latency_ms = ctx.start.elapsed().as_millis() as i64;
+
+    let recorded_attempts = attempts.lock().unwrap().clone();
+    let retries_header = format_retries_header(&recorded_attempts);
+
+    // Record circuit breaker outcomes for failed attempts
+    for attempt in &recorded_attempts {
+        if is_circuit_failure(attempt.status_code) {
+            state.circuit_breakers.record_failure(
+                &attempt.provider_name,
+                "5xx",
+                &format!("HTTP {}", attempt.status_code),
+            );
         }
+    }
 
-        let latency_ms = start.elapsed().as_millis() as i64;
-
-        // Log the outcome (fire-and-forget)
-        if let Some(pool) = &state.db {
-            let log_entry = match &result {
-                Ok(outcome) => RequestLog {
-                    correlation_id: correlation_id.clone(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    model: model.clone(),
-                    provider: Some(outcome.provider_name.clone()),
-                    policy: policy_name.clone(),
-                    streaming: true,
-                    input_tokens: outcome.input_tokens,
-                    output_tokens: outcome.output_tokens,
-                    cost_sats: outcome.cost_sats,
-                    provider_cost_sats: outcome.provider_cost_sats,
-                    latency_ms,
-                    success: true,
-                    error_status: None,
-                    error_message: None,
-                },
-                Err(outcome_err) => RequestLog {
-                    correlation_id: correlation_id.clone(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    model: model.clone(),
-                    provider: outcome_err.provider_name.clone(),
-                    policy: policy_name.clone(),
-                    streaming: true,
-                    input_tokens: None,
-                    output_tokens: None,
-                    cost_sats: None,
-                    provider_cost_sats: None,
-                    latency_ms,
-                    success: false,
-                    error_status: Some(outcome_err.status_code),
-                    error_message: Some(outcome_err.message.clone()),
-                },
-            };
-            spawn_log_write(pool, log_entry);
-        }
-
-        // Build response with arbstr headers
-        match result {
-            Ok(outcome) => {
-                let mut response = outcome.response;
-                attach_arbstr_headers(
-                    &mut response,
-                    &correlation_id,
-                    latency_ms,
-                    Some(&outcome.provider_name),
-                    outcome.cost_sats,
-                    true,
-                );
-                Ok(response)
-            }
-            Err(outcome_err) => {
-                let mut error_response = outcome_err.error.into_response();
-                attach_arbstr_headers(
-                    &mut error_response,
-                    &correlation_id,
-                    latency_ms,
-                    outcome_err.provider_name.as_deref(),
-                    None,
-                    true,
-                );
-                Ok(error_response)
+    // Resolve ProbeGuard before consuming timeout_result
+    if let Some(guard) = probe_guard {
+        let probe_name = resolved.probe_provider.as_deref().unwrap_or("");
+        match &timeout_result {
+            Ok(retry_outcome) => match &retry_outcome.result {
+                Ok(outcome) if outcome.provider_name == probe_name => {
+                    guard.success();
+                }
+                Ok(outcome) => {
+                    state
+                        .circuit_breakers
+                        .record_success(&outcome.provider_name);
+                    guard.failure("not_reached", "different provider succeeded");
+                }
+                Err(_) => {
+                    guard.failure("5xx", "all providers failed");
+                }
+            },
+            Err(_) => {
+                guard.failure("timeout", "retry chain timed out");
             }
         }
-    } else {
-        // Non-streaming path: retry with fallback and 30-second deadline
-
-        // Get ordered candidate list
-        let candidates = match state.router.select_candidates(
-            &request.model,
-            policy_name.as_deref(),
-            user_prompt,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                let latency_ms = start.elapsed().as_millis() as i64;
-                let (status_code, message) = match &e {
-                    Error::NoProviders { .. } => (400u16, e.to_string()),
-                    Error::NoPolicyMatch => (400, e.to_string()),
-                    Error::BadRequest(_) => (400, e.to_string()),
-                    _ => (500, e.to_string()),
-                };
-
-                // Log the routing error
-                if let Some(pool) = &state.db {
-                    spawn_log_write(
-                        pool,
-                        RequestLog {
-                            correlation_id: correlation_id.clone(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            model: model.clone(),
-                            provider: None,
-                            policy: policy_name.clone(),
-                            streaming: false,
-                            input_tokens: None,
-                            output_tokens: None,
-                            cost_sats: None,
-                            provider_cost_sats: None,
-                            latency_ms,
-                            success: false,
-                            error_status: Some(status_code),
-                            error_message: Some(message),
-                        },
-                    );
-                }
-
-                let mut error_response = e.into_response();
-                attach_arbstr_headers(
-                    &mut error_response,
-                    &correlation_id,
-                    latency_ms,
-                    None,
-                    None,
-                    false,
-                );
-                return Ok(error_response);
-            }
-        };
-
-        // Filter candidates through circuit breaker (RTG-01)
-        let mut filtered_candidates = Vec::new();
-        let mut probe_provider: Option<String> = None;
-        for candidate in &candidates {
-            match state.circuit_breakers.acquire_permit(&candidate.name).await {
-                Ok(PermitType::Normal) => {
-                    filtered_candidates.push(candidate.clone());
-                }
-                Ok(PermitType::Probe) => {
-                    probe_provider = Some(candidate.name.clone());
-                    // Probe candidate goes first -- it IS the probe request
-                    filtered_candidates.insert(0, candidate.clone());
-                }
-                Err(open_err) => {
-                    tracing::debug!(
-                        provider = %candidate.name,
-                        reason = %open_err.reason,
-                        "Skipping provider: circuit open"
-                    );
-                }
-            }
+    } else if let Ok(retry_outcome) = &timeout_result {
+        if let Ok(outcome) = &retry_outcome.result {
+            state
+                .circuit_breakers
+                .record_success(&outcome.provider_name);
         }
+    }
 
-        // Fail-fast if all circuits are open (RTG-02)
-        if filtered_candidates.is_empty() {
-            let latency_ms = start.elapsed().as_millis() as i64;
+    match timeout_result {
+        Err(_elapsed) => {
+            tracing::error!(
+                latency_ms = latency_ms,
+                attempts = recorded_attempts.len(),
+                "Retry+fallback timed out after 30 seconds"
+            );
 
-            // Log the circuit-open error
-            if let Some(pool) = &state.db {
-                spawn_log_write(
-                    pool,
-                    RequestLog {
-                        correlation_id: correlation_id.clone(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        model: model.clone(),
-                        provider: None,
-                        policy: policy_name.clone(),
-                        streaming: false,
-                        input_tokens: None,
-                        output_tokens: None,
-                        cost_sats: None,
-                        provider_cost_sats: None,
-                        latency_ms,
-                        success: false,
-                        error_status: Some(503),
-                        error_message: Some(format!(
-                            "All providers have open circuits for model '{}'",
-                            model
-                        )),
-                    },
-                );
-            }
+            let last_provider = recorded_attempts.last().map(|a| a.provider_name.clone());
+            log_error_to_db(
+                &state,
+                &ctx,
+                latency_ms,
+                last_provider,
+                504,
+                "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
+            );
 
-            let circuit_error = Error::CircuitOpen {
-                model: model.clone(),
-            };
-            let mut error_response = circuit_error.into_response();
+            let timeout_error = Error::Provider(
+                "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
+            );
+            let mut error_response = timeout_error.into_response();
+            *error_response.status_mut() = StatusCode::GATEWAY_TIMEOUT;
             attach_arbstr_headers(
                 &mut error_response,
-                &correlation_id,
+                &ctx.correlation_id,
                 latency_ms,
                 None,
                 None,
                 false,
             );
-            return Ok(error_response);
+            attach_retries_header(&mut error_response, &retries_header);
+            Ok(error_response)
         }
-
-        // Build CandidateInfo list for retry module (using filtered candidates)
-        let candidate_infos: Vec<CandidateInfo> = filtered_candidates
-            .iter()
-            .map(|c| CandidateInfo {
-                name: c.name.clone(),
-            })
-            .collect();
-
-        // Create ProbeGuard before timeout_at so it survives cancellation (RTG-03)
-        let probe_guard: Option<ProbeGuard<'_>> = probe_provider
-            .as_ref()
-            .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
-
-        // Shared attempt tracking -- created before timeout so it survives cancellation
-        let attempts: Arc<Mutex<Vec<AttemptRecord>>> = Arc::new(Mutex::new(Vec::new()));
-        let deadline = Instant::now() + RETRY_TIMEOUT;
-
-        // Run retry+fallback within the timeout deadline
-        let timeout_result = timeout_at(
-            deadline,
-            retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
-                let provider = filtered_candidates
-                    .iter()
-                    .find(|c| c.name == info.name)
-                    .expect("candidate info must match a provider");
-                send_to_provider(&state, &request, provider, &correlation_id, false)
-            }),
-        )
-        .await;
-
-        let latency_ms = start.elapsed().as_millis() as i64;
-
-        // Read attempt history (available even after timeout)
-        let recorded_attempts = attempts.lock().unwrap().clone();
-        let retries_header = format_retries_header(&recorded_attempts);
-
-        // Record circuit breaker outcomes for failed attempts (RTG-03)
-        for attempt in &recorded_attempts {
-            if is_circuit_failure(attempt.status_code) {
-                state.circuit_breakers.record_failure(
-                    &attempt.provider_name,
-                    "5xx",
-                    &format!("HTTP {}", attempt.status_code),
+        Ok(retry_outcome) => match retry_outcome.result {
+            Ok(outcome) => {
+                log_success_to_db(&state, &ctx, latency_ms, &outcome);
+                let mut response = outcome.response;
+                attach_arbstr_headers(
+                    &mut response,
+                    &ctx.correlation_id,
+                    latency_ms,
+                    Some(&outcome.provider_name),
+                    outcome.cost_sats,
+                    false,
                 );
+                attach_retries_header(&mut response, &retries_header);
+                Ok(response)
             }
-        }
-
-        // Resolve ProbeGuard and record circuit breaker success (RTG-03)
-        // Must resolve before the match consumes timeout_result by move.
-        if let Some(guard) = probe_guard {
-            let probe_name = probe_provider.as_deref().unwrap_or("");
-            match &timeout_result {
-                Ok(retry_outcome) => match &retry_outcome.result {
-                    Ok(outcome) if outcome.provider_name == probe_name => {
-                        // Probe provider won -- record_probe_success via guard
-                        guard.success();
-                    }
-                    Ok(outcome) => {
-                        // Different provider won -- record success for winner,
-                        // probe didn't get reached or failed earlier
-                        state
-                            .circuit_breakers
-                            .record_success(&outcome.provider_name);
-                        guard.failure("not_reached", "different provider succeeded");
-                    }
-                    Err(_) => {
-                        guard.failure("5xx", "all providers failed");
-                    }
-                },
-                Err(_) => {
-                    guard.failure("timeout", "retry chain timed out");
-                }
-            }
-        } else {
-            // No probe -- record success for winning provider
-            if let Ok(retry_outcome) = &timeout_result {
-                if let Ok(outcome) = &retry_outcome.result {
-                    state
-                        .circuit_breakers
-                        .record_success(&outcome.provider_name);
-                }
-            }
-        }
-
-        match timeout_result {
-            Err(_elapsed) => {
-                // Timeout: return 504 Gateway Timeout
-                tracing::error!(
-                    latency_ms = latency_ms,
-                    attempts = recorded_attempts.len(),
-                    "Retry+fallback timed out after 30 seconds"
+            Err(outcome_err) => {
+                log_error_to_db(
+                    &state,
+                    &ctx,
+                    latency_ms,
+                    outcome_err.provider_name.clone(),
+                    outcome_err.status_code,
+                    outcome_err.message.clone(),
                 );
-
-                // Log timeout as failed request
-                if let Some(pool) = &state.db {
-                    let last_provider = recorded_attempts.last().map(|a| a.provider_name.clone());
-                    spawn_log_write(
-                        pool,
-                        RequestLog {
-                            correlation_id: correlation_id.clone(),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            model: model.clone(),
-                            provider: last_provider,
-                            policy: policy_name.clone(),
-                            streaming: false,
-                            input_tokens: None,
-                            output_tokens: None,
-                            cost_sats: None,
-                            provider_cost_sats: None,
-                            latency_ms,
-                            success: false,
-                            error_status: Some(504),
-                            error_message: Some(
-                                "Request timed out after 30 seconds (retry budget exhausted)"
-                                    .to_string(),
-                            ),
-                        },
-                    );
-                }
-
-                let timeout_error = Error::Provider(
-                    "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
-                );
-                let mut error_response = timeout_error.into_response();
-
-                // Override status to 504 Gateway Timeout (Error::Provider maps to 502)
-                *error_response.status_mut() = StatusCode::GATEWAY_TIMEOUT;
-
+                let mut error_response = outcome_err.error.into_response();
                 attach_arbstr_headers(
                     &mut error_response,
-                    &correlation_id,
+                    &ctx.correlation_id,
                     latency_ms,
-                    None,
+                    outcome_err.provider_name.as_deref(),
                     None,
                     false,
                 );
-
-                if let Some(retries_val) = &retries_header {
-                    error_response.headers_mut().insert(
-                        HeaderName::from_static(ARBSTR_RETRIES_HEADER),
-                        HeaderValue::from_str(retries_val).unwrap(),
-                    );
-                }
-
+                attach_retries_header(&mut error_response, &retries_header);
                 Ok(error_response)
             }
-            Ok(retry_outcome) => {
-                // Retry completed within deadline
-                match retry_outcome.result {
-                    Ok(outcome) => {
-                        // Log success
-                        if let Some(pool) = &state.db {
-                            spawn_log_write(
-                                pool,
-                                RequestLog {
-                                    correlation_id: correlation_id.clone(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    model: model.clone(),
-                                    provider: Some(outcome.provider_name.clone()),
-                                    policy: policy_name.clone(),
-                                    streaming: false,
-                                    input_tokens: outcome.input_tokens,
-                                    output_tokens: outcome.output_tokens,
-                                    cost_sats: outcome.cost_sats,
-                                    provider_cost_sats: outcome.provider_cost_sats,
-                                    latency_ms,
-                                    success: true,
-                                    error_status: None,
-                                    error_message: None,
-                                },
-                            );
-                        }
-
-                        let mut response = outcome.response;
-                        attach_arbstr_headers(
-                            &mut response,
-                            &correlation_id,
-                            latency_ms,
-                            Some(&outcome.provider_name),
-                            outcome.cost_sats,
-                            false,
-                        );
-
-                        if let Some(retries_val) = &retries_header {
-                            response.headers_mut().insert(
-                                HeaderName::from_static(ARBSTR_RETRIES_HEADER),
-                                HeaderValue::from_str(retries_val).unwrap(),
-                            );
-                        }
-
-                        Ok(response)
-                    }
-                    Err(outcome_err) => {
-                        // Log final failure
-                        if let Some(pool) = &state.db {
-                            spawn_log_write(
-                                pool,
-                                RequestLog {
-                                    correlation_id: correlation_id.clone(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    model: model.clone(),
-                                    provider: outcome_err.provider_name.clone(),
-                                    policy: policy_name.clone(),
-                                    streaming: false,
-                                    input_tokens: None,
-                                    output_tokens: None,
-                                    cost_sats: None,
-                                    provider_cost_sats: None,
-                                    latency_ms,
-                                    success: false,
-                                    error_status: Some(outcome_err.status_code),
-                                    error_message: Some(outcome_err.message.clone()),
-                                },
-                            );
-                        }
-
-                        let mut error_response = outcome_err.error.into_response();
-                        attach_arbstr_headers(
-                            &mut error_response,
-                            &correlation_id,
-                            latency_ms,
-                            outcome_err.provider_name.as_deref(),
-                            None,
-                            false,
-                        );
-
-                        if let Some(retries_val) = &retries_header {
-                            error_response.headers_mut().insert(
-                                HeaderName::from_static(ARBSTR_RETRIES_HEADER),
-                                HeaderValue::from_str(retries_val).unwrap(),
-                            );
-                        }
-
-                        Ok(error_response)
-                    }
-                }
-            }
-        }
+        },
     }
 }
 

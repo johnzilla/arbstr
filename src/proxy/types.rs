@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Chat completion request (OpenAI-compatible).
+///
+/// Known fields are explicitly typed for arbstr's routing and cost logic.
+/// Unknown fields (e.g., `tools`, `tool_choice`, `response_format`, `seed`)
+/// are captured by `extra` and forwarded to the upstream provider unchanged.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -25,15 +29,58 @@ pub struct ChatCompletionRequest {
     pub stop: Option<StopSequence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A chat message.
+///
+/// Unknown fields (e.g., `tool_calls`, `tool_call_id`) are captured by
+/// `extra` and forwarded to the upstream provider unchanged.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    #[serde(default)]
+    pub content: MessageContent,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Message content can be a plain string or an array of content parts
+/// (for multimodal requests with images/audio).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<serde_json::Value>),
+}
+
+impl Default for MessageContent {
+    fn default() -> Self {
+        MessageContent::Text(String::new())
+    }
+}
+
+impl MessageContent {
+    /// Extract the text content as a string slice.
+    /// For multimodal content, returns the first text part if present.
+    pub fn as_str(&self) -> &str {
+        match self {
+            MessageContent::Text(s) => s,
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .find_map(|p| {
+                    if p.get("type")?.as_str()? == "text" {
+                        p.get("text")?.as_str()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(""),
+        }
+    }
 }
 
 /// Stop sequence can be a string or array of strings.
@@ -153,8 +200,9 @@ mod tests {
             model: "gpt-4o".to_string(),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: "hello".to_string(),
+                content: MessageContent::Text("hello".to_string()),
                 name: None,
+                extra: Default::default(),
             }],
             temperature: None,
             max_tokens: None,
@@ -165,6 +213,7 @@ mod tests {
             presence_penalty: None,
             stop: None,
             user: None,
+            extra: Default::default(),
         }
     }
 

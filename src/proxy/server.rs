@@ -142,7 +142,35 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!(address = %listen_addr, "Starting arbstr proxy server");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
+    tracing::info!("Server shutdown complete");
     Ok(())
+}
+
+/// Wait for a shutdown signal (SIGINT or SIGTERM on Unix, Ctrl+C on all platforms).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("Received SIGINT, starting graceful shutdown"),
+        _ = terminate => tracing::info!("Received SIGTERM, starting graceful shutdown"),
+    }
 }

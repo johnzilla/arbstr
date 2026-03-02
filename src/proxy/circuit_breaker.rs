@@ -184,12 +184,7 @@ impl CircuitBreakerInner {
     ///
     /// Increments consecutive failure counter. If threshold reached,
     /// transitions to Open state.
-    pub(crate) fn record_failure(
-        &mut self,
-        provider_name: &str,
-        error_type: &str,
-        message: &str,
-    ) {
+    pub(crate) fn record_failure(&mut self, provider_name: &str, error_type: &str, message: &str) {
         self.failure_count += 1;
         self.last_failure_time = Some(tokio::time::Instant::now());
         self.last_error = Some(LastError {
@@ -835,11 +830,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_registry_new_creates_breakers() {
-        let names = vec![
-            "alpha".to_string(),
-            "beta".to_string(),
-            "gamma".to_string(),
-        ];
+        let names = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
         let registry = CircuitBreakerRegistry::new(&names);
 
         assert_eq!(registry.state("alpha"), Some(CircuitState::Closed));
@@ -977,9 +968,9 @@ mod tests {
         let mut waiters = Vec::new();
         for _ in 0..5 {
             let reg_clone = registry.clone();
-            waiters.push(tokio::spawn(
-                async move { reg_clone.acquire_permit("alpha").await },
-            ));
+            waiters.push(tokio::spawn(async move {
+                reg_clone.acquire_permit("alpha").await
+            }));
         }
 
         // Let all waiters reach the watch channel

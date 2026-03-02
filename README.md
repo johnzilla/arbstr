@@ -28,8 +28,10 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 
 ## Features
 
-- **OpenAI-compatible API** -- drop-in replacement proxy (`/v1/chat/completions`, `/v1/models`)
+- **OpenAI-compatible API** -- drop-in replacement proxy (`/v1/chat/completions`, `/v1/models`); unknown request fields (`tools`, `tool_choice`, `response_format`, `seed`, etc.) are forwarded to providers unchanged
+- **Multimodal support** -- message `content` accepts both plain strings and content-part arrays (images, audio) per the OpenAI spec
 - **Multi-provider routing** -- automatically selects the cheapest available provider
+- **Circuit breakers** -- per-provider circuit breakers (Closed/Open/Half-Open) with automatic recovery probing; `/health` endpoint reflects per-provider state (`ok`, `degraded`, `unhealthy`)
 - **Streaming observability** -- SSE stream interception extracts token counts and cost from streaming responses; trailing SSE event surfaces arbstr metadata (cost, latency) to clients
 - **Policy engine** -- constrain routing by allowed models, max cost, and strategy
 - **Keyword heuristics** -- automatic policy matching based on message content
@@ -37,6 +39,7 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 - **Environment variable expansion** -- use `${VAR}` syntax or omit `api_key` for convention-based `ARBSTR_<NAME>_API_KEY` auto-discovery
 - **Config hygiene warnings** -- file permission checks, plaintext key warnings with actionable suggestions
 - **Cost querying API** -- GET /v1/stats for aggregate cost/performance data with time range presets and model/provider filtering; GET /v1/requests for paginated request log browsing with sorting
+- **Graceful shutdown** -- handles SIGINT/SIGTERM to drain in-flight requests and database writes before exiting
 - **Per-request correlation IDs** -- UUID tracing for every request through the system
 - **Mock mode** -- test locally without real provider API calls
 
@@ -199,24 +202,25 @@ See [CLAUDE.md](./CLAUDE.md) for detailed development documentation including ar
 
 ```
 src/
-├── main.rs           # CLI entry point (serve, check, providers)
-├── lib.rs            # Library root
-├── config.rs         # Configuration, env var expansion, secret types
-├── error.rs          # Error types (OpenAI-compatible responses)
+├── main.rs              # CLI entry point (serve, check, providers)
+├── lib.rs               # Library root
+├── config.rs            # Configuration, env var expansion, secret types
+├── error.rs             # Error types (OpenAI-compatible responses)
 ├── proxy/
-│   ├── server.rs     # axum server setup and middleware
-│   ├── handlers.rs   # Request handlers (streaming + non-streaming)
-│   ├── retry.rs      # Retry with backoff and provider fallback
-│   ├── stream.rs     # SSE stream interception and usage extraction
-│   ├── stats.rs      # Aggregate stats handler and time range resolution
-│   ├── logs.rs       # Paginated request log handler with sorting
-│   └── types.rs      # OpenAI-compatible request/response types
+│   ├── server.rs        # axum server setup, middleware, graceful shutdown
+│   ├── handlers.rs      # Request handlers (streaming + non-streaming)
+│   ├── circuit_breaker.rs # Per-provider circuit breaker state machine
+│   ├── retry.rs         # Retry with backoff and provider fallback
+│   ├── stream.rs        # SSE stream interception and usage extraction
+│   ├── stats.rs         # Aggregate stats handler and time range resolution
+│   ├── logs.rs          # Paginated request log handler with sorting
+│   └── types.rs         # OpenAI-compatible request/response types
 ├── router/
-│   └── selector.rs   # Provider selection and cost calculation
+│   └── selector.rs      # Provider selection and cost calculation
 └── storage/
-    ├── logging.rs    # SQLite request logging (async fire-and-forget)
-    ├── stats.rs      # Aggregate stats queries (read-only pool)
-    └── logs.rs       # Paginated log queries with dynamic filters
+    ├── logging.rs       # SQLite request logging (async fire-and-forget)
+    ├── stats.rs         # Aggregate stats queries (read-only pool)
+    └── logs.rs          # Paginated log queries with dynamic filters
 ```
 
 ## Roadmap
@@ -227,6 +231,7 @@ src/
 | **v1.1** | Secrets hardening -- SecretString API keys, env var expansion, convention-based key discovery, output surface hardening | Shipped |
 | **v1.2** | Streaming observability -- SSE token extraction, post-stream DB updates, trailing cost events, stream duration tracking | Shipped |
 | **v1.3** | Cost querying API -- aggregate stats, time range filtering, paginated request log listing with sorting | Shipped |
+| **v1.4** | Resilience and compatibility -- per-provider circuit breakers with health endpoint, graceful shutdown, unknown field passthrough for full OpenAI API compatibility, multimodal message content support | Shipped |
 
 ## Related Projects
 

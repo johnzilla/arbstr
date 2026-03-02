@@ -3,7 +3,9 @@
 //! Verifies that arbstr injects `stream_options: { include_usage: true }` into
 //! upstream request bodies for streaming requests, and omits it for non-streaming.
 
-use arbstr::proxy::types::{ensure_stream_options, ChatCompletionRequest, Message, StreamOptions};
+use arbstr::proxy::types::{
+    ensure_stream_options, ChatCompletionRequest, Message, MessageContent, StreamOptions,
+};
 
 /// Streaming request gets stream_options injected when absent.
 #[test]
@@ -12,8 +14,9 @@ fn streaming_request_gets_stream_options_injected() {
         model: "gpt-4o".to_string(),
         messages: vec![Message {
             role: "user".to_string(),
-            content: "Write a poem".to_string(),
+            content: MessageContent::Text("Write a poem".to_string()),
             name: None,
+            extra: Default::default(),
         }],
         temperature: None,
         max_tokens: None,
@@ -24,6 +27,7 @@ fn streaming_request_gets_stream_options_injected() {
         presence_penalty: None,
         stop: None,
         user: None,
+        extra: Default::default(),
     };
 
     ensure_stream_options(&mut request);
@@ -43,8 +47,9 @@ fn non_streaming_request_has_no_stream_options() {
         model: "gpt-4o".to_string(),
         messages: vec![Message {
             role: "user".to_string(),
-            content: "Write a poem".to_string(),
+            content: MessageContent::Text("Write a poem".to_string()),
             name: None,
+            extra: Default::default(),
         }],
         temperature: None,
         max_tokens: None,
@@ -55,6 +60,7 @@ fn non_streaming_request_has_no_stream_options() {
         presence_penalty: None,
         stop: None,
         user: None,
+        extra: Default::default(),
     };
 
     // Non-streaming: ensure_stream_options is NOT called, so field stays None
@@ -73,8 +79,9 @@ fn client_stream_options_preserved_on_merge() {
         model: "gpt-4o".to_string(),
         messages: vec![Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: MessageContent::Text("Hello".to_string()),
             name: None,
+            extra: Default::default(),
         }],
         temperature: None,
         max_tokens: None,
@@ -87,6 +94,7 @@ fn client_stream_options_preserved_on_merge() {
         presence_penalty: None,
         stop: None,
         user: None,
+        extra: Default::default(),
     };
 
     ensure_stream_options(&mut request);

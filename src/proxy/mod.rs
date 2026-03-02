@@ -18,5 +18,6 @@ pub use circuit_breaker::{
 };
 pub use stream::{wrap_sse_stream, StreamResult, StreamResultHandle, StreamUsage};
 pub use types::{
-    ensure_stream_options, ChatCompletionRequest, ChatCompletionResponse, Message, StreamOptions,
+    ensure_stream_options, ChatCompletionRequest, ChatCompletionResponse, Message, MessageContent,
+    StreamOptions,
 };
