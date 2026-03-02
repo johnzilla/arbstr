@@ -40,6 +40,9 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 - **Config hygiene warnings** -- file permission checks, plaintext key warnings with actionable suggestions
 - **Cost querying API** -- GET /v1/stats for aggregate cost/performance data with time range presets and model/provider filtering; GET /v1/requests for paginated request log browsing with sorting
 - **Graceful shutdown** -- handles SIGINT/SIGTERM to drain in-flight requests and database writes before exiting
+- **Rate limiting** -- optional global rate limit (`rate_limit_rps` in config) to protect endpoints from excessive load
+- **Bearer token auth** -- optional `auth_token` in config; when set, `/v1/chat/completions` and `/v1/models` require `Authorization: Bearer <token>`
+- **Bounded DB writer** -- database writes use a bounded channel (capacity 1024) with backpressure instead of unbounded fire-and-forget spawns
 - **Per-request correlation IDs** -- UUID tracing for every request through the system
 - **Mock mode** -- test locally without real provider API calls
 
@@ -78,6 +81,8 @@ Copy `config.example.toml` to `config.toml` and customize:
 ```toml
 [server]
 listen = "127.0.0.1:8080"
+# rate_limit_rps = 100       # optional global rate limit (requests/sec)
+# auth_token = "my-secret"   # optional bearer token for proxy endpoints
 
 # Providers -- rates in satoshis per 1000 tokens
 [[providers]]
@@ -218,7 +223,8 @@ src/
 ├── router/
 │   └── selector.rs      # Provider selection and cost calculation
 └── storage/
-    ├── logging.rs       # SQLite request logging (async fire-and-forget)
+    ├── writer.rs        # Bounded channel DB writer with backpressure
+    ├── logging.rs       # Request log types and SQL operations
     ├── stats.rs         # Aggregate stats queries (read-only pool)
     └── logs.rs          # Paginated log queries with dynamic filters
 ```
@@ -232,6 +238,7 @@ src/
 | **v1.2** | Streaming observability -- SSE token extraction, post-stream DB updates, trailing cost events, stream duration tracking | Shipped |
 | **v1.3** | Cost querying API -- aggregate stats, time range filtering, paginated request log listing with sorting | Shipped |
 | **v1.4** | Resilience and compatibility -- per-provider circuit breakers with health endpoint, graceful shutdown, unknown field passthrough for full OpenAI API compatibility, multimodal message content support | Shipped |
+| **v1.5** | Hardening -- bounded DB writer, database indexes, configurable rate limiting, optional bearer token authentication | Shipped |
 
 ## Related Projects
 

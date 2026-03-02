@@ -3,6 +3,7 @@
 pub mod logging;
 pub mod logs;
 pub mod stats;
+pub mod writer;
 
 pub use logging::{
     spawn_stream_completion_update, spawn_usage_update, update_stream_completion, update_usage,
@@ -10,6 +11,7 @@ pub use logging::{
 };
 pub use logs::{count_logs, query_logs, LogRow};
 pub use stats::{query_aggregate, query_grouped_by_model, AggregateRow, ModelRow};
+pub use writer::DbWriter;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;

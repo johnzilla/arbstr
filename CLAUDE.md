@@ -98,7 +98,7 @@ sequenceDiagram
 - **Circuit Breaker** (`src/proxy/circuit_breaker.rs`): Per-provider Closed/Open/Half-Open state machine with DashMap registry, watch-based probe signaling, and RAII ProbeGuard
 - **Router** (`src/router/`): Provider selection logic, cost optimization
 - **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
-- **Storage** (`src/storage/`): SQLite request logging with async fire-and-forget writes, read-only analytics pool for stats/logs queries
+- **Storage** (`src/storage/`): SQLite request logging via bounded channel writer (capacity 1024), read-only analytics pool for stats/logs queries
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
 
 **Planned:**
@@ -132,6 +132,8 @@ Config file: `config.toml` (see `config.example.toml` for full example)
 ```toml
 [server]
 listen = "127.0.0.1:8080"
+# rate_limit_rps = 100       # optional (requests/sec, 0 or absent = unlimited)
+# auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models
 
 [database]
 path = "./arbstr.db"
@@ -220,6 +222,7 @@ CREATE TABLE token_ratios (
 - **v1.2** -- Streaming observability: `stream_options` injection for usage data, SSE line-buffered parser with cross-chunk reassembly, `wrap_sse_stream` with panic isolation, channel-based streaming handler, trailing SSE event with cost/latency metadata, post-stream DB UPDATE for tokens/cost/duration/status
 - **v1.3** -- Cost querying API: GET /v1/stats with aggregate queries and per-model breakdown, GET /v1/requests with paginated log listing, read-only SQLite pool, time range presets and ISO 8601 filtering, model/provider filtering, sort column whitelist for SQL injection prevention, nested response structure (tokens/cost/timing/error)
 - **v1.4** -- Resilience and compatibility: per-provider circuit breakers (Closed/Open/Half-Open with DashMap registry, watch-based probe signaling, RAII ProbeGuard), enhanced `/health` endpoint with per-provider state, graceful shutdown (SIGINT/SIGTERM), handler refactor (extracted shared routing/logging/circuit-breaker logic from streaming/non-streaming paths), `#[serde(flatten)]` passthrough for unknown OpenAI fields (`tools`, `tool_choice`, `response_format`, `seed`, etc.), `MessageContent` enum for multimodal content (string or content-part arrays)
+- **v1.5** -- Hardening: bounded DB writer (mpsc channel, capacity 1024, backpressure via `try_send`), database indexes on `model`/`provider`/`timestamp`/`correlation_id`, configurable rate limiting (`rate_limit_rps` via `tower::limit::RateLimitLayer` + `BufferLayer`), optional bearer token authentication on proxy endpoints (`auth_token` in `[server]` config)
 
 ## Key Files
 
@@ -244,7 +247,8 @@ src/
 │   └── selector.rs      # Provider selection (cheapest, policy constraints)
 └── storage/
     ├── mod.rs
-    ├── logging.rs       # Async fire-and-forget SQLite request logging
+    ├── writer.rs        # Bounded channel DB writer (mpsc, backpressure via try_send)
+    ├── logging.rs       # Request log types, insert/update SQL operations
     ├── stats.rs         # Aggregate stats queries, exists_in_db validation, read-only pool init
     └── logs.rs          # Paginated log queries (count_logs, query_logs) with dynamic WHERE/ORDER BY
 tests/

@@ -7,6 +7,11 @@
 [server]
 # Address to listen on
 listen = "127.0.0.1:8080"
+# Global rate limit in requests per second (optional, omit or 0 = unlimited)
+# rate_limit_rps = 100
+# Optional bearer token for proxy endpoint authentication
+# When set, /v1/chat/completions and /v1/models require Authorization: Bearer <token>
+# auth_token = "my-secret-token"
 
 [database]
 # SQLite database path for logging and learning

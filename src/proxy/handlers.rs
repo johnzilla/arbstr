@@ -16,7 +16,7 @@ use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, Ca
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
 use crate::error::Error;
-use crate::storage::logging::{spawn_log_write, RequestLog};
+use crate::storage::logging::RequestLog;
 
 pub use super::logs::logs_handler as logs;
 pub use super::stats::stats_handler as stats;
@@ -157,7 +157,7 @@ fn routing_error_status(e: &Error) -> u16 {
     }
 }
 
-/// Log a failed request to the database (fire-and-forget).
+/// Log a failed request to the database via the bounded writer.
 fn log_error_to_db(
     state: &AppState,
     ctx: &RequestContext,
@@ -166,56 +166,50 @@ fn log_error_to_db(
     status_code: u16,
     message: String,
 ) {
-    if let Some(pool) = &state.db {
-        spawn_log_write(
-            pool,
-            RequestLog {
-                correlation_id: ctx.correlation_id.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                model: ctx.model.clone(),
-                provider,
-                policy: ctx.policy_name.clone(),
-                streaming: ctx.is_streaming,
-                input_tokens: None,
-                output_tokens: None,
-                cost_sats: None,
-                provider_cost_sats: None,
-                latency_ms,
-                success: false,
-                error_status: Some(status_code),
-                error_message: Some(message),
-            },
-        );
+    if let Some(writer) = &state.db_writer {
+        writer.log_write(RequestLog {
+            correlation_id: ctx.correlation_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: ctx.model.clone(),
+            provider,
+            policy: ctx.policy_name.clone(),
+            streaming: ctx.is_streaming,
+            input_tokens: None,
+            output_tokens: None,
+            cost_sats: None,
+            provider_cost_sats: None,
+            latency_ms,
+            success: false,
+            error_status: Some(status_code),
+            error_message: Some(message),
+        });
     }
 }
 
-/// Log a successful request outcome to the database (fire-and-forget).
+/// Log a successful request outcome to the database via the bounded writer.
 fn log_success_to_db(
     state: &AppState,
     ctx: &RequestContext,
     latency_ms: i64,
     outcome: &RequestOutcome,
 ) {
-    if let Some(pool) = &state.db {
-        spawn_log_write(
-            pool,
-            RequestLog {
-                correlation_id: ctx.correlation_id.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                model: ctx.model.clone(),
-                provider: Some(outcome.provider_name.clone()),
-                policy: ctx.policy_name.clone(),
-                streaming: ctx.is_streaming,
-                input_tokens: outcome.input_tokens,
-                output_tokens: outcome.output_tokens,
-                cost_sats: outcome.cost_sats,
-                provider_cost_sats: outcome.provider_cost_sats,
-                latency_ms,
-                success: true,
-                error_status: None,
-                error_message: None,
-            },
-        );
+    if let Some(writer) = &state.db_writer {
+        writer.log_write(RequestLog {
+            correlation_id: ctx.correlation_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: ctx.model.clone(),
+            provider: Some(outcome.provider_name.clone()),
+            policy: ctx.policy_name.clone(),
+            streaming: ctx.is_streaming,
+            input_tokens: outcome.input_tokens,
+            output_tokens: outcome.output_tokens,
+            cost_sats: outcome.cost_sats,
+            provider_cost_sats: outcome.provider_cost_sats,
+            latency_ms,
+            success: true,
+            error_status: None,
+            error_message: None,
+        });
     }
 }
 
@@ -684,7 +678,7 @@ async fn send_to_provider(
             upstream_response,
             provider,
             correlation_id.to_string(),
-            state.db.clone(),
+            state.db_writer.clone(),
             stream_start,
         )
         .await
@@ -776,7 +770,7 @@ async fn handle_streaming_response(
     upstream_response: reqwest::Response,
     provider: &crate::router::SelectedProvider,
     correlation_id: String,
-    pool: Option<sqlx::SqlitePool>,
+    db_writer: Option<crate::storage::DbWriter>,
     stream_start: std::time::Instant,
 ) -> std::result::Result<RequestOutcome, RequestError> {
     let provider_name = provider.name.clone();
@@ -878,10 +872,9 @@ async fn handle_streaming_response(
         }
         // tx is dropped here, closing the channel and signaling end-of-body
 
-        // Fire DB UPDATE (always, regardless of client status)
-        if let Some(pool) = pool {
-            crate::storage::logging::spawn_stream_completion_update(
-                &pool,
+        // Fire DB UPDATE via bounded writer (always, regardless of client status)
+        if let Some(writer) = db_writer {
+            writer.stream_completion_update(
                 cid,
                 input_tokens,
                 output_tokens,

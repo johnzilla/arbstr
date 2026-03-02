@@ -31,6 +31,8 @@ fn test_config() -> Config {
     Config {
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
+            rate_limit_rps: None,
+            auth_token: None,
         },
         database: None,
         providers: vec![
@@ -85,6 +87,7 @@ async fn setup_test_app() -> (axum::Router, SqlitePool) {
         config: Arc::new(config),
         db: Some(pool.clone()),
         read_db: Some(pool.clone()),
+        db_writer: None,
         circuit_breakers: Arc::new(CircuitBreakerRegistry::new(&[])),
     };
 

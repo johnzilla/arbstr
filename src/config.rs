@@ -23,6 +23,11 @@ pub struct ServerConfig {
     /// Address to listen on (e.g., "127.0.0.1:8080")
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// Global rate limit in requests per second (0 or absent = unlimited)
+    #[serde(default)]
+    pub rate_limit_rps: Option<u64>,
+    /// Optional bearer token for proxy endpoint authentication
+    pub auth_token: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -771,6 +776,8 @@ mod tests {
         RawConfig {
             server: ServerConfig {
                 listen: "127.0.0.1:9000".to_string(),
+                rate_limit_rps: None,
+                auth_token: None,
             },
             database: None,
             providers: vec![RawProviderConfig {

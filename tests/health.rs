@@ -33,6 +33,8 @@ fn setup_circuit_test_app(
     let config = Config {
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
+            rate_limit_rps: None,
+            auth_token: None,
         },
         database: None,
         providers: providers.clone(),
@@ -52,6 +54,7 @@ fn setup_circuit_test_app(
         config: Arc::new(config),
         db: None,
         read_db: None,
+        db_writer: None,
         circuit_breakers: registry.clone(),
     };
 

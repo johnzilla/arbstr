@@ -223,6 +223,8 @@ fn mock_config() -> Config {
     Config {
         server: ServerConfig {
             listen: "127.0.0.1:8080".to_string(),
+            rate_limit_rps: None,
+            auth_token: None,
         },
         database: Some(DatabaseConfig {
             path: ":memory:".to_string(),

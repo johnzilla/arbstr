@@ -1,6 +1,7 @@
 //! HTTP server setup and configuration.
 
 use axum::{
+    error_handling::HandleErrorLayer,
     middleware,
     response::Response,
     routing::{get, post},
@@ -10,6 +11,7 @@ use reqwest::Client;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
+use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -17,6 +19,7 @@ use super::circuit_breaker::CircuitBreakerRegistry;
 use super::handlers;
 use crate::config::Config;
 use crate::router::Router as ProviderRouter;
+use crate::storage::DbWriter;
 
 /// Per-request correlation ID stored in request extensions.
 #[derive(Clone, Debug)]
@@ -30,7 +33,43 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: Option<SqlitePool>,
     pub read_db: Option<SqlitePool>,
+    pub db_writer: Option<DbWriter>,
     pub circuit_breakers: Arc<CircuitBreakerRegistry>,
+}
+
+/// Middleware that verifies the `Authorization: Bearer <token>` header.
+///
+/// Returns 401 Unauthorized if the token is missing or incorrect.
+/// Only applied when `server.auth_token` is set in config.
+async fn auth_middleware(
+    expected_token: Arc<String>,
+    request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Response {
+    let auth_header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(value) if value.strip_prefix("Bearer ") == Some(expected_token.as_str()) => {
+            next.run(request).await
+        }
+        _ => {
+            let body = serde_json::json!({
+                "error": {
+                    "message": "Invalid or missing bearer token",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key"
+                }
+            });
+            Response::builder()
+                .status(axum::http::StatusCode::UNAUTHORIZED)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        }
+    }
 }
 
 /// Middleware that generates a correlation ID and stores it in request extensions.
@@ -45,33 +84,68 @@ async fn inject_request_id(
 
 /// Create the axum router with all endpoints.
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        // OpenAI-compatible endpoints
+    let rate_limit_rps = state.config.server.rate_limit_rps;
+    let auth_token = state.config.server.auth_token.clone();
+
+    // Proxy endpoints that require auth (when configured)
+    let proxy_routes = Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models", get(handlers::list_models))
-        // arbstr extensions
+        .route("/v1/models", get(handlers::list_models));
+
+    // Apply auth middleware only if a token is configured
+    let proxy_routes = if let Some(token) = auth_token {
+        let token = Arc::new(token);
+        proxy_routes.layer(middleware::from_fn(move |req, next| {
+            let token = token.clone();
+            auth_middleware(token, req, next)
+        }))
+    } else {
+        proxy_routes
+    };
+
+    let mut app = proxy_routes
+        // arbstr extensions (no auth required)
         .route("/v1/stats", get(handlers::stats))
         .route("/v1/requests", get(handlers::logs))
         .route("/health", get(handlers::health))
         .route("/providers", get(handlers::list_providers))
         // State and middleware
-        .with_state(state)
-        .layer(TraceLayer::new_for_http().make_span_with(
-            |request: &axum::http::Request<axum::body::Body>| {
-                let request_id = request
-                    .extensions()
-                    .get::<RequestId>()
-                    .map(|r| r.0)
-                    .unwrap_or_else(Uuid::new_v4);
-                tracing::info_span!(
-                    "request",
-                    method = %request.method(),
-                    uri = %request.uri(),
-                    request_id = %request_id,
-                )
-            },
-        ))
-        .layer(middleware::from_fn(inject_request_id))
+        .with_state(state);
+
+    // Apply rate limiting if configured (buffer + rate limit for Clone compatibility)
+    if let Some(rps) = rate_limit_rps {
+        if rps > 0 {
+            tracing::info!(rps = rps, "Rate limiting enabled");
+            app = app.layer(
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(|_: tower::BoxError| async {
+                        axum::http::StatusCode::TOO_MANY_REQUESTS
+                    }))
+                    .layer(tower::buffer::BufferLayer::new(1024))
+                    .layer(tower::limit::RateLimitLayer::new(
+                        rps,
+                        Duration::from_secs(1),
+                    )),
+            );
+        }
+    }
+
+    app.layer(TraceLayer::new_for_http().make_span_with(
+        |request: &axum::http::Request<axum::body::Body>| {
+            let request_id = request
+                .extensions()
+                .get::<RequestId>()
+                .map(|r| r.0)
+                .unwrap_or_else(Uuid::new_v4);
+            tracing::info_span!(
+                "request",
+                method = %request.method(),
+                uri = %request.uri(),
+                request_id = %request_id,
+            )
+        },
+    ))
+    .layer(middleware::from_fn(inject_request_id))
 }
 
 /// Run the HTTP server.
@@ -124,6 +198,9 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         None => None,
     };
 
+    // Initialize bounded DB writer if database is available
+    let db_writer = db.as_ref().map(|pool| DbWriter::new(pool.clone()));
+
     // Initialize circuit breaker registry with one breaker per provider
     let provider_names: Vec<String> = config.providers.iter().map(|p| p.name.clone()).collect();
     let circuit_breakers = Arc::new(CircuitBreakerRegistry::new(&provider_names));
@@ -134,6 +211,7 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         config: Arc::new(config),
         db,
         read_db,
+        db_writer,
         circuit_breakers,
     };
 
