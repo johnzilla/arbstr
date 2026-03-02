@@ -9,74 +9,25 @@
 //! - Half-open providers count as degraded, not unhealthy
 //! - Failure count is accurately reported
 
-use std::sync::Arc;
+mod common;
+
 use std::time::Duration;
 
 use axum::body::Body;
 use http::Request;
 use tower::ServiceExt;
 
-use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
-use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry, CircuitState};
-use arbstr::router::Router as ProviderRouter;
+use arbstr::config::ProviderConfig;
+use arbstr::proxy::{CircuitBreakerRegistry, CircuitState};
 
 /// Number of failures needed to trip a circuit (matches FAILURE_THRESHOLD in circuit_breaker.rs).
 const FAILURE_THRESHOLD: u32 = 3;
-
-/// Build an arbstr test app with custom providers and return the router + registry.
-fn setup_circuit_test_app(
-    providers: Vec<ProviderConfig>,
-) -> (axum::Router, Arc<CircuitBreakerRegistry>) {
-    let provider_names: Vec<String> = providers.iter().map(|p| p.name.clone()).collect();
-    let registry = Arc::new(CircuitBreakerRegistry::new(&provider_names));
-
-    let config = Config {
-        server: ServerConfig {
-            listen: "127.0.0.1:0".to_string(),
-            rate_limit_rps: None,
-            auth_token: None,
-        },
-        database: None,
-        providers: providers.clone(),
-        policies: PoliciesConfig::default(),
-        logging: Default::default(),
-    };
-
-    let provider_router = ProviderRouter::new(
-        config.providers.clone(),
-        config.policies.rules.clone(),
-        config.policies.default_strategy.clone(),
-    );
-
-    let state = AppState {
-        router: Arc::new(provider_router),
-        http_client: reqwest::Client::new(),
-        config: Arc::new(config),
-        db: None,
-        read_db: None,
-        db_writer: None,
-        circuit_breakers: registry.clone(),
-    };
-
-    let app = create_router(state);
-    (app, registry)
-}
 
 /// Trip a provider's circuit by recording FAILURE_THRESHOLD consecutive failures.
 fn trip_circuit(registry: &CircuitBreakerRegistry, provider: &str) {
     for _ in 0..FAILURE_THRESHOLD {
         registry.record_failure(provider, "5xx", "Internal Server Error");
     }
-}
-
-/// Parse the response body as JSON and return (status_code, json_value).
-async fn parse_body(response: axum::response::Response) -> (http::StatusCode, serde_json::Value) {
-    let status = response.status();
-    let body_bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
-        .await
-        .expect("read body");
-    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap_or_default();
-    (status, json)
 }
 
 /// Standard provider config for tests.
@@ -99,11 +50,11 @@ fn test_provider(name: &str) -> ProviderConfig {
 #[tokio::test]
 async fn test_health_ok_all_closed() {
     let providers = vec![test_provider("provider-a"), test_provider("provider-b")];
-    let (app, _registry) = setup_circuit_test_app(providers);
+    let (app, _registry) = common::setup_circuit_test_app(providers);
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
     assert_eq!(json["status"], "ok");
@@ -124,11 +75,11 @@ async fn test_health_ok_all_closed() {
 
 #[tokio::test]
 async fn test_health_ok_zero_providers() {
-    let (app, _registry) = setup_circuit_test_app(vec![]);
+    let (app, _registry) = common::setup_circuit_test_app(vec![]);
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
     assert_eq!(json["status"], "ok");
@@ -146,14 +97,14 @@ async fn test_health_ok_zero_providers() {
 #[tokio::test]
 async fn test_health_degraded_one_open() {
     let providers = vec![test_provider("provider-a"), test_provider("provider-b")];
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip only provider-a
     trip_circuit(&registry, "provider-a");
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
     assert_eq!(json["status"], "degraded");
@@ -174,7 +125,7 @@ async fn test_health_degraded_one_open() {
 #[tokio::test]
 async fn test_health_unhealthy_all_open() {
     let providers = vec![test_provider("provider-a"), test_provider("provider-b")];
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip both circuits
     trip_circuit(&registry, "provider-a");
@@ -182,7 +133,7 @@ async fn test_health_unhealthy_all_open() {
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(json["status"], "unhealthy");
@@ -198,7 +149,7 @@ async fn test_health_unhealthy_all_open() {
 #[tokio::test(start_paused = true)]
 async fn test_health_degraded_half_open() {
     let providers = vec![test_provider("provider-a")];
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip the circuit
     trip_circuit(&registry, "provider-a");
@@ -214,7 +165,7 @@ async fn test_health_degraded_half_open() {
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
     assert_eq!(json["status"], "degraded");
@@ -228,7 +179,7 @@ async fn test_health_degraded_half_open() {
 #[tokio::test(start_paused = true)]
 async fn test_health_degraded_mix_open_half_open() {
     let providers = vec![test_provider("provider-a"), test_provider("provider-b")];
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip both circuits
     trip_circuit(&registry, "provider-a");
@@ -249,7 +200,7 @@ async fn test_health_degraded_mix_open_half_open() {
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
     assert_eq!(
@@ -268,13 +219,13 @@ async fn test_health_degraded_mix_open_half_open() {
 #[tokio::test]
 async fn test_health_single_provider_open() {
     let providers = vec![test_provider("provider-a")];
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     trip_circuit(&registry, "provider-a");
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(json["status"], "unhealthy");
@@ -288,7 +239,7 @@ async fn test_health_single_provider_open() {
 #[tokio::test]
 async fn test_health_failure_count_increments() {
     let providers = vec![test_provider("provider-a")];
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Record 2 failures (below threshold of 3)
     registry.record_failure("provider-a", "5xx", "Error 1");
@@ -296,7 +247,7 @@ async fn test_health_failure_count_increments() {
 
     let request = Request::get("/health").body(Body::empty()).unwrap();
     let response = app.oneshot(request).await.unwrap();
-    let (status, json) = parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
     assert_eq!(json["status"], "ok");

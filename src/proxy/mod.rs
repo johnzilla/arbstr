@@ -10,6 +10,7 @@ mod server;
 pub mod stats;
 pub mod stream;
 pub mod types;
+pub(crate) mod validation;
 
 pub use server::{create_router, run_server, AppState, RequestId};
 pub mod circuit_breaker;

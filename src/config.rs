@@ -401,11 +401,6 @@ where
     Ok(result)
 }
 
-/// Expand all `${VAR}` references in a string using real environment variables.
-fn expand_env_vars(input: &str, provider_name: &str) -> Result<String, ConfigError> {
-    expand_env_vars_with(input, provider_name, |name| std::env::var(name).ok())
-}
-
 /// Derive the convention-based env var name for a provider.
 ///
 /// Transforms provider name to `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`:
@@ -417,39 +412,45 @@ pub fn convention_env_var_name(provider_name: &str) -> String {
     format!("ARBSTR_{}_API_KEY", upper_snake)
 }
 
-/// Try convention-based env var lookup for a provider's API key.
-///
-/// Returns `Some((var_name, value))` if `ARBSTR_<NAME>_API_KEY` is set.
-fn convention_key_lookup(provider_name: &str) -> Option<(String, String)> {
-    let var_name = convention_env_var_name(provider_name);
-    std::env::var(&var_name).ok().map(|value| (var_name, value))
-}
-
 impl Config {
     /// Convert raw (deserialized) config to final config with env var expansion.
     ///
-    /// For each provider:
-    /// - If `api_key` contains `${VAR}`: expand from environment, source = `EnvExpanded`
-    /// - If `api_key` is a literal string: wrap directly, source = `Literal`
-    /// - If `api_key` is absent: try convention lookup (`ARBSTR_<NAME>_API_KEY`),
-    ///   source = `Convention(var_name)` or `KeySource::None`
+    /// Uses real environment variables via `std::env::var`.
     pub fn from_raw(raw: RawConfig) -> Result<(Self, Vec<(String, KeySource)>), ConfigError> {
+        Self::from_raw_with_lookup(raw, |name| std::env::var(name).ok())
+    }
+
+    /// Convert raw config with a custom env var lookup function.
+    ///
+    /// For each provider:
+    /// - If `api_key` contains `${VAR}`: expand using `env_lookup`, source = `EnvExpanded`
+    /// - If `api_key` is a literal string: wrap directly, source = `Literal`
+    /// - If `api_key` is absent: try convention lookup via `env_lookup`,
+    ///   source = `Convention(var_name)` or `KeySource::None`
+    pub fn from_raw_with_lookup<F>(
+        raw: RawConfig,
+        env_lookup: F,
+    ) -> Result<(Self, Vec<(String, KeySource)>), ConfigError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let mut providers = Vec::with_capacity(raw.providers.len());
         let mut key_sources = Vec::with_capacity(raw.providers.len());
 
         for rp in raw.providers {
             let (api_key, source) = match rp.api_key {
                 Some(ref raw_key) if raw_key.contains("${") => {
-                    let expanded = expand_env_vars(raw_key, &rp.name)?;
+                    let expanded = expand_env_vars_with(raw_key, &rp.name, &env_lookup)?;
                     (Some(ApiKey::from(expanded)), KeySource::EnvExpanded)
                 }
                 Some(ref raw_key) => (Some(ApiKey::from(raw_key.as_str())), KeySource::Literal),
-                None => match convention_key_lookup(&rp.name) {
-                    Some((var_name, value)) => {
-                        (Some(ApiKey::from(value)), KeySource::Convention(var_name))
+                None => {
+                    let var_name = convention_env_var_name(&rp.name);
+                    match env_lookup(&var_name) {
+                        Some(value) => (Some(ApiKey::from(value)), KeySource::Convention(var_name)),
+                        None => (None, KeySource::None),
                     }
-                    None => (None, KeySource::None),
-                },
+                }
             };
 
             key_sources.push((rp.name.clone(), source));
@@ -814,13 +815,15 @@ mod tests {
 
     #[test]
     fn test_from_raw_env_expanded_key() {
-        // Use a unique env var name to avoid parallel test interference
-        let var_name = "TEST_06_01_EXPAND_KEY";
-        let var_value = "cashu-expanded-token-abc123";
-        unsafe { std::env::set_var(var_name, var_value) };
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "MY_EXPAND_KEY".to_string(),
+            "cashu-expanded-token-abc123".to_string(),
+        );
 
-        let raw = make_raw_config("test-env-expand", Some(format!("${{{}}}", var_name)));
-        let (config, key_sources) = Config::from_raw(raw).unwrap();
+        let raw = make_raw_config("test-env-expand", Some("${MY_EXPAND_KEY}".to_string()));
+        let (config, key_sources) =
+            Config::from_raw_with_lookup(raw, |name| env.get(name).cloned()).unwrap();
 
         assert_eq!(key_sources[0].1, KeySource::EnvExpanded);
         assert_eq!(
@@ -829,24 +832,24 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .expose_secret(),
-            var_value
+            "cashu-expanded-token-abc123"
         );
-
-        unsafe { std::env::remove_var(var_name) };
     }
 
     #[test]
     fn test_from_raw_convention_key() {
-        // Use a unique provider name that maps to a unique env var
         let provider_name = "test-conv-0601";
         let var_name = convention_env_var_name(provider_name);
         let var_value = "cashu-convention-token-xyz789";
-        unsafe { std::env::set_var(&var_name, var_value) };
+
+        let mut env = std::collections::HashMap::new();
+        env.insert(var_name.clone(), var_value.to_string());
 
         let raw = make_raw_config(provider_name, None);
-        let (config, key_sources) = Config::from_raw(raw).unwrap();
+        let (config, key_sources) =
+            Config::from_raw_with_lookup(raw, |name| env.get(name).cloned()).unwrap();
 
-        assert_eq!(key_sources[0].1, KeySource::Convention(var_name.clone()));
+        assert_eq!(key_sources[0].1, KeySource::Convention(var_name));
         assert_eq!(
             config.providers[0]
                 .api_key
@@ -855,19 +858,12 @@ mod tests {
                 .expose_secret(),
             var_value
         );
-
-        unsafe { std::env::remove_var(&var_name) };
     }
 
     #[test]
     fn test_from_raw_no_key() {
-        // Ensure no convention env var is set for this provider
-        let provider_name = "test-nokey-0601-unique";
-        let var_name = convention_env_var_name(provider_name);
-        unsafe { std::env::remove_var(&var_name) };
-
-        let raw = make_raw_config(provider_name, None);
-        let (config, key_sources) = Config::from_raw(raw).unwrap();
+        let raw = make_raw_config("test-nokey-0601-unique", None);
+        let (config, key_sources) = Config::from_raw_with_lookup(raw, |_| None).unwrap();
 
         assert_eq!(key_sources[0].1, KeySource::None);
         assert!(config.providers[0].api_key.is_none());
@@ -875,17 +871,16 @@ mod tests {
 
     #[test]
     fn test_from_raw_missing_env_var_fails() {
-        // Ensure this env var is definitely not set
-        let var_name = "TEST_06_01_DEFINITELY_MISSING";
-        unsafe { std::env::remove_var(var_name) };
-
-        let raw = make_raw_config("test-missing-env", Some(format!("${{{}}}", var_name)));
-        let result = Config::from_raw(raw);
+        let raw = make_raw_config(
+            "test-missing-env",
+            Some("${DEFINITELY_MISSING}".to_string()),
+        );
+        let result = Config::from_raw_with_lookup(raw, |_| None);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains(var_name),
+            err.contains("DEFINITELY_MISSING"),
             "Error should name the variable: {}",
             err
         );

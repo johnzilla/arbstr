@@ -169,7 +169,7 @@ fn log_error_to_db(
     if let Some(writer) = &state.db_writer {
         writer.log_write(RequestLog {
             correlation_id: ctx.correlation_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             model: ctx.model.clone(),
             provider,
             policy: ctx.policy_name.clone(),
@@ -196,7 +196,7 @@ fn log_success_to_db(
     if let Some(writer) = &state.db_writer {
         writer.log_write(RequestLog {
             correlation_id: ctx.correlation_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             model: ctx.model.clone(),
             provider: Some(outcome.provider_name.clone()),
             policy: ctx.policy_name.clone(),

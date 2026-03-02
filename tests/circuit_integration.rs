@@ -10,15 +10,14 @@
 //! Uses lightweight mock HTTP servers (axum on random ports) as fake
 //! providers, and `tower::ServiceExt::oneshot` for the arbstr router.
 
-use std::sync::Arc;
+mod common;
 
 use axum::body::Body;
 use http::Request;
 use tower::ServiceExt;
 
-use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
-use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry, CircuitState};
-use arbstr::router::Router as ProviderRouter;
+use arbstr::config::ProviderConfig;
+use arbstr::proxy::{CircuitBreakerRegistry, CircuitState};
 
 /// Number of failures needed to trip a circuit (matches FAILURE_THRESHOLD in circuit_breaker.rs).
 const FAILURE_THRESHOLD: u32 = 3;
@@ -106,45 +105,6 @@ async fn start_mock_provider_400() -> String {
     format!("http://127.0.0.1:{}/v1", addr.port())
 }
 
-/// Build an arbstr test app with custom providers and return the router + registry.
-fn setup_circuit_test_app(
-    providers: Vec<ProviderConfig>,
-) -> (axum::Router, Arc<CircuitBreakerRegistry>) {
-    let provider_names: Vec<String> = providers.iter().map(|p| p.name.clone()).collect();
-    let registry = Arc::new(CircuitBreakerRegistry::new(&provider_names));
-
-    let config = Config {
-        server: ServerConfig {
-            listen: "127.0.0.1:0".to_string(),
-            rate_limit_rps: None,
-            auth_token: None,
-        },
-        database: None,
-        providers: providers.clone(),
-        policies: PoliciesConfig::default(),
-        logging: Default::default(),
-    };
-
-    let provider_router = ProviderRouter::new(
-        config.providers.clone(),
-        config.policies.rules.clone(),
-        config.policies.default_strategy.clone(),
-    );
-
-    let state = AppState {
-        router: Arc::new(provider_router),
-        http_client: reqwest::Client::new(),
-        config: Arc::new(config),
-        db: None,
-        read_db: None,
-        db_writer: None,
-        circuit_breakers: registry.clone(),
-    };
-
-    let app = create_router(state);
-    (app, registry)
-}
-
 /// Trip a provider's circuit by recording FAILURE_THRESHOLD consecutive failures.
 fn trip_circuit(registry: &CircuitBreakerRegistry, provider: &str) {
     for _ in 0..FAILURE_THRESHOLD {
@@ -152,7 +112,7 @@ fn trip_circuit(registry: &CircuitBreakerRegistry, provider: &str) {
     }
 }
 
-/// Build a non-streaming chat completion request body.
+/// Build a chat completion request body.
 fn chat_request_body(stream: bool) -> String {
     serde_json::json!({
         "model": "gpt-4o",
@@ -160,16 +120,6 @@ fn chat_request_body(stream: bool) -> String {
         "stream": stream
     })
     .to_string()
-}
-
-/// Parse the response body as JSON.
-async fn parse_body(response: axum::response::Response) -> (http::StatusCode, serde_json::Value) {
-    let status = response.status();
-    let body_bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
-        .await
-        .expect("read body");
-    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap_or_default();
-    (status, json)
 }
 
 // ============================================================================
@@ -199,7 +149,7 @@ async fn test_non_streaming_503_all_circuits_open() {
         },
     ];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip both circuits
     trip_circuit(&registry, "provider-a");
@@ -211,7 +161,7 @@ async fn test_non_streaming_503_all_circuits_open() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    let (status, body) = parse_body(response).await;
+    let (status, body) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
     assert!(
@@ -253,7 +203,7 @@ async fn test_non_streaming_skips_open_circuit() {
         },
     ];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip only provider-a's circuit
     trip_circuit(&registry, "provider-a");
@@ -304,7 +254,7 @@ async fn test_streaming_503_all_circuits_open() {
         },
     ];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip both circuits
     trip_circuit(&registry, "provider-a");
@@ -316,7 +266,7 @@ async fn test_streaming_503_all_circuits_open() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    let (status, body) = parse_body(response).await;
+    let (status, body) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
     assert!(
@@ -358,7 +308,7 @@ async fn test_streaming_skips_open_circuit() {
         },
     ];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Trip only provider-a's circuit
     trip_circuit(&registry, "provider-a");
@@ -404,7 +354,7 @@ async fn test_circuit_records_failure_on_5xx() {
         base_fee: 0,
     }];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Verify initial state
     assert_eq!(registry.failure_count("provider-a"), Some(0));
@@ -447,7 +397,7 @@ async fn test_circuit_stays_closed_on_4xx() {
         base_fee: 0,
     }];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     assert_eq!(registry.failure_count("provider-a"), Some(0));
 
@@ -489,7 +439,7 @@ async fn test_non_streaming_records_success() {
         base_fee: 0,
     }];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     // Add 2 failures (below threshold) to verify success resets them
     registry.record_failure("provider-a", "5xx", "Error 1");
@@ -536,7 +486,7 @@ async fn test_streaming_records_failure_on_5xx() {
         base_fee: 0,
     }];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
 
     assert_eq!(registry.failure_count("provider-a"), Some(0));
 
@@ -572,7 +522,7 @@ async fn test_503_has_request_id_header() {
         base_fee: 0,
     }];
 
-    let (app, registry) = setup_circuit_test_app(providers);
+    let (app, registry) = common::setup_circuit_test_app(providers);
     trip_circuit(&registry, "provider-a");
 
     let request = Request::post("/v1/chat/completions")

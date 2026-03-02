@@ -4,89 +4,17 @@
 //! seeds it with known request records, and makes HTTP requests via
 //! `tower::ServiceExt::oneshot` (no TCP listener needed).
 
+mod common;
+
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use axum::body::Body;
 use http::Request;
 use sqlx::SqlitePool;
 use tower::ServiceExt;
 
-use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
-use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
-use arbstr::router::Router as ProviderRouter;
-
 /// Global counter for generating unique correlation IDs.
 static CORRELATION_COUNTER: AtomicU64 = AtomicU64::new(10_000);
-
-/// Build a minimal test config with known providers.
-fn test_config() -> Config {
-    Config {
-        server: ServerConfig {
-            listen: "127.0.0.1:0".to_string(),
-            rate_limit_rps: None,
-            auth_token: None,
-        },
-        database: None,
-        providers: vec![
-            ProviderConfig {
-                name: "alpha".to_string(),
-                url: "https://alpha.test/v1".to_string(),
-                api_key: None,
-                models: vec!["gpt-4o".to_string(), "claude-3.5-sonnet".to_string()],
-                input_rate: 10,
-                output_rate: 30,
-                base_fee: 1,
-            },
-            ProviderConfig {
-                name: "beta".to_string(),
-                url: "https://beta.test/v1".to_string(),
-                api_key: None,
-                models: vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()],
-                input_rate: 5,
-                output_rate: 15,
-                base_fee: 0,
-            },
-        ],
-        policies: PoliciesConfig::default(),
-        logging: Default::default(),
-    }
-}
-
-/// Create an in-memory SQLite pool, run migrations, and return the pool
-/// along with an axum Router ready for `oneshot` requests.
-async fn setup_test_app() -> (axum::Router, SqlitePool) {
-    let pool = SqlitePool::connect("sqlite::memory:")
-        .await
-        .expect("Failed to create in-memory SQLite pool");
-
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    let config = test_config();
-    let provider_router = ProviderRouter::new(
-        config.providers.clone(),
-        config.policies.rules.clone(),
-        config.policies.default_strategy.clone(),
-    );
-
-    let http_client = reqwest::Client::new();
-
-    let state = AppState {
-        router: Arc::new(provider_router),
-        http_client,
-        config: Arc::new(config),
-        db: Some(pool.clone()),
-        read_db: Some(pool.clone()),
-        db_writer: None,
-        circuit_breakers: Arc::new(CircuitBreakerRegistry::new(&[])),
-    };
-
-    let app = create_router(state);
-    (app, pool)
-}
 
 /// Insert a request row into the database.
 ///
@@ -294,7 +222,7 @@ async fn get(app: axum::Router, uri: &str) -> (http::StatusCode, serde_json::Val
 /// Test 1: Default pagination (no params, default last_7d)
 #[tokio::test]
 async fn test_logs_default_page() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests").await;
@@ -313,7 +241,7 @@ async fn test_logs_default_page() {
 /// Test 2: Custom page size
 #[tokio::test]
 async fn test_logs_custom_page_size() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?per_page=2").await;
@@ -328,7 +256,7 @@ async fn test_logs_custom_page_size() {
 /// Test 3: Page 2 of paginated results
 #[tokio::test]
 async fn test_logs_page_2() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?per_page=2&page=2").await;
@@ -341,7 +269,7 @@ async fn test_logs_page_2() {
 /// Test 4: Out-of-range page returns 200 with empty data
 #[tokio::test]
 async fn test_logs_out_of_range_page() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?page=999").await;
@@ -355,7 +283,7 @@ async fn test_logs_out_of_range_page() {
 /// Test 5: per_page clamped to max 100
 #[tokio::test]
 async fn test_logs_per_page_clamped_to_100() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?per_page=500").await;
@@ -371,7 +299,7 @@ async fn test_logs_per_page_clamped_to_100() {
 /// Test 6: Filter by model (includes old record with last_30d)
 #[tokio::test]
 async fn test_logs_filter_by_model() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?model=gpt-4o&range=last_30d").await;
@@ -388,7 +316,7 @@ async fn test_logs_filter_by_model() {
 /// Test 7: Filter by provider
 #[tokio::test]
 async fn test_logs_filter_by_provider() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?provider=beta").await;
@@ -405,7 +333,7 @@ async fn test_logs_filter_by_provider() {
 /// Test 8: Filter by success=false
 #[tokio::test]
 async fn test_logs_filter_by_success() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?success=false").await;
@@ -420,7 +348,7 @@ async fn test_logs_filter_by_success() {
 /// Test 9: Filter by streaming=true
 #[tokio::test]
 async fn test_logs_filter_by_streaming() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?streaming=true").await;
@@ -435,7 +363,7 @@ async fn test_logs_filter_by_streaming() {
 /// Test 10: Combined filters (model + provider)
 #[tokio::test]
 async fn test_logs_combined_filters() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?model=gpt-4o&provider=alpha").await;
@@ -453,7 +381,7 @@ async fn test_logs_combined_filters() {
 /// Test 11: Non-existent model returns 404
 #[tokio::test]
 async fn test_logs_filter_nonexistent_model_404() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, _body) = get(app, "/v1/requests?model=nonexistent").await;
@@ -464,7 +392,7 @@ async fn test_logs_filter_nonexistent_model_404() {
 /// Test 12: Non-existent provider returns 404
 #[tokio::test]
 async fn test_logs_filter_nonexistent_provider_404() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, _body) = get(app, "/v1/requests?provider=nonexistent").await;
@@ -475,7 +403,7 @@ async fn test_logs_filter_nonexistent_provider_404() {
 /// Test 13: Time range last_30d includes old record
 #[tokio::test]
 async fn test_logs_time_range_last_30d() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?range=last_30d").await;
@@ -492,7 +420,7 @@ async fn test_logs_time_range_last_30d() {
 /// Test 14: Sort by cost ascending
 #[tokio::test]
 async fn test_logs_sort_by_cost_asc() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?sort=cost_sats&order=asc").await;
@@ -522,7 +450,7 @@ async fn test_logs_sort_by_cost_asc() {
 /// Test 15: Sort by latency descending
 #[tokio::test]
 async fn test_logs_sort_by_latency_desc() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?sort=latency_ms&order=desc").await;
@@ -557,7 +485,7 @@ async fn test_logs_sort_by_latency_desc() {
 /// Test 16: Invalid sort field returns 400
 #[tokio::test]
 async fn test_logs_invalid_sort_field_400() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?sort=invalid").await;
@@ -577,7 +505,7 @@ async fn test_logs_invalid_sort_field_400() {
 /// Test 17: Invalid sort order returns 400
 #[tokio::test]
 async fn test_logs_invalid_sort_order_400() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?sort=timestamp&order=sideways").await;
@@ -601,7 +529,7 @@ async fn test_logs_invalid_sort_order_400() {
 /// Test 18: Verify nested response structure on a success record
 #[tokio::test]
 async fn test_logs_response_structure() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?per_page=1").await;
@@ -673,7 +601,7 @@ async fn test_logs_response_structure() {
 /// Test 19: Error section present on failed request
 #[tokio::test]
 async fn test_logs_error_section_present_on_failure() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?success=false").await;
@@ -699,7 +627,7 @@ async fn test_logs_error_section_present_on_failure() {
 /// Test 20: Error section absent on successful request
 #[tokio::test]
 async fn test_logs_error_section_absent_on_success() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_logs_data(&pool).await;
 
     let (status, body) = get(app, "/v1/requests?success=true&per_page=1").await;

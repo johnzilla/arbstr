@@ -199,13 +199,6 @@ CREATE TABLE requests (
     error_status INTEGER,
     error_message TEXT
 );
-
--- Learned input/output ratios per policy (populated in future phases)
-CREATE TABLE token_ratios (
-    policy TEXT PRIMARY KEY,
-    avg_ratio REAL NOT NULL,
-    sample_count INTEGER NOT NULL DEFAULT 0
-);
 ```
 
 ## Testing Strategy
@@ -241,6 +234,7 @@ src/
 │   ├── stream.rs        # SSE observer, wrap_sse_stream, StreamResultHandle
 │   ├── stats.rs         # /v1/stats handler, time range resolution, StatsQuery/StatsResponse
 │   ├── logs.rs          # /v1/requests handler, pagination, LogsQuery/LogsResponse/LogEntry
+│   ├── validation.rs    # Shared model/provider filter validation
 │   └── types.rs         # OpenAI-compatible request/response types, MessageContent enum
 ├── router/
 │   ├── mod.rs

@@ -4,8 +4,9 @@
 //! seeds it with known request records, and makes HTTP requests via
 //! `tower::ServiceExt::oneshot` (no TCP listener needed).
 
+mod common;
+
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use axum::body::Body;
 use http::Request;
@@ -14,10 +15,6 @@ use tower::ServiceExt;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
-use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
-use arbstr::router::Router as ProviderRouter;
-
 /// Format a DateTime<Utc> as RFC 3339 with `Z` suffix (URL-safe, no `+` sign).
 fn rfc3339z(dt: &DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -25,75 +22,6 @@ fn rfc3339z(dt: &DateTime<Utc>) -> String {
 
 /// Global counter for generating unique correlation IDs.
 static CORRELATION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Build a minimal test config with known providers.
-fn test_config() -> Config {
-    Config {
-        server: ServerConfig {
-            listen: "127.0.0.1:0".to_string(),
-            rate_limit_rps: None,
-            auth_token: None,
-        },
-        database: None,
-        providers: vec![
-            ProviderConfig {
-                name: "alpha".to_string(),
-                url: "https://alpha.test/v1".to_string(),
-                api_key: None,
-                models: vec!["gpt-4o".to_string(), "claude-3.5-sonnet".to_string()],
-                input_rate: 10,
-                output_rate: 30,
-                base_fee: 1,
-            },
-            ProviderConfig {
-                name: "beta".to_string(),
-                url: "https://beta.test/v1".to_string(),
-                api_key: None,
-                models: vec!["gpt-4o-mini".to_string()],
-                input_rate: 5,
-                output_rate: 15,
-                base_fee: 0,
-            },
-        ],
-        policies: PoliciesConfig::default(),
-        logging: Default::default(),
-    }
-}
-
-/// Create an in-memory SQLite pool, run migrations, and return the pool
-/// along with an axum Router ready for `oneshot` requests.
-async fn setup_test_app() -> (axum::Router, SqlitePool) {
-    let pool = SqlitePool::connect("sqlite::memory:")
-        .await
-        .expect("Failed to create in-memory SQLite pool");
-
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    let config = test_config();
-    let provider_router = ProviderRouter::new(
-        config.providers.clone(),
-        config.policies.rules.clone(),
-        config.policies.default_strategy.clone(),
-    );
-
-    let http_client = reqwest::Client::new();
-
-    let state = AppState {
-        router: Arc::new(provider_router),
-        http_client,
-        config: Arc::new(config),
-        db: Some(pool.clone()),
-        read_db: Some(pool.clone()),
-        db_writer: None,
-        circuit_breakers: Arc::new(CircuitBreakerRegistry::new(&[])),
-    };
-
-    let app = create_router(state);
-    (app, pool)
-}
 
 /// Insert a request row into the database.
 async fn seed_request(
@@ -219,7 +147,7 @@ async fn get(app: axum::Router, uri: &str) -> (http::StatusCode, serde_json::Val
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_aggregate_default() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats").await;
@@ -251,7 +179,7 @@ async fn test_stats_aggregate_default() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_aggregate_with_range_last_24h() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?range=last_24h").await;
@@ -265,7 +193,7 @@ async fn test_stats_aggregate_with_range_last_24h() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_aggregate_with_range_last_30d() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?range=last_30d").await;
@@ -280,7 +208,7 @@ async fn test_stats_aggregate_with_range_last_30d() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_explicit_time_range() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let now = Utc::now();
@@ -300,7 +228,7 @@ async fn test_stats_explicit_time_range() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_explicit_overrides_preset() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let now = Utc::now();
@@ -320,7 +248,7 @@ async fn test_stats_explicit_overrides_preset() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_filter_by_model() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?model=gpt-4o&range=last_30d").await;
@@ -335,7 +263,7 @@ async fn test_stats_filter_by_model() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_filter_by_provider() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?provider=alpha&range=last_30d").await;
@@ -350,7 +278,7 @@ async fn test_stats_filter_by_provider() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_filter_case_insensitive() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?model=GPT-4O&range=last_30d").await;
@@ -364,7 +292,7 @@ async fn test_stats_filter_case_insensitive() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_filter_nonexistent_model_404() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?model=nonexistent").await;
@@ -386,7 +314,7 @@ async fn test_stats_filter_nonexistent_model_404() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_filter_nonexistent_provider_404() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, _body) = get(app, "/v1/stats?provider=nonexistent").await;
@@ -399,7 +327,7 @@ async fn test_stats_filter_nonexistent_provider_404() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_group_by_model() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(app, "/v1/stats?group_by=model&range=last_30d").await;
@@ -428,7 +356,7 @@ async fn test_stats_group_by_model() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_empty_time_range() {
-    let (app, pool) = setup_test_app().await;
+    let (app, pool) = common::setup_db_test_app().await;
     seed_standard_data(&pool).await;
 
     let (status, body) = get(
@@ -456,7 +384,7 @@ async fn test_stats_empty_time_range() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_invalid_timestamp_400() {
-    let (app, _pool) = setup_test_app().await;
+    let (app, _pool) = common::setup_db_test_app().await;
 
     let (status, _body) = get(app, "/v1/stats?since=not-a-date").await;
 
@@ -468,7 +396,7 @@ async fn test_stats_invalid_timestamp_400() {
 // ──────────────────────────────────────────────────
 #[tokio::test]
 async fn test_stats_invalid_range_preset_400() {
-    let (app, _pool) = setup_test_app().await;
+    let (app, _pool) = common::setup_db_test_app().await;
 
     let (status, _body) = get(app, "/v1/stats?range=last_999d").await;
 

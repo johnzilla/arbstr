@@ -169,38 +169,12 @@ pub async fn stats_handler(
 
     // Validate model filter (404 for non-existent)
     if let Some(ref model_filter) = params.model {
-        let in_config = state.config.providers.iter().any(|p| {
-            p.models
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(model_filter))
-        });
-        if !in_config {
-            let in_db = storage::stats::exists_in_db(pool, "model", model_filter).await?;
-            if !in_db {
-                return Err(Error::NotFound(format!(
-                    "Model '{}' not found",
-                    model_filter
-                )));
-            }
-        }
+        super::validation::validate_model_filter(&state.config, pool, model_filter).await?;
     }
 
     // Validate provider filter (404 for non-existent)
     if let Some(ref provider_filter) = params.provider {
-        let in_config = state
-            .config
-            .providers
-            .iter()
-            .any(|p| p.name.eq_ignore_ascii_case(provider_filter));
-        if !in_config {
-            let in_db = storage::stats::exists_in_db(pool, "provider", provider_filter).await?;
-            if !in_db {
-                return Err(Error::NotFound(format!(
-                    "Provider '{}' not found",
-                    provider_filter
-                )));
-            }
-        }
+        super::validation::validate_provider_filter(&state.config, pool, provider_filter).await?;
     }
 
     // Validate group_by
