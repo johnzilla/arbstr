@@ -221,10 +221,9 @@ fn log_success_to_db(
 fn attach_retries_header(response: &mut Response, retries_header: &Option<String>) {
     if let Some(retries_val) = retries_header {
         if let Ok(val) = HeaderValue::from_str(retries_val) {
-            response.headers_mut().insert(
-                HeaderName::from_static(ARBSTR_RETRIES_HEADER),
-                val,
-            );
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static(ARBSTR_RETRIES_HEADER), val);
         } else {
             tracing::error!(retries_val, "Invalid retries header value");
         }
@@ -475,10 +474,7 @@ async fn handle_non_streaming_path(
     let timeout_result = timeout_at(
         deadline,
         retry_with_fallback(&candidate_infos, attempts.clone(), |info| {
-            let provider = resolved
-                .candidates
-                .iter()
-                .find(|c| c.name == info.name);
+            let provider = resolved.candidates.iter().find(|c| c.name == info.name);
             let provider = match provider {
                 Some(p) => p,
                 None => {
