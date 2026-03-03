@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v1.1
+milestone_name: milestone
+status: unknown
+last_updated: "2026-03-03T00:38:13.554Z"
+progress:
+  total_phases: 4
+  completed_phases: 4
+  total_plans: 10
+  completed_plans: 10
+---
+
 # Project State
 
 ## Project Reference
@@ -42,6 +55,8 @@ Progress: All milestones shipped (v1 through v1.4)
 
 Decisions are logged in PROJECT.md Key Decisions table.
 See .planning/milestones/ for per-milestone decision history.
+- [Phase quick]: Input token estimation uses 4 chars/token heuristic for cost preview
+- [Phase quick]: Default output token estimate is 256 when max_tokens absent
 
 ### Pending Todos
 
