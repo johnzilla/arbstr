@@ -48,7 +48,7 @@ dashmap = "6"
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-bytes = "1"
+bytes = "1.11.1"
 futures = "0.3"
 tokio-stream = "0.1"
 
