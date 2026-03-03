@@ -1029,11 +1029,10 @@ pub async fn cost_estimate(
     let prompt = request.user_prompt().map(|s| s.to_string());
 
     // Select cheapest provider via router (no upstream call)
-    let provider = state.router.select(
-        &request.model,
-        policy_name.as_deref(),
-        prompt.as_deref(),
-    )?;
+    let provider =
+        state
+            .router
+            .select(&request.model, policy_name.as_deref(), prompt.as_deref())?;
 
     // Estimate input tokens: sum all message content lengths, divide by 4, minimum 1
     let total_chars: usize = request
