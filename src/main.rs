@@ -61,6 +61,27 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Install panic hook that logs via tracing instead of raw stderr
+    std::panic::set_hook(Box::new(|info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic payload".to_string()
+        };
+
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+
+        tracing::error!(
+            panic.message = %payload,
+            panic.location = location.as_deref().unwrap_or("unknown"),
+            "panic occurred"
+        );
+    }));
+
     let cli = Cli::parse();
 
     match cli.command {
