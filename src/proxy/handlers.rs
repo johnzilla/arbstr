@@ -99,10 +99,11 @@ fn attach_arbstr_headers(
     let headers = response.headers_mut();
 
     // Always present
-    headers.insert(
-        HeaderName::from_static(ARBSTR_REQUEST_ID_HEADER),
-        HeaderValue::from_str(request_id).unwrap(),
-    );
+    if let Ok(val) = HeaderValue::from_str(request_id) {
+        headers.insert(HeaderName::from_static(ARBSTR_REQUEST_ID_HEADER), val);
+    } else {
+        tracing::error!(request_id, "Invalid request ID header value");
+    }
 
     if is_streaming {
         headers.insert(
@@ -118,19 +119,22 @@ fn attach_arbstr_headers(
         );
         // Non-streaming: include cost if known
         if let Some(cost) = cost_sats {
-            headers.insert(
-                HeaderName::from_static(ARBSTR_COST_SATS_HEADER),
-                HeaderValue::from_str(&format!("{:.2}", cost)).unwrap(),
-            );
+            let cost_str = format!("{:.2}", cost);
+            if let Ok(val) = HeaderValue::from_str(&cost_str) {
+                headers.insert(HeaderName::from_static(ARBSTR_COST_SATS_HEADER), val);
+            } else {
+                tracing::error!(cost_str, "Invalid cost header value");
+            }
         }
     }
 
     // Provider: present when known
     if let Some(provider_name) = provider {
-        headers.insert(
-            HeaderName::from_static(ARBSTR_PROVIDER_HEADER),
-            HeaderValue::from_str(provider_name).unwrap(),
-        );
+        if let Ok(val) = HeaderValue::from_str(provider_name) {
+            headers.insert(HeaderName::from_static(ARBSTR_PROVIDER_HEADER), val);
+        } else {
+            tracing::error!(provider_name, "Invalid provider header value");
+        }
     }
 }
 
@@ -216,10 +220,14 @@ fn log_success_to_db(
 /// Attach the `x-arbstr-retries` header if present.
 fn attach_retries_header(response: &mut Response, retries_header: &Option<String>) {
     if let Some(retries_val) = retries_header {
-        response.headers_mut().insert(
-            HeaderName::from_static(ARBSTR_RETRIES_HEADER),
-            HeaderValue::from_str(retries_val).unwrap(),
-        );
+        if let Ok(val) = HeaderValue::from_str(retries_val) {
+            response.headers_mut().insert(
+                HeaderName::from_static(ARBSTR_RETRIES_HEADER),
+                val,
+            );
+        } else {
+            tracing::error!(retries_val, "Invalid retries header value");
+        }
     }
 }
 
@@ -470,16 +478,37 @@ async fn handle_non_streaming_path(
             let provider = resolved
                 .candidates
                 .iter()
-                .find(|c| c.name == info.name)
-                .expect("candidate info must match a provider");
-            send_to_provider(&state, &request, provider, &ctx.correlation_id, false)
+                .find(|c| c.name == info.name);
+            let provider = match provider {
+                Some(p) => p,
+                None => {
+                    let name = info.name.clone();
+                    return futures::future::Either::Left(async move {
+                        Err(RequestError {
+                            error: Error::Internal(
+                                "candidate info did not match any provider".into(),
+                            ),
+                            provider_name: Some(name),
+                            status_code: 500,
+                            message: "Internal routing error".into(),
+                        })
+                    });
+                }
+            };
+            futures::future::Either::Right(send_to_provider(
+                &state,
+                &request,
+                provider,
+                &ctx.correlation_id,
+                false,
+            ))
         }),
     )
     .await;
 
     let latency_ms = ctx.start.elapsed().as_millis() as i64;
 
-    let recorded_attempts = attempts.lock().unwrap().clone();
+    let recorded_attempts = attempts.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let retries_header = format_retries_header(&recorded_attempts);
 
     // Record circuit breaker outcomes for failed attempts
@@ -740,11 +769,23 @@ async fn handle_non_streaming_response(
         );
     }
 
+    let body_bytes = serde_json::to_vec(&response).map_err(|e| RequestError {
+        error: Error::Internal(format!("Failed to serialize response: {e}")),
+        provider_name: Some(provider.name.clone()),
+        status_code: 500,
+        message: format!("Failed to serialize response: {e}"),
+    })?;
+
     let http_response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&response).unwrap()))
-        .unwrap();
+        .body(Body::from(body_bytes))
+        .map_err(|e| RequestError {
+            error: Error::Internal(format!("Failed to build response: {e}")),
+            provider_name: Some(provider.name.clone()),
+            status_code: 500,
+            message: format!("Failed to build response: {e}"),
+        })?;
 
     Ok(RequestOutcome {
         response: http_response,
@@ -894,7 +935,12 @@ async fn handle_streaming_response(
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .body(body)
-        .unwrap();
+        .map_err(|e| RequestError {
+            error: Error::Internal(format!("Failed to build streaming response: {e}")),
+            provider_name: Some(provider_name.clone()),
+            status_code: 500,
+            message: format!("Failed to build streaming response: {e}"),
+        })?;
 
     // Tokens/cost will be filled by DB UPDATE from the spawned task
     Ok(RequestOutcome {
@@ -924,7 +970,10 @@ fn build_trailing_sse_event(cost_sats: Option<f64>, latency_ms: i64) -> Vec<u8> 
         }
     });
 
-    let json_str = serde_json::to_string(&event_json).expect("json! macro always serializable");
+    let json_str = serde_json::to_string(&event_json).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "Failed to serialize trailing SSE event");
+        String::new()
+    });
     format!("data: {}\n\ndata: [DONE]\n\n", json_str).into_bytes()
 }
 
