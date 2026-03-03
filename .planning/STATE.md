@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Status: v1.4 Circuit Breaker milestone complete
-Last activity: 2026-02-16 -- Milestone v1.4 archived
+Last activity: 2026-03-03 - Completed quick task 1: Add /v1/cost endpoint for request cost estimation
 
 Progress: All milestones shipped (v1 through v1.4)
 
@@ -65,6 +65,12 @@ None.
 ### Blockers/Concerns
 
 - Routstr provider stream_options support unknown -- safe degradation (NULL usage) prevents regression
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 1 | Add /v1/cost endpoint for request cost estimation | 2026-03-03 | eef7233 | [1-add-v1-cost-endpoint-for-request-cost-es](./quick/1-add-v1-cost-endpoint-for-request-cost-es/) |
 
 ## Session Continuity
 
