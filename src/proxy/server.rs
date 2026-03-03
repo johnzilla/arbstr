@@ -90,7 +90,8 @@ pub fn create_router(state: AppState) -> Router {
     // Proxy endpoints that require auth (when configured)
     let proxy_routes = Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models", get(handlers::list_models));
+        .route("/v1/models", get(handlers::list_models))
+        .route("/v1/cost", post(handlers::cost_estimate));
 
     // Apply auth middleware only if a token is configured
     let proxy_routes = if let Some(token) = auth_token {

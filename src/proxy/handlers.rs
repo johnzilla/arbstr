@@ -1009,6 +1009,66 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
+/// Handle POST /v1/cost - estimate request cost without proxying.
+///
+/// Accepts the same `ChatCompletionRequest` body as `/v1/chat/completions`.
+/// Returns the selected provider, estimated token counts, and cost in sats.
+/// Does NOT call any upstream provider.
+pub async fn cost_estimate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ChatCompletionRequest>,
+) -> Result<impl IntoResponse, Error> {
+    // Extract policy name from X-Arbstr-Policy header (same as chat_completions)
+    let policy_name = headers
+        .get(ARBSTR_POLICY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Extract user prompt for heuristic policy matching
+    let prompt = request.user_prompt().map(|s| s.to_string());
+
+    // Select cheapest provider via router (no upstream call)
+    let provider = state.router.select(
+        &request.model,
+        policy_name.as_deref(),
+        prompt.as_deref(),
+    )?;
+
+    // Estimate input tokens: sum all message content lengths, divide by 4, minimum 1
+    let total_chars: usize = request
+        .messages
+        .iter()
+        .map(|m| m.content.as_str().len())
+        .sum();
+    let estimated_input_tokens = (total_chars / 4).max(1) as u32;
+
+    // Estimate output tokens: use max_tokens if present, otherwise default 256
+    let estimated_output_tokens = request.max_tokens.unwrap_or(256);
+
+    // Calculate estimated cost
+    let estimated_cost_sats = crate::router::actual_cost_sats(
+        estimated_input_tokens,
+        estimated_output_tokens,
+        provider.input_rate,
+        provider.output_rate,
+        provider.base_fee,
+    );
+
+    Ok(Json(serde_json::json!({
+        "model": request.model,
+        "provider": provider.name,
+        "estimated_input_tokens": estimated_input_tokens,
+        "estimated_output_tokens": estimated_output_tokens,
+        "estimated_cost_sats": estimated_cost_sats,
+        "rates": {
+            "input_rate_sats_per_1k": provider.input_rate,
+            "output_rate_sats_per_1k": provider.output_rate,
+            "base_fee_sats": provider.base_fee,
+        }
+    })))
+}
+
 /// Handle GET /providers - arbstr extension to list providers
 pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
     let providers: Vec<serde_json::Value> = state
