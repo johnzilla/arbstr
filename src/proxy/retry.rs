@@ -125,7 +125,8 @@ where
     F: Fn(&CandidateInfo) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, E>>,
 {
-    assert!(
+    // Callers validate via router -- empty candidates is a bug, not a runtime condition.
+    debug_assert!(
         !candidates.is_empty(),
         "retry_with_fallback requires at least one candidate"
     );
@@ -148,10 +149,13 @@ where
                 let retryable = is_retryable(err.status_code());
 
                 // Record failed attempt in shared vec
-                attempts.lock().unwrap().push(AttemptRecord {
-                    provider_name: primary.name.clone(),
-                    status_code: err.status_code(),
-                });
+                attempts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(AttemptRecord {
+                        provider_name: primary.name.clone(),
+                        status_code: err.status_code(),
+                    });
 
                 if !retryable {
                     // Non-retryable error: fail immediately, no fallback
@@ -175,10 +179,13 @@ where
             }
             Err(err) => {
                 // Record fallback failure
-                attempts.lock().unwrap().push(AttemptRecord {
-                    provider_name: fallback.name.clone(),
-                    status_code: err.status_code(),
-                });
+                attempts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(AttemptRecord {
+                        provider_name: fallback.name.clone(),
+                        status_code: err.status_code(),
+                    });
 
                 return RetryOutcome { result: Err(err) };
             }
@@ -186,8 +193,11 @@ where
     }
 
     // No fallback available -- return last primary error
+    // SAFETY: The for loop (0..=MAX_RETRIES) always executes at least once.
+    // Every Err branch sets last_error = Some(err). If we reach here,
+    // all attempts returned Err, so last_error is always Some.
     RetryOutcome {
-        result: Err(last_error.expect("at least one attempt was made")),
+        result: Err(last_error.expect("unreachable: loop always sets last_error")),
     }
 }
 
