@@ -341,7 +341,7 @@ impl CircuitBreakerRegistry {
         // Lock inner, extract check result and any data needed for error/wait.
         // CRITICAL: Mutex and DashMap entry are dropped before any .await.
         let (check_result, error_info, mut rx) = {
-            let mut inner = cb.inner.lock().unwrap();
+            let mut inner = cb.inner.lock().unwrap_or_else(|e| e.into_inner());
             let result = inner.check_state();
             let err_info = (
                 inner
@@ -402,7 +402,7 @@ impl CircuitBreakerRegistry {
     /// Resets the consecutive failure counter.
     pub fn record_success(&self, provider_name: &str) {
         if let Some(entry) = self.breakers.get(provider_name) {
-            let mut inner = entry.value().inner.lock().unwrap();
+            let mut inner = entry.value().inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.record_success(provider_name);
         }
     }
@@ -412,7 +412,7 @@ impl CircuitBreakerRegistry {
     /// Increments failure counter; may trip the circuit to Open.
     pub fn record_failure(&self, provider_name: &str, error_type: &str, message: &str) {
         if let Some(entry) = self.breakers.get(provider_name) {
-            let mut inner = entry.value().inner.lock().unwrap();
+            let mut inner = entry.value().inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.record_failure(provider_name, error_type, message);
         }
     }
@@ -426,7 +426,7 @@ impl CircuitBreakerRegistry {
     pub fn record_probe_success(&self, provider_name: &str) {
         if let Some(entry) = self.breakers.get(provider_name) {
             let cb = entry.value();
-            let mut inner = cb.inner.lock().unwrap();
+            let mut inner = cb.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.record_probe_success(provider_name);
             let _ = cb.probe_watch.send(ProbeResult::Success);
         }
@@ -440,7 +440,7 @@ impl CircuitBreakerRegistry {
     pub fn record_probe_failure(&self, provider_name: &str, error_type: &str, message: &str) {
         if let Some(entry) = self.breakers.get(provider_name) {
             let cb = entry.value();
-            let mut inner = cb.inner.lock().unwrap();
+            let mut inner = cb.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.record_probe_failure(provider_name, error_type, message);
             let _ = cb.probe_watch.send(ProbeResult::Failed);
         }
@@ -453,7 +453,7 @@ impl CircuitBreakerRegistry {
         self.breakers
             .iter()
             .map(|entry| {
-                let inner = entry.value().inner.lock().unwrap();
+                let inner = entry.value().inner.lock().unwrap_or_else(|e| e.into_inner());
                 CircuitSnapshot {
                     name: entry.key().clone(),
                     state: inner.state,
@@ -467,21 +467,21 @@ impl CircuitBreakerRegistry {
     pub fn state(&self, provider_name: &str) -> Option<CircuitState> {
         self.breakers
             .get(provider_name)
-            .map(|entry| entry.value().inner.lock().unwrap().state)
+            .map(|entry| entry.value().inner.lock().unwrap_or_else(|e| e.into_inner()).state)
     }
 
     /// Read-only accessor for current failure count (for Phase 15).
     pub fn failure_count(&self, provider_name: &str) -> Option<u32> {
         self.breakers
             .get(provider_name)
-            .map(|entry| entry.value().inner.lock().unwrap().failure_count)
+            .map(|entry| entry.value().inner.lock().unwrap_or_else(|e| e.into_inner()).failure_count)
     }
 
     /// Read-only accessor for cumulative trip count (for Phase 15).
     pub fn trip_count(&self, provider_name: &str) -> Option<u32> {
         self.breakers
             .get(provider_name)
-            .map(|entry| entry.value().inner.lock().unwrap().trip_count)
+            .map(|entry| entry.value().inner.lock().unwrap_or_else(|e| e.into_inner()).trip_count)
     }
 }
 
