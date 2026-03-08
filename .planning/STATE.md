@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Status: v1.4 Circuit Breaker milestone complete
-Last activity: 2026-03-03 - Completed quick task 4: Add tracing-based panic hook for production observability
+Last activity: 2026-03-08 - Completed quick task 5: Refactor mutex .unwrap() in circuit_breaker.rs
 
 Progress: All milestones shipped (v1 through v1.4)
 
@@ -63,6 +63,7 @@ See .planning/milestones/ for per-milestone decision history.
 - [Phase quick]: Used futures::future::Either for fallible closure in retry_with_fallback
 - [Phase quick]: No backtrace capture in panic hook -- controlled by RUST_BACKTRACE env var
 - [Phase quick]: Used structured tracing fields (panic.message, panic.location) for log aggregator filtering
+- [Phase quick]: Only modified production code mutex locks; left test .unwrap() unchanged
 
 ### Pending Todos
 
@@ -80,9 +81,10 @@ None.
 | 2 | Fix vulnerable dependencies (bytes crate) | 2026-03-03 | aa91f8c | [2-fix-vulnerable-dependencies-bytes-crate-](./quick/2-fix-vulnerable-dependencies-bytes-crate-/) |
 | 3 | Refactor expect/unwrap calls in handlers.rs and retry.rs | 2026-03-03 | 4b20c1b | [3-refactor-expect-calls-in-handlers-rs-str](./quick/3-refactor-expect-calls-in-handlers-rs-str/) |
 | 4 | Add tracing-based panic hook for production observability | 2026-03-03 | 87e9b95 | [4-add-tracing-based-panic-hook-for-product](./quick/4-add-tracing-based-panic-hook-for-product/) |
+| 5 | Refactor mutex .unwrap() in circuit_breaker.rs | 2026-03-08 | 1ecb789 | [5-refactor-expect-calls-in-stream-retry-to](./quick/5-refactor-expect-calls-in-stream-retry-to/) |
 
 ## Session Continuity
 
-Last session: 2026-03-03
-Stopped at: Completed quick-4 (Add tracing-based panic hook)
+Last session: 2026-03-08
+Stopped at: Completed quick-5 (Refactor mutex .unwrap() in circuit_breaker.rs)
 Resume file: Between milestones. Next: /gsd:new-milestone
