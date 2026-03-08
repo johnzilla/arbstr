@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Status: v1.4 Circuit Breaker milestone complete
-Last activity: 2026-03-08 - Completed quick task 5: Refactor mutex .unwrap() in circuit_breaker.rs
+Last activity: 2026-03-08 - Completed quick task 6: Reorganize developer docs (DEVELOPMENT.md)
 
 Progress: All milestones shipped (v1 through v1.4)
 
@@ -64,6 +64,7 @@ See .planning/milestones/ for per-milestone decision history.
 - [Phase quick]: No backtrace capture in panic hook -- controlled by RUST_BACKTRACE env var
 - [Phase quick]: Used structured tracing fields (panic.message, panic.location) for log aggregator filtering
 - [Phase quick]: Only modified production code mutex locks; left test .unwrap() unchanged
+- [Phase quick]: Kept all CLAUDE.md technical content verbatim in DEVELOPMENT.md for accuracy
 
 ### Pending Todos
 
@@ -82,9 +83,10 @@ None.
 | 3 | Refactor expect/unwrap calls in handlers.rs and retry.rs | 2026-03-03 | 4b20c1b | [3-refactor-expect-calls-in-handlers-rs-str](./quick/3-refactor-expect-calls-in-handlers-rs-str/) |
 | 4 | Add tracing-based panic hook for production observability | 2026-03-03 | 87e9b95 | [4-add-tracing-based-panic-hook-for-product](./quick/4-add-tracing-based-panic-hook-for-product/) |
 | 5 | Refactor mutex .unwrap() in circuit_breaker.rs | 2026-03-08 | 1ecb789 | [5-refactor-expect-calls-in-stream-retry-to](./quick/5-refactor-expect-calls-in-stream-retry-to/) |
+| 6 | Reorganize developer docs (DEVELOPMENT.md, CONTRIBUTING.md) | 2026-03-08 | b56cdbd | [6-reorganize-developer-docs-development-md](./quick/6-reorganize-developer-docs-development-md/) |
 
 ## Session Continuity
 
 Last session: 2026-03-08
-Stopped at: Completed quick-5 (Refactor mutex .unwrap() in circuit_breaker.rs)
+Stopped at: Completed quick-6 (Reorganize developer docs - DEVELOPMENT.md, CONTRIBUTING.md)
 Resume file: Between milestones. Next: /gsd:new-milestone
