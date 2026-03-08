@@ -193,40 +193,12 @@ arbstr providers [OPTIONS]      List configured providers
 
 ## Development
 
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full development guide including architecture, database schema, and internals.
+
 ```bash
-cargo test                                    # Run tests
-cargo run -- serve --mock                     # Run with mock providers
-RUST_LOG=arbstr=debug cargo run -- serve --mock  # Debug logging
-cargo run -- check -c config.toml             # Validate config
-cargo fmt && cargo clippy -- -D warnings      # Format and lint
-```
-
-See [CLAUDE.md](./CLAUDE.md) for detailed development documentation including architecture, database schema, and testing strategy.
-
-## Project Structure
-
-```
-src/
-├── main.rs              # CLI entry point (serve, check, providers)
-├── lib.rs               # Library root
-├── config.rs            # Configuration, env var expansion, secret types
-├── error.rs             # Error types (OpenAI-compatible responses)
-├── proxy/
-│   ├── server.rs        # axum server setup, middleware, graceful shutdown
-│   ├── handlers.rs      # Request handlers (streaming + non-streaming)
-│   ├── circuit_breaker.rs # Per-provider circuit breaker state machine
-│   ├── retry.rs         # Retry with backoff and provider fallback
-│   ├── stream.rs        # SSE stream interception and usage extraction
-│   ├── stats.rs         # Aggregate stats handler and time range resolution
-│   ├── logs.rs          # Paginated request log handler with sorting
-│   └── types.rs         # OpenAI-compatible request/response types
-├── router/
-│   └── selector.rs      # Provider selection and cost calculation
-└── storage/
-    ├── writer.rs        # Bounded channel DB writer with backpressure
-    ├── logging.rs       # Request log types and SQL operations
-    ├── stats.rs         # Aggregate stats queries (read-only pool)
-    └── logs.rs          # Paginated log queries with dynamic filters
+cargo test                    # Run all tests
+cargo run -- serve --mock     # Run with mock providers
+cargo fmt && cargo clippy -- -D warnings  # Format and lint
 ```
 
 ## Roadmap
@@ -247,7 +219,7 @@ src/
 
 ## Contributing
 
-This project is being built in public. Issues and PRs welcome.
+This project is being built in public. See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and contribution guidelines.
 
 ## License
 
