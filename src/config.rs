@@ -9,6 +9,7 @@ use std::path::Path;
 pub struct Config {
     pub server: ServerConfig,
     pub database: Option<DatabaseConfig>,
+    pub vault: Option<VaultConfig>,
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -199,6 +200,35 @@ pub struct PolicyRule {
     pub keywords: Vec<String>,
 }
 
+/// Vault treasury service configuration.
+///
+/// When present, arbstr core integrates with an arbstr vault instance
+/// for per-agent billing via reserve/settle/release on each request.
+/// When absent, arbstr runs in free proxy mode (no billing).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VaultConfig {
+    /// Base URL for the vault internal API (e.g., "http://localhost:3000")
+    pub url: String,
+    /// Shared secret for internal API authentication (X-Internal-Token header)
+    pub internal_token: ApiKey,
+    /// Default max output tokens for reserve ceiling when client doesn't set max_tokens.
+    /// This caps financial exposure per request. Default: 4096.
+    #[serde(default = "default_reserve_tokens")]
+    pub default_reserve_tokens: u32,
+    /// Maximum pending settlements before rejecting new paid requests (503).
+    /// Default: 100.
+    #[serde(default = "default_pending_threshold")]
+    pub pending_threshold: u32,
+}
+
+fn default_reserve_tokens() -> u32 {
+    4096
+}
+
+fn default_pending_threshold() -> u32 {
+    100
+}
+
 /// Logging configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoggingConfig {
@@ -337,6 +367,7 @@ pub struct RawProviderConfig {
 pub struct RawConfig {
     server: ServerConfig,
     database: Option<DatabaseConfig>,
+    vault: Option<VaultConfig>,
     #[serde(default)]
     providers: Vec<RawProviderConfig>,
     #[serde(default)]
@@ -469,6 +500,7 @@ impl Config {
         let config = Config {
             server: raw.server,
             database: raw.database,
+            vault: raw.vault,
             providers,
             policies: raw.policies,
             logging: raw.logging,
@@ -781,6 +813,7 @@ mod tests {
                 auth_token: None,
             },
             database: None,
+            vault: None,
             providers: vec![RawProviderConfig {
                 name: provider_name.to_string(),
                 url: "https://example.com/v1".to_string(),

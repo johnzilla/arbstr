@@ -17,6 +17,17 @@ listen = "127.0.0.1:8080"
 # SQLite database path for logging and learning
 path = "./arbstr.db"
 
+# Vault treasury integration (optional)
+# When configured, requests require vault billing via reserve/settle/release.
+# When absent, arbstr runs in free proxy mode (no billing).
+# [vault]
+# url = "http://localhost:3000"
+# internal_token = "${VAULT_INTERNAL_TOKEN}"
+# # Default max output tokens for reserve ceiling when client omits max_tokens (default: 4096)
+# default_reserve_tokens = 4096
+# # Max pending settlements before rejecting new paid requests (default: 100)
+# pending_threshold = 100
+
 # Provider configuration
 # Add your Routstr providers here
 # Rates are in satoshis per 1000 tokens

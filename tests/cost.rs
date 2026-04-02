@@ -37,6 +37,7 @@ fn setup_cost_test_app(
             auth_token: None,
         },
         database: None,
+        vault: None,
         providers: providers.clone(),
         policies: PoliciesConfig {
             default_strategy: "cheapest".to_string(),
@@ -59,6 +60,7 @@ fn setup_cost_test_app(
         read_db: None,
         db_writer: None,
         circuit_breakers: registry,
+        vault: None,
     };
 
     create_router(state)
@@ -76,6 +78,7 @@ fn setup_cost_test_app_with_auth(providers: Vec<ProviderConfig>, auth_token: &st
             auth_token: Some(auth_token.to_string()),
         },
         database: None,
+        vault: None,
         providers: providers.clone(),
         policies: PoliciesConfig::default(),
         logging: Default::default(),
@@ -95,6 +98,7 @@ fn setup_cost_test_app_with_auth(providers: Vec<ProviderConfig>, auth_token: &st
         read_db: None,
         db_writer: None,
         circuit_breakers: registry,
+        vault: None,
     };
 
     create_router(state)

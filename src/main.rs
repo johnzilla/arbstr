@@ -250,6 +250,7 @@ fn mock_config() -> Config {
         database: Some(DatabaseConfig {
             path: ":memory:".to_string(),
         }),
+        vault: None,
         providers: vec![
             ProviderConfig {
                 name: "mock-cheap".to_string(),

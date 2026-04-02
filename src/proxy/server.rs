@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreakerRegistry;
 use super::handlers;
+use super::vault::VaultClient;
 use crate::config::Config;
 use crate::router::Router as ProviderRouter;
 use crate::storage::DbWriter;
@@ -35,6 +36,9 @@ pub struct AppState {
     pub read_db: Option<SqlitePool>,
     pub db_writer: Option<DbWriter>,
     pub circuit_breakers: Arc<CircuitBreakerRegistry>,
+    /// Vault treasury client. When Some, requests require vault billing.
+    /// When None, arbstr runs in free proxy mode.
+    pub vault: Option<VaultClient>,
 }
 
 /// Middleware that verifies the `Authorization: Bearer <token>` header.
@@ -86,6 +90,7 @@ async fn inject_request_id(
 pub fn create_router(state: AppState) -> Router {
     let rate_limit_rps = state.config.server.rate_limit_rps;
     let auth_token = state.config.server.auth_token.clone();
+    let has_vault = state.vault.is_some();
 
     // Proxy endpoints that require auth (when configured)
     let proxy_routes = Router::new()
@@ -93,13 +98,18 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models", get(handlers::list_models))
         .route("/v1/cost", post(handlers::cost_estimate));
 
-    // Apply auth middleware only if a token is configured
-    let proxy_routes = if let Some(token) = auth_token {
-        let token = Arc::new(token);
-        proxy_routes.layer(middleware::from_fn(move |req, next| {
-            let token = token.clone();
-            auth_middleware(token, req, next)
-        }))
+    // Apply auth middleware only if a token is configured AND vault is not handling auth.
+    // When vault is configured, the vault's reserve call validates the agent token.
+    let proxy_routes = if !has_vault {
+        if let Some(token) = auth_token {
+            let token = Arc::new(token);
+            proxy_routes.layer(middleware::from_fn(move |req, next| {
+                let token = token.clone();
+                auth_middleware(token, req, next)
+            }))
+        } else {
+            proxy_routes
+        }
     } else {
         proxy_routes
     };
@@ -206,6 +216,12 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     let provider_names: Vec<String> = config.providers.iter().map(|p| p.name.clone()).collect();
     let circuit_breakers = Arc::new(CircuitBreakerRegistry::new(&provider_names));
 
+    // Initialize vault client if configured
+    let vault = config.vault.as_ref().map(|vault_config| {
+        tracing::info!(url = %vault_config.url, "Vault treasury integration enabled");
+        VaultClient::new(http_client.clone(), vault_config)
+    });
+
     let state = AppState {
         router: Arc::new(provider_router),
         http_client,
@@ -214,6 +230,26 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         read_db,
         db_writer,
         circuit_breakers,
+        vault,
+    };
+
+    // Spawn reconciliation task if vault is configured and DB is available
+    let reconciliation_cancel = if let (Some(vault_client), Some(db_pool)) =
+        (&state.vault, &state.db)
+    {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let vault_clone = vault_client.clone();
+        let pool_clone = db_pool.clone();
+        tokio::spawn(super::vault::reconciliation_loop(
+            vault_clone,
+            pool_clone,
+            Duration::from_secs(60),
+            cancel_rx,
+        ));
+        tracing::info!("Vault reconciliation task started (60s interval)");
+        Some(cancel_tx)
+    } else {
+        None
     };
 
     let app = create_router(state);
@@ -224,6 +260,13 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Signal reconciliation task to stop and do a final pass
+    if let Some(cancel_tx) = reconciliation_cancel {
+        let _ = cancel_tx.send(true);
+        // Give it a moment to complete the final reconciliation pass
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 
     tracing::info!("Server shutdown complete");
     Ok(())

@@ -48,6 +48,7 @@ pub fn setup_circuit_test_app(
             auth_token: None,
         },
         database: None,
+        vault: None,
         providers: providers.clone(),
         policies: PoliciesConfig::default(),
         logging: Default::default(),
@@ -67,6 +68,7 @@ pub fn setup_circuit_test_app(
         read_db: None,
         db_writer: None,
         circuit_breakers: registry.clone(),
+        vault: None,
     };
 
     let app = create_router(state);
@@ -82,6 +84,7 @@ pub fn db_test_config() -> Config {
             auth_token: None,
         },
         database: None,
+        vault: None,
         providers: vec![
             ProviderConfig {
                 name: "alpha".to_string(),
@@ -134,6 +137,7 @@ pub async fn setup_db_test_app() -> (axum::Router, SqlitePool) {
         read_db: Some(pool.clone()),
         db_writer: None,
         circuit_breakers: Arc::new(CircuitBreakerRegistry::new(&[])),
+        vault: None,
     };
 
     let app = create_router(state);

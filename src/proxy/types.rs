@@ -169,6 +169,43 @@ impl ChatCompletionRequest {
             .find(|m| m.role == "user")
             .map(|m| m.content.as_str())
     }
+
+    /// Estimate input and output token counts for cost estimation.
+    ///
+    /// Input tokens: sum all message content character lengths / 4 (rough heuristic).
+    /// For multimodal `Parts` content, uses the serialized JSON length as fallback.
+    /// Output tokens: `max_tokens` if set, otherwise `default_output` parameter.
+    ///
+    /// Returns `(estimated_input_tokens, estimated_output_tokens)`.
+    pub fn estimate_tokens(&self, default_output: u32) -> (u32, u32) {
+        let total_chars: usize = self
+            .messages
+            .iter()
+            .map(|m| m.content.char_len())
+            .sum();
+        let input = (total_chars / 4).max(1) as u32;
+        let output = self.max_tokens.unwrap_or(default_output);
+        (input, output)
+    }
+}
+
+impl MessageContent {
+    /// Character length of the content for token estimation.
+    ///
+    /// For text content, returns the string length.
+    /// For multimodal Parts, returns the serialized JSON length as a
+    /// conservative approximation (non-text parts like images contribute
+    /// their metadata size, not pixel count).
+    pub fn char_len(&self) -> usize {
+        match self {
+            MessageContent::Text(s) => s.len(),
+            MessageContent::Parts(parts) => {
+                // Serialize parts to JSON and use that length.
+                // This is a conservative estimate for multimodal content.
+                serde_json::to_string(parts).map(|s| s.len()).unwrap_or(0)
+            }
+        }
+    }
 }
 
 /// Ensure stream_options includes `include_usage: true` for streaming requests.

@@ -15,6 +15,7 @@ use super::circuit_breaker::{CircuitState, PermitType, ProbeGuard};
 use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
+use super::vault::{SettleMetadata, VaultClient};
 use crate::error::Error;
 use crate::storage::logging::RequestLog;
 
@@ -145,6 +146,8 @@ struct RequestContext {
     policy_name: Option<String>,
     is_streaming: bool,
     start: std::time::Instant,
+    /// Vault reservation ID, present when vault billing is active.
+    reservation_id: Option<String>,
 }
 
 /// Result of candidate resolution and circuit breaker filtering.
@@ -308,6 +311,95 @@ async fn resolve_candidates(
     })
 }
 
+/// Fire-and-forget vault settle in a background task.
+///
+/// On failure after vault retries, writes to pending_settlements via direct sqlx.
+fn spawn_vault_settle(
+    vault: VaultClient,
+    reservation_id: String,
+    actual_msats: u64,
+    metadata: SettleMetadata,
+    db: Option<sqlx::SqlitePool>,
+) {
+    tokio::spawn(async move {
+        match vault.settle(&reservation_id, actual_msats, metadata.clone()).await {
+            Ok(resp) => {
+                tracing::info!(
+                    reservation_id = %reservation_id,
+                    actual_msats = actual_msats,
+                    refunded_msats = ?resp.refunded_msats,
+                    "Vault settle successful"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    reservation_id = %reservation_id,
+                    error = %e,
+                    "Vault settle failed, writing to pending settlements"
+                );
+                if let Some(pool) = &db {
+                    let pending = super::vault::PendingSettlement {
+                        settlement_type: "settle".to_string(),
+                        reservation_id: reservation_id.clone(),
+                        amount_msats: Some(actual_msats),
+                        metadata: serde_json::to_string(&metadata).unwrap_or_default(),
+                    };
+                    if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                        tracing::error!(
+                            reservation_id = %reservation_id,
+                            error = %db_err,
+                            "CRITICAL: Failed to write pending settlement to DB"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Release a vault reservation (refund buyer). Fire-and-forget.
+///
+/// On failure after vault retries, writes to pending_settlements via direct sqlx.
+fn spawn_vault_release(
+    vault: VaultClient,
+    reservation_id: String,
+    reason: String,
+    db: Option<sqlx::SqlitePool>,
+) {
+    tokio::spawn(async move {
+        match vault.release(&reservation_id, &reason).await {
+            Ok(()) => {
+                tracing::info!(
+                    reservation_id = %reservation_id,
+                    "Vault release successful"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    reservation_id = %reservation_id,
+                    error = %e,
+                    "Vault release failed, writing to pending settlements"
+                );
+                if let Some(pool) = &db {
+                    let pending = super::vault::PendingSettlement {
+                        settlement_type: "release".to_string(),
+                        reservation_id: reservation_id.clone(),
+                        amount_msats: None,
+                        metadata: reason.clone(),
+                    };
+                    if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                        tracing::error!(
+                            reservation_id = %reservation_id,
+                            error = %db_err,
+                            "CRITICAL: Failed to write pending settlement to DB"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Handle POST /v1/chat/completions
 pub async fn chat_completions(
     State(state): State<AppState>,
@@ -334,18 +426,132 @@ pub async fn chat_completions(
         "Received chat completion request"
     );
 
-    let ctx = RequestContext {
+    let mut ctx = RequestContext {
         correlation_id,
         model,
         policy_name,
         is_streaming,
         start,
+        reservation_id: None,
     };
 
     let resolved = match resolve_candidates(&state, &ctx, user_prompt).await {
         Ok(r) => r,
         Err(response) => return Ok(response),
     };
+
+    // Vault billing: reserve funds before routing
+    let mut request = request;
+    if let Some(vault) = &state.vault {
+        // Check backpressure (too many pending settlements)
+        if vault.is_backpressured() {
+            let latency_ms = ctx.start.elapsed().as_millis() as i64;
+            log_error_to_db(
+                &state,
+                &ctx,
+                latency_ms,
+                None,
+                503,
+                "Payment service backpressure: too many pending settlements".to_string(),
+            );
+            return Ok(Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                    "error": {
+                        "message": "Payment service temporarily unavailable",
+                        "type": "server_error",
+                        "code": "vault_backpressure"
+                    }
+                })).unwrap()))
+                .unwrap());
+        }
+
+        // Extract agent token from Authorization header
+        let agent_token = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+
+        let agent_token = match agent_token {
+            Some(t) => t,
+            None => {
+                let latency_ms = ctx.start.elapsed().as_millis() as i64;
+                log_error_to_db(
+                    &state,
+                    &ctx,
+                    latency_ms,
+                    None,
+                    401,
+                    "Missing bearer token for vault billing".to_string(),
+                );
+                return Ok(Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                        "error": {
+                            "message": "Authorization: Bearer <token> required",
+                            "type": "authentication_error",
+                            "code": "invalid_api_key"
+                        }
+                    })).unwrap()))
+                    .unwrap());
+            }
+        };
+
+        // Inject max_tokens if absent to cap financial exposure
+        if request.max_tokens.is_none() {
+            request.max_tokens = Some(vault.default_reserve_tokens);
+        }
+
+        // Estimate cost using cheapest candidate's rates
+        let cheapest = &resolved.candidates[0];
+        let (est_input, est_output) = request.estimate_tokens(vault.default_reserve_tokens);
+        let reserve_msats = super::vault::estimate_reserve_msats(
+            est_input,
+            est_output,
+            cheapest.input_rate,
+            cheapest.output_rate,
+            cheapest.base_fee,
+        );
+
+        // Reserve funds from vault
+        match vault
+            .reserve(agent_token, reserve_msats, &ctx.correlation_id, &ctx.model)
+            .await
+        {
+            Ok(reservation) => {
+                tracing::info!(
+                    reservation_id = %reservation.id,
+                    reserve_msats = reserve_msats,
+                    "Vault reserve successful"
+                );
+                ctx.reservation_id = Some(reservation.id);
+            }
+            Err(e) => {
+                let latency_ms = ctx.start.elapsed().as_millis() as i64;
+                let status_code = e.status_code();
+                let message = e.to_string();
+                tracing::warn!(
+                    error = %message,
+                    status = status_code,
+                    "Vault reserve failed"
+                );
+                log_error_to_db(&state, &ctx, latency_ms, None, status_code, message.clone());
+                return Ok(Response::builder()
+                    .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                        "error": {
+                            "message": message,
+                            "type": "billing_error",
+                            "code": format!("vault_{}", status_code)
+                        }
+                    })).unwrap()))
+                    .unwrap());
+            }
+        }
+    }
 
     if is_streaming {
         handle_streaming_path(state, ctx, request, resolved).await
@@ -375,7 +581,7 @@ async fn handle_streaming_path(
         .as_ref()
         .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
 
-    let result = send_to_provider(&state, &request, provider, &ctx.correlation_id, true).await;
+    let result = send_to_provider(&state, &request, provider, &ctx.correlation_id, true, ctx.reservation_id.clone()).await;
 
     // Record circuit breaker outcome
     match &result {
@@ -434,6 +640,17 @@ async fn handle_streaming_path(
                 outcome_err.status_code,
                 outcome_err.message.clone(),
             );
+
+            // Vault: release on streaming send failure
+            if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
+                spawn_vault_release(
+                    vault.clone(),
+                    rid.clone(),
+                    format!("streaming_send_error_{}", outcome_err.status_code),
+                    state.db.clone(),
+                );
+            }
+
             let mut error_response = outcome_err.error.into_response();
             attach_arbstr_headers(
                 &mut error_response,
@@ -497,6 +714,7 @@ async fn handle_non_streaming_path(
                 provider,
                 &ctx.correlation_id,
                 false,
+                None, // reservation_id not needed for non-streaming (settled in handler)
             ))
         }),
     )
@@ -566,6 +784,11 @@ async fn handle_non_streaming_path(
                 "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
             );
 
+            // Vault: release on timeout
+            if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
+                spawn_vault_release(vault.clone(), rid.clone(), "timeout".to_string(), state.db.clone());
+            }
+
             let timeout_error = Error::Provider(
                 "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
             );
@@ -585,6 +808,27 @@ async fn handle_non_streaming_path(
         Ok(retry_outcome) => match retry_outcome.result {
             Ok(outcome) => {
                 log_success_to_db(&state, &ctx, latency_ms, &outcome);
+
+                // Vault: async settle on success
+                if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
+                    let actual_msats = outcome
+                        .cost_sats
+                        .map(|c| (c * 1000.0) as u64)
+                        .unwrap_or(0);
+                    spawn_vault_settle(
+                        vault.clone(),
+                        rid.clone(),
+                        actual_msats,
+                        SettleMetadata {
+                            tokens_in: outcome.input_tokens,
+                            tokens_out: outcome.output_tokens,
+                            provider: outcome.provider_name.clone(),
+                            latency_ms,
+                        },
+                        state.db.clone(),
+                    );
+                }
+
                 let mut response = outcome.response;
                 attach_arbstr_headers(
                     &mut response,
@@ -606,6 +850,17 @@ async fn handle_non_streaming_path(
                     outcome_err.status_code,
                     outcome_err.message.clone(),
                 );
+
+                // Vault: release on provider error
+                if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
+                    spawn_vault_release(
+                        vault.clone(),
+                        rid.clone(),
+                        format!("provider_error_{}", outcome_err.status_code),
+                        state.db.clone(),
+                    );
+                }
+
                 let mut error_response = outcome_err.error.into_response();
                 attach_arbstr_headers(
                     &mut error_response,
@@ -634,6 +889,7 @@ async fn send_to_provider(
     provider: &crate::router::SelectedProvider,
     correlation_id: &str,
     is_streaming: bool,
+    reservation_id: Option<String>,
 ) -> std::result::Result<RequestOutcome, RequestError> {
     // Build upstream URL
     let upstream_url = format!("{}/chat/completions", provider.url.trim_end_matches('/'));
@@ -704,6 +960,9 @@ async fn send_to_provider(
             provider,
             correlation_id.to_string(),
             state.db_writer.clone(),
+            state.vault.clone(),
+            reservation_id,
+            state.db.clone(),
             stream_start,
         )
         .await
@@ -803,11 +1062,15 @@ async fn handle_non_streaming_response(
 ///
 /// The response is returned immediately with the channel-backed body.
 /// Tokens/cost are filled by the background task's DB UPDATE, not the return value.
+#[allow(clippy::too_many_arguments)]
 async fn handle_streaming_response(
     upstream_response: reqwest::Response,
     provider: &crate::router::SelectedProvider,
     correlation_id: String,
     db_writer: Option<crate::storage::DbWriter>,
+    vault: Option<VaultClient>,
+    reservation_id: Option<String>,
+    db_pool: Option<sqlx::SqlitePool>,
     stream_start: std::time::Instant,
 ) -> std::result::Result<RequestOutcome, RequestError> {
     let provider_name = provider.name.clone();
@@ -816,6 +1079,7 @@ async fn handle_streaming_response(
     let input_rate = provider.input_rate;
     let output_rate = provider.output_rate;
     let base_fee = provider.base_fee;
+    let provider_name_for_vault = provider.name.clone();
 
     // Create mpsc channel for streaming body
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(32);
@@ -910,16 +1174,106 @@ async fn handle_streaming_response(
         // tx is dropped here, closing the channel and signaling end-of-body
 
         // Fire DB UPDATE via bounded writer (always, regardless of client status)
-        if let Some(writer) = db_writer {
+        if let Some(writer) = &db_writer {
             writer.stream_completion_update(
-                cid,
+                cid.clone(),
                 input_tokens,
                 output_tokens,
                 cost_sats,
                 stream_duration_ms,
                 success,
-                error_message,
+                error_message.clone(),
             );
+        }
+
+        // Vault: settle or release based on stream outcome
+        if let (Some(vault), Some(rid)) = (vault, reservation_id) {
+            if success || cost_sats.is_some() {
+                // Stream completed OR usage data available: settle at actual cost
+                let actual_msats = cost_sats.map(|c| (c * 1000.0) as u64).unwrap_or(0);
+                match vault
+                    .settle(
+                        &rid,
+                        actual_msats,
+                        SettleMetadata {
+                            tokens_in: input_tokens,
+                            tokens_out: output_tokens,
+                            provider: provider_name_for_vault.clone(),
+                            latency_ms: stream_duration_ms,
+                        },
+                    )
+                    .await
+                {
+                    Ok(resp) => {
+                        tracing::info!(
+                            reservation_id = %rid,
+                            actual_msats,
+                            refunded_msats = ?resp.refunded_msats,
+                            "Vault settle (streaming) successful"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            reservation_id = %rid,
+                            error = %e,
+                            "Vault settle (streaming) failed, writing pending settlement"
+                        );
+                        if let Some(pool) = &db_pool {
+                            let meta = SettleMetadata {
+                                tokens_in: input_tokens,
+                                tokens_out: output_tokens,
+                                provider: provider_name_for_vault.clone(),
+                                latency_ms: stream_duration_ms,
+                            };
+                            let pending = super::vault::PendingSettlement {
+                                settlement_type: "settle".to_string(),
+                                reservation_id: rid.clone(),
+                                amount_msats: Some(actual_msats),
+                                metadata: serde_json::to_string(&meta).unwrap_or_default(),
+                            };
+                            if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                                tracing::error!(
+                                    reservation_id = %rid,
+                                    error = %db_err,
+                                    "CRITICAL: Failed to write pending settlement to DB"
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                // No usage data and stream incomplete: release fully
+                match vault.release(&rid, "stream_incomplete_no_usage").await {
+                    Ok(()) => {
+                        tracing::info!(
+                            reservation_id = %rid,
+                            "Vault release (streaming incomplete) successful"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            reservation_id = %rid,
+                            error = %e,
+                            "Vault release (streaming) failed, writing pending settlement"
+                        );
+                        if let Some(pool) = &db_pool {
+                            let pending = super::vault::PendingSettlement {
+                                settlement_type: "release".to_string(),
+                                reservation_id: rid.clone(),
+                                amount_msats: None,
+                                metadata: "stream_incomplete_no_usage".to_string(),
+                            };
+                            if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                                tracing::error!(
+                                    reservation_id = %rid,
+                                    error = %db_err,
+                                    "CRITICAL: Failed to write pending settlement to DB"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     });
 
@@ -1079,16 +1433,8 @@ pub async fn cost_estimate(
             .router
             .select(&request.model, policy_name.as_deref(), prompt.as_deref())?;
 
-    // Estimate input tokens: sum all message content lengths, divide by 4, minimum 1
-    let total_chars: usize = request
-        .messages
-        .iter()
-        .map(|m| m.content.as_str().len())
-        .sum();
-    let estimated_input_tokens = (total_chars / 4).max(1) as u32;
-
-    // Estimate output tokens: use max_tokens if present, otherwise default 256
-    let estimated_output_tokens = request.max_tokens.unwrap_or(256);
+    // Estimate tokens using shared estimation logic (256 default for display)
+    let (estimated_input_tokens, estimated_output_tokens) = request.estimate_tokens(256);
 
     // Calculate estimated cost
     let estimated_cost_sats = crate::router::actual_cost_sats(
