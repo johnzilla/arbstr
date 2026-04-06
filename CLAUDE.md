@@ -71,12 +71,17 @@ flowchart LR
 sequenceDiagram
     participant App as Your App
     participant Proxy as arbstr
+    participant Vault as Vault
     participant Policy as Policy Engine
     participant Router as Router
     participant DB as SQLite
     participant Provider as Cheapest Provider
 
     App->>Proxy: POST /v1/chat/completions
+    opt Vault configured
+        Proxy->>Vault: Reserve(estimated_cost)
+        Vault-->>Proxy: Reservation ID
+    end
     Proxy->>Policy: Match policy
     Policy-->>Policy: Check X-Arbstr-Policy header
     Policy-->>Policy: Fall back to keyword heuristics
@@ -87,6 +92,9 @@ sequenceDiagram
     Provider-->>Router: Stream response
     Router-->>Proxy: Stream response
     Proxy->>DB: Log request metrics
+    opt Vault configured
+        Proxy->>Vault: Settle(actual_cost) or Release()
+    end
     Proxy-->>App: Stream response
 
     Note over DB: Learn token ratios<br/>over time
@@ -99,6 +107,7 @@ sequenceDiagram
 - **Router** (`src/router/`): Provider selection logic, cost optimization
 - **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
 - **Storage** (`src/storage/`): SQLite request logging via bounded channel writer (capacity 1024), read-only analytics pool for stats/logs queries
+- **Vault Client** (`src/proxy/vault.rs`): Reserve/settle/release pattern against arbstr vault; retry with exponential backoff; pending settlement persistence for fault tolerance
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
 
 **Planned:**
@@ -116,6 +125,7 @@ sequenceDiagram
 - **Secrets**: secrecy (SecretString with zeroize-on-drop)
 - **Logging**: tracing + tracing-subscriber
 - **Streaming**: tokio-stream (ReceiverStream for channel-based bodies), bytes
+- **Deployment**: Docker Compose (core + vault + LND + Cashu mint)
 
 ## Code Conventions
 
@@ -137,6 +147,13 @@ listen = "127.0.0.1:8080"
 
 [database]
 path = "./arbstr.db"
+
+# Vault treasury integration (optional — omit for free proxy mode)
+# [vault]
+# url = "http://localhost:3000"
+# internal_token = "${VAULT_INTERNAL_TOKEN}"
+# default_reserve_tokens = 4096
+# pending_threshold = 100
 
 # Provider configuration (rates in sats per 1000 tokens)
 [[providers]]
@@ -199,6 +216,17 @@ CREATE TABLE requests (
     error_status INTEGER,
     error_message TEXT
 );
+
+-- Pending settlements for vault billing reconciliation
+CREATE TABLE pending_settlements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL CHECK(type IN ('settle', 'release')),
+    reservation_id TEXT NOT NULL UNIQUE,
+    amount_msats INTEGER,
+    metadata TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
+);
 ```
 
 ## Testing Strategy
@@ -216,6 +244,7 @@ CREATE TABLE requests (
 - **v1.3** -- Cost querying API: GET /v1/stats with aggregate queries and per-model breakdown, GET /v1/requests with paginated log listing, read-only SQLite pool, time range presets and ISO 8601 filtering, model/provider filtering, sort column whitelist for SQL injection prevention, nested response structure (tokens/cost/timing/error)
 - **v1.4** -- Resilience and compatibility: per-provider circuit breakers (Closed/Open/Half-Open with DashMap registry, watch-based probe signaling, RAII ProbeGuard), enhanced `/health` endpoint with per-provider state, graceful shutdown (SIGINT/SIGTERM), handler refactor (extracted shared routing/logging/circuit-breaker logic from streaming/non-streaming paths), `#[serde(flatten)]` passthrough for unknown OpenAI fields (`tools`, `tool_choice`, `response_format`, `seed`, etc.), `MessageContent` enum for multimodal content (string or content-part arrays)
 - **v1.5** -- Hardening: bounded DB writer (mpsc channel, capacity 1024, backpressure via `try_send`), database indexes on `model`/`provider`/`timestamp`/`correlation_id`, configurable rate limiting (`rate_limit_rps` via `tower::limit::RateLimitLayer` + `BufferLayer`), optional bearer token authentication on proxy endpoints (`auth_token` in `[server]` config)
+- **v1.6** -- Vault treasury integration: per-request billing via reserve/settle/release against arbstr vault, `VaultClient` with retry and exponential backoff, pending settlement persistence (`pending_settlements` table) for fault tolerance, `POST /v1/cost` endpoint for pre-request cost estimation, Docker Compose full-stack deployment (core + vault + LND + Cashu mint), `.env.example` for node secrets
 
 ## Key Files
 
@@ -234,6 +263,7 @@ src/
 │   ├── stream.rs        # SSE observer, wrap_sse_stream, StreamResultHandle
 │   ├── stats.rs         # /v1/stats handler, time range resolution, StatsQuery/StatsResponse
 │   ├── logs.rs          # /v1/requests handler, pagination, LogsQuery/LogsResponse/LogEntry
+│   ├── vault.rs         # Vault treasury client (reserve/settle/release, pending settlement persistence)
 │   ├── validation.rs    # Shared model/provider filter validation
 │   └── types.rs         # OpenAI-compatible request/response types, MessageContent enum
 ├── router/
@@ -246,14 +276,16 @@ src/
     ├── stats.rs         # Aggregate stats queries, exists_in_db validation, read-only pool init
     └── logs.rs          # Paginated log queries (count_logs, query_logs) with dynamic WHERE/ORDER BY
 tests/
+├── common/mod.rs        # Shared test utilities
 ├── env_expansion.rs     # Integration tests for env var expansion and key discovery
 ├── stream_options.rs    # Integration tests for stream_options injection
 ├── stats.rs             # Integration tests for /v1/stats endpoint (14 tests)
 ├── logs.rs              # Integration tests for /v1/requests endpoint (20 tests)
 ├── health.rs            # Integration tests for /health endpoint (8 tests)
-└── circuit_integration.rs # Integration tests for circuit breaker routing (9 tests)
+├── circuit_integration.rs # Integration tests for circuit breaker routing (9 tests)
+└── cost.rs              # Integration tests for /v1/cost endpoint
 migrations/
-└── *.sql                # Embedded SQLite schema migrations
+└── *.sql                # Embedded SQLite schema migrations (including pending_settlements)
 ```
 
 ## Environment Variables
@@ -262,6 +294,7 @@ migrations/
 - `ARBSTR_CONFIG`: Path to config file (default: `./config.toml`)
 - `DATABASE_URL`: SQLite path (default: `./arbstr.db`)
 - `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`: Convention-based API key per provider (e.g., `ARBSTR_PROVIDER_ALPHA_API_KEY`)
+- `VAULT_INTERNAL_TOKEN`: Shared secret for vault internal API authentication (required when vault is configured)
 
 ## Notes for Claude
 

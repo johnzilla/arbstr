@@ -13,7 +13,7 @@ flowchart LR
 
     subgraph Arbstr["arbstr"]
         direction TB
-        B1["Policy Engine → Router → Best<br>(cheapest)"]
+        B1["Vault → Policy → Router → Best<br>(cheapest)"]
     end
 
     subgraph Routstr["Routstr Marketplace"]
@@ -42,6 +42,8 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 - **Graceful shutdown** -- handles SIGINT/SIGTERM to drain in-flight requests and database writes before exiting
 - **Rate limiting** -- optional global rate limit (`rate_limit_rps` in config) to protect endpoints from excessive load
 - **Bearer token auth** -- optional `auth_token` in config; when set, `/v1/chat/completions` and `/v1/models` require `Authorization: Bearer <token>`
+- **Vault treasury integration** -- optional per-request billing via reserve/settle/release against an arbstr vault instance; reserve before routing, settle on success, release on failure; pending settlement reconciliation for fault tolerance
+- **Docker Compose stack** -- full-stack deployment with arbstr core, vault treasury, Lightning (LND), and Cashu mint services
 - **Bounded DB writer** -- database writes use a bounded channel (capacity 1024) with backpressure instead of unbounded fire-and-forget spawns
 - **Per-request correlation IDs** -- UUID tracing for every request through the system
 - **Mock mode** -- test locally without real provider API calls
@@ -83,6 +85,15 @@ Copy `config.example.toml` to `config.toml` and customize:
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional global rate limit (requests/sec)
 # auth_token = "my-secret"   # optional bearer token for proxy endpoints
+
+# Vault treasury integration (optional)
+# When configured, requests require vault billing via reserve/settle/release.
+# When absent, arbstr runs in free proxy mode (no billing).
+# [vault]
+# url = "http://localhost:3000"
+# internal_token = "${VAULT_INTERNAL_TOKEN}"
+# default_reserve_tokens = 4096   # max output tokens for reserve ceiling
+# pending_threshold = 100         # max pending settlements before rejecting
 
 # Providers -- rates in satoshis per 1000 tokens
 [[providers]]
@@ -159,10 +170,12 @@ Policies are matched in two ways:
 ## How Routing Works
 
 1. **Request arrives** at the arbstr proxy
-2. **Policy matched** via `X-Arbstr-Policy` header or keyword heuristics
-3. **Providers filtered** by policy constraints (allowed models, max cost)
-4. **Cheapest selected** from remaining providers (considering output rate + base fee)
-5. **Request forwarded** and response streamed back to the client
+2. **Vault reserve** (if configured) -- reserves estimated cost from buyer's balance
+3. **Policy matched** via `X-Arbstr-Policy` header or keyword heuristics
+4. **Providers filtered** by policy constraints (allowed models, max cost)
+5. **Cheapest selected** from remaining providers (considering output rate + base fee)
+6. **Request forwarded** and response streamed back to the client
+7. **Vault settle/release** -- settles actual cost on success, releases reservation on failure
 
 ## CLI
 
@@ -188,6 +201,7 @@ arbstr providers [OPTIONS]      List configured providers
 | `GET /v1/stats` | Aggregate cost/performance stats with time range and model/provider filtering |
 | `GET /v1/stats?group_by=model` | Per-model stats breakdown |
 | `GET /v1/requests` | Paginated request log listing with filtering and sorting |
+| `POST /v1/cost` | Estimate request cost before sending (input/output token counts and sats) |
 | `GET /health` | Health check |
 | `GET /providers` | List configured providers with rates |
 
@@ -211,6 +225,25 @@ cargo fmt && cargo clippy -- -D warnings  # Format and lint
 | **v1.3** | Cost querying API -- aggregate stats, time range filtering, paginated request log listing with sorting | Shipped |
 | **v1.4** | Resilience and compatibility -- per-provider circuit breakers with health endpoint, graceful shutdown, unknown field passthrough for full OpenAI API compatibility, multimodal message content support | Shipped |
 | **v1.5** | Hardening -- bounded DB writer, database indexes, configurable rate limiting, optional bearer token authentication | Shipped |
+| **v1.6** | Vault treasury integration -- per-request billing via reserve/settle/release, pending settlement reconciliation, Docker Compose full-stack deployment, cost estimation endpoint | Shipped |
+
+## Deployment
+
+### Standalone (free proxy mode)
+
+```bash
+cargo build --release
+./target/release/arbstr serve -c config.toml
+```
+
+### Full stack (with billing)
+
+The `docker-compose.yml` runs the complete arbstr node: core routing engine, vault treasury, Lightning (LND), and Cashu mint.
+
+```bash
+cp .env.example .env   # fill in secrets
+docker compose up -d
+```
 
 ## Related Projects
 
