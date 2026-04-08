@@ -72,7 +72,7 @@ See: .planning/milestones/v1.4-ROADMAP.md for full details.
 
 - [x] **Phase 16: Provider Tier Foundation** - Tier enum and provider config field with backward compatibility (completed 2026-04-08)
 - [x] **Phase 17: Complexity Scorer** - Heuristic scoring engine with configurable signal weights (completed 2026-04-08)
-- [ ] **Phase 18: Tier-Aware Routing** - Router filters by tier based on complexity score and thresholds
+- [x] **Phase 18: Tier-Aware Routing** - Router filters by tier based on complexity score and thresholds (completed 2026-04-08)
 - [ ] **Phase 19: Handler Integration and Escalation** - End-to-end pipeline with header override and circuit-break escalation
 - [ ] **Phase 20: Routing Observability** - Response headers, SSE metadata, DB columns, and stats breakdown
 
@@ -113,9 +113,9 @@ Plans:
   2. A mid-complexity request is routed to local or standard-tier providers
   3. A high-complexity request can be routed to any tier (including frontier)
   4. Thresholds between tiers are configurable via `complexity_threshold_low` and `complexity_threshold_high` in `[routing]`
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
-- [ ] 18-01-PLAN.md -- score_to_max_tier mapping, max_tier parameter on select_candidates/select, tier filter predicate
+- [x] 18-01-PLAN.md -- score_to_max_tier mapping, max_tier parameter on select_candidates/select, tier filter predicate
 
 ### Phase 19: Handler Integration and Escalation
 **Goal**: The scoring-routing pipeline works end-to-end with header override and automatic tier escalation when providers are unhealthy
@@ -148,6 +148,6 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19 -> 20
 |-------|-----------|----------------|--------|-----------|
 | 16. Provider Tier Foundation | v1.7 | 2/2 | Complete    | 2026-04-08 |
 | 17. Complexity Scorer | v1.7 | 1/1 | Complete    | 2026-04-08 |
-| 18. Tier-Aware Routing | v1.7 | 0/1 | Not started | - |
+| 18. Tier-Aware Routing | v1.7 | 1/1 | Complete    | 2026-04-08 |
 | 19. Handler Integration and Escalation | v1.7 | 0/? | Not started | - |
 | 20. Routing Observability | v1.7 | 0/? | Not started | - |
