@@ -1,0 +1,94 @@
+# Requirements: arbstr
+
+**Defined:** 2026-04-08
+**Core Value:** Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
+
+## v1.7 Requirements
+
+Requirements for v1.7 Intelligent Complexity Routing. Each maps to roadmap phases.
+
+### Complexity Scoring
+
+- [ ] **SCORE-01**: Proxy scores every request 0.0–1.0 using weighted heuristic signals (context length, code blocks, multi-file indicators, reasoning keywords, conversation depth)
+- [ ] **SCORE-02**: Signal weights are configurable in `[routing.complexity_weights]` config section
+- [ ] **SCORE-03**: `X-Arbstr-Complexity: high|low` header overrides the scorer
+- [ ] **SCORE-04**: Scorer operates on full `&[Message]` array for conversation-aware analysis
+- [ ] **SCORE-05**: Scorer defaults to frontier (high score) when input is ambiguous
+
+### Provider Tiers
+
+- [ ] **TIER-01**: Provider config accepts optional `tier` field with values `local`, `standard`, `frontier`
+- [ ] **TIER-02**: Providers without `tier` field default to `standard`
+- [ ] **TIER-03**: Existing configs parse unchanged (backward compatible)
+
+### Routing
+
+- [ ] **ROUTE-01**: Router filters providers by tier based on complexity score and configurable thresholds
+- [ ] **ROUTE-02**: Score < low threshold routes to local tier only; mid-range includes local + standard; above high threshold includes all tiers
+- [ ] **ROUTE-03**: Thresholds configurable via `complexity_threshold_low` and `complexity_threshold_high` in `[routing]`
+- [ ] **ROUTE-04**: When scored tier has no healthy providers (circuit broken), router escalates to next tier automatically
+- [ ] **ROUTE-05**: Escalation is one-way per request (local → standard → frontier, never de-escalates)
+
+### Observability
+
+- [ ] **OBS-01**: Response headers include `x-arbstr-complexity-score` and `x-arbstr-tier`
+- [ ] **OBS-02**: Trailing SSE metadata event includes complexity score and tier
+- [ ] **OBS-03**: `complexity_score` (REAL) and `tier` (TEXT) columns added to requests table
+- [ ] **OBS-04**: `GET /v1/stats?group_by=tier` returns per-tier cost/performance breakdown
+- [ ] **OBS-05**: Complexity score, matched tier, and selected provider logged at INFO level per request
+
+## Future Requirements
+
+### Scoring Enhancements
+
+- **SCORE-F01**: ML-based classifier (e.g. RouteLLM matrix factorization weights) as alternative scorer
+- **SCORE-F02**: `POST /v1/classify` dry-run endpoint that returns score breakdown without routing
+- **SCORE-F03**: Per-policy tier overrides (some policies always use frontier)
+
+### Routing Enhancements
+
+- **ROUTE-F01**: Per-provider timeout configuration (replace global 30s)
+- **ROUTE-F02**: Learned token ratios per policy (predict cost before seeing response)
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| ML-based classifier | Requires Python/ONNX deps, adds 50-200ms latency — heuristics first, ML in future milestone |
+| Cascading (run cheap, check quality, escalate) | Double-inference latency, arbstr is a transparent proxy |
+| Auto-discovery of mesh-llm models | User configures providers like any other — consistency over magic |
+| Vault/billing changes | Local providers settle at zero sats through existing paths |
+| More than 3 tiers | local/standard/frontier covers the use case; extensibility is future work |
+| `complexity_bias` single-knob config | Research suggested it but per-signal weights give more control |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| SCORE-01 | — | Pending |
+| SCORE-02 | — | Pending |
+| SCORE-03 | — | Pending |
+| SCORE-04 | — | Pending |
+| SCORE-05 | — | Pending |
+| TIER-01 | — | Pending |
+| TIER-02 | — | Pending |
+| TIER-03 | — | Pending |
+| ROUTE-01 | — | Pending |
+| ROUTE-02 | — | Pending |
+| ROUTE-03 | — | Pending |
+| ROUTE-04 | — | Pending |
+| ROUTE-05 | — | Pending |
+| OBS-01 | — | Pending |
+| OBS-02 | — | Pending |
+| OBS-03 | — | Pending |
+| OBS-04 | — | Pending |
+| OBS-05 | — | Pending |
+
+**Coverage:**
+- v1.7 requirements: 18 total
+- Mapped to phases: 0
+- Unmapped: 18 ⚠️
+
+---
+*Requirements defined: 2026-04-08*
+*Last updated: 2026-04-08 after initial definition*
