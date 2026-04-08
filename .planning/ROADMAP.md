@@ -100,7 +100,9 @@ Plans:
   2. Signal weights are configurable in `[routing.complexity_weights]` and the scorer uses them
   3. The scorer operates on the full messages array (not just the last message) and conversation depth affects the score
   4. An ambiguous or unclassifiable prompt defaults to a high score (routes to frontier)
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 17-01-PLAN.md -- Complexity scorer with 5 weighted signals, unit tests, re-export from router
 
 ### Phase 18: Tier-Aware Routing
 **Goal**: The router selects providers from the appropriate tier based on complexity score and configurable thresholds
@@ -143,7 +145,7 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19 -> 20
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 16. Provider Tier Foundation | v1.7 | 2/2 | Complete    | 2026-04-08 |
-| 17. Complexity Scorer | v1.7 | 0/? | Not started | - |
+| 17. Complexity Scorer | v1.7 | 0/1 | Not started | - |
 | 18. Tier-Aware Routing | v1.7 | 0/? | Not started | - |
 | 19. Handler Integration and Escalation | v1.7 | 0/? | Not started | - |
 | 20. Routing Observability | v1.7 | 0/? | Not started | - |
