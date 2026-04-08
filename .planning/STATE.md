@@ -4,14 +4,14 @@ milestone: v1.7
 milestone_name: Intelligent Complexity Routing
 status: executing
 stopped_at: Phase 16 context gathered
-last_updated: "2026-04-08T17:45:49.840Z"
-last_activity: 2026-04-08 -- Phase 16 planning complete
+last_updated: "2026-04-08T18:33:35.098Z"
+last_activity: 2026-04-08
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 0
-  percent: 0
+  completed_plans: 2
+  percent: 100
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-04-08)
 
 ## Current Position
 
-Phase: 16 of 20 (Provider Tier Foundation) -- first of 5 phases in v1.7
-Plan: 0 of ? in current phase
+Phase: 17 of 20 (complexity scorer)
+Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-08 -- Phase 16 planning complete
+Last activity: 2026-04-08
 
 Progress: [....................] 0%
 
@@ -36,7 +36,7 @@ Progress: [....................] 0%
 
 **Historical Velocity (v1-v1.4):**
 
-- Total plans completed: 27
+- Total plans completed: 29
 - Average duration: ~3 min per plan
 
 ## Accumulated Context

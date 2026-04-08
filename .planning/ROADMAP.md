@@ -70,7 +70,7 @@ See: .planning/milestones/v1.4-ROADMAP.md for full details.
 
 **Milestone Goal:** Route simple requests to cheap/local providers and escalate complex requests to frontier models automatically -- the user never picks a model.
 
-- [ ] **Phase 16: Provider Tier Foundation** - Tier enum and provider config field with backward compatibility
+- [x] **Phase 16: Provider Tier Foundation** - Tier enum and provider config field with backward compatibility (completed 2026-04-08)
 - [ ] **Phase 17: Complexity Scorer** - Heuristic scoring engine with configurable signal weights
 - [ ] **Phase 18: Tier-Aware Routing** - Router filters by tier based on complexity score and thresholds
 - [ ] **Phase 19: Handler Integration and Escalation** - End-to-end pipeline with header override and circuit-break escalation
@@ -86,10 +86,10 @@ See: .planning/milestones/v1.4-ROADMAP.md for full details.
   1. A provider config with `tier = "local"` parses and the tier value is accessible in routing
   2. A provider config without a `tier` field parses successfully and defaults to `standard`
   3. All existing config.toml files and tests pass without modification (backward compatible)
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
-- [ ] 16-01-PLAN.md -- Tier enum, RoutingConfig, ComplexityWeightsConfig, tier field on provider configs
-- [ ] 16-02-PLAN.md -- Propagate tier through SelectedProvider, /providers, and /health endpoints
+- [x] 16-01-PLAN.md -- Tier enum, RoutingConfig, ComplexityWeightsConfig, tier field on provider configs
+- [x] 16-02-PLAN.md -- Propagate tier through SelectedProvider, /providers, and /health endpoints
 
 ### Phase 17: Complexity Scorer
 **Goal**: Every request receives a complexity score (0.0-1.0) from a heuristic scorer that analyzes the full conversation
@@ -142,7 +142,7 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19 -> 20
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 16. Provider Tier Foundation | v1.7 | 0/2 | Planning complete | - |
+| 16. Provider Tier Foundation | v1.7 | 2/2 | Complete    | 2026-04-08 |
 | 17. Complexity Scorer | v1.7 | 0/? | Not started | - |
 | 18. Tier-Aware Routing | v1.7 | 0/? | Not started | - |
 | 19. Handler Integration and Escalation | v1.7 | 0/? | Not started | - |
