@@ -1,196 +1,177 @@
 # Project Research Summary
 
-**Project:** arbstr - Per-provider circuit breaker with enhanced /health endpoint
-**Domain:** Resilience layer for LLM routing proxy (Rust/axum/tokio)
-**Researched:** 2026-02-16
+**Project:** arbstr v1.7 — Prompt Complexity Scoring and Tier-Aware Routing
+**Domain:** Heuristic LLM prompt classification and tier-based provider routing
+**Researched:** 2026-04-08
 **Confidence:** HIGH
 
 ## Executive Summary
 
-arbstr is adding a per-provider circuit breaker to prevent retry storms when providers fail, building on top of existing retry-with-fallback infrastructure. This is a well-established resilience pattern (3-state machine: Closed/Open/HalfOpen) that tracks consecutive failures per provider, trips circuits after a threshold (5 failures), and automatically recovers after a timeout (30s). The circuit breaker filters unavailable providers from routing decisions before retry logic runs, preventing wasted time hitting known-bad providers.
+arbstr v1.7 adds heuristic complexity scoring to route prompts to appropriately capable providers — local models for simple queries, standard for moderate tasks, frontier models for complex reasoning. This is a well-researched problem: RouteLLM, NVIDIA's DeBERTa classifier, Portkey, LiteLLM, and Requesty all implement variants of this pattern. The consensus approach is a weighted-sum heuristic with 4-6 signals (context length, code blocks, reasoning keywords, conversation depth, system prompt complexity), with configurable thresholds mapping scores to tiers. The stack footprint is minimal: one direct dependency addition (`regex` crate, which is already transitive), leveraging all existing Rust/axum/SQLite infrastructure.
 
-The recommended approach uses DashMap for per-shard concurrent state access (eliminating cross-provider contention), integrates at the handler level (keeping router and retry modules pure), and treats streaming/non-streaming paths equally (recording failures from both). The most critical design decision is placing circuit checks OUTSIDE the retry loop to avoid amplification, while making circuit-open rejections immediately trigger fallback (not consume retry attempts). The enhanced /health endpoint exposes per-provider circuit state with a three-level health model (ok/degraded/unhealthy).
+The recommended implementation is a pure-function scorer in a new `src/scorer/` module, called inline in the handler after request parsing. Provider configs gain an optional `tier` field (defaulting to `standard` for backward compatibility), and the router gains tier filtering before its existing cost-sort. Tier escalation — when a scored tier's providers are all circuit-broken — is implemented as candidate-list expansion (one-way, no cycling) at the handler level. This slots cleanly into the existing `resolve_candidates` flow.
 
-Key risks include retry storm amplification if circuit checks are placed incorrectly, race conditions in failure counting if atomics are used instead of Mutex, and streaming failures being invisible to circuit state if only initial HTTP responses are tracked. These are all preventable through careful integration points and existing codebase patterns (tokio::time::Instant for testability, fire-and-forget spawned tasks for stream completion).
+The primary risk is false negatives: complex prompts misclassified as simple, routed to local models that produce plausible-but-wrong output. The mitigation is conservative defaults — route to frontier when uncertain, only route down when MULTIPLE simple signals agree. A secondary risk is latency: the scorer runs on every request's hot path and must stay under 1ms. Both risks are addressable with disciplined design choices made before implementation begins; they are hard to fix after the fact.
 
 ## Key Findings
 
 ### Recommended Stack
 
+The existing Rust/axum/SQLite stack requires only one addition: `regex = "1.12"` as a direct dependency (already transitive via `tracing-subscriber`, so net new transitive deps = zero). All other needs are covered by existing deps: `serde`/`toml` for config parsing, `sqlx` for the new DB columns, `tracing` for per-signal debug logging.
+
+Explicitly rejected: `tiktoken-rs` (50ms cold-start tokenizer load, overkill for heuristic bucketing), `linfa` ML classifier (Python/ONNX dependency, 50-200ms latency, out of scope per PROJECT.md), `lazy-regex` (stdlib `LazyLock` covers this since Rust 1.80), and any readability index crates (Flesch-Kincaid measures prose quality, not LLM prompt task complexity).
+
 **Core technologies:**
-- **DashMap v6** — Concurrent HashMap with per-shard locking for circuit breaker registry. Eliminates cross-provider contention that would occur with RwLock<HashMap> (any write blocks all reads). 170M+ downloads, stable, minimal dependency weight (only hashbrown transitive, already in tree).
-- **tokio::time::Instant** — Monotonic time tracking that responds to tokio::time::pause() for deterministic tests. Critical for testing the 30s Open->HalfOpen timeout without wall-clock waits. Matches existing test patterns (retry.rs uses start_paused = true).
-- **std::sync::Mutex** — Wraps CircuitState struct to ensure atomic multi-field updates (state + failure_count + timestamp). NOT tokio::sync::Mutex — circuit operations are pure state machine transitions with no .await points. Lock duration is nanoseconds.
-
-**No changes needed to:** tokio, axum, serde, tracing, reqwest. Existing stack fully supports the circuit breaker.
-
-**Configuration:** Circuit breaker parameters (failure_threshold=5, open_duration=30s, half_open_success_threshold=2) are hardcoded constants initially, NOT in config.toml. Premature configurability forces users to make decisions they lack operational experience to make. Constants are easy to find and change. Promote to config later if users request tuning.
+- `regex` 1.12: pattern matching for code fences, file path references, word-boundary keyword matching — already in dependency tree, zero compile cost
+- `std::sync::LazyLock`: compile regex patterns once at startup, store in scorer struct in AppState — stdlib since Rust 1.80, no `once_cell` needed
+- `prompt.len() / 4`: token count approximation — O(1), accurate enough for tier bucketing with 2x error tolerance
 
 ### Expected Features
 
 **Must have (table stakes):**
-- 3-state machine (Closed/Open/HalfOpen) — Industry standard from Azure Architecture, implemented by all production proxies (Envoy, Kong, KrakenD). Anything less is just a blocklist.
-- Consecutive failure threshold to trip Open — Simple, deterministic, correct for a local proxy with low traffic volume. Failure-rate sliding windows are overkill (see Anti-Features).
-- Timeout-based transition to HalfOpen — Without recovery mechanism, tripped providers can never recover until process restart.
-- Single probe request in HalfOpen — Allow exactly one request through when timeout expires. Success->Closed, failure->Open.
-- Fail-fast 503 when all circuits open — Standard response code across all proxies. Distinct from 400 "no providers configured" error.
-- Skip open-circuit providers in routing — Core value proposition. Filter in handler before retry starts.
-- Success resets consecutive failure counter — Critical correctness requirement. Without this, accumulated non-consecutive failures trip the circuit.
-- Enhanced /health with per-provider circuit state — Operators need visibility. Kong, Envoy, KrakenD all expose per-backend health. Three-level status: ok/degraded/unhealthy.
+- Heuristic complexity scorer (5 signals: reasoning keywords, context length, code blocks, conversation depth, system prompt complexity) — every routing system in the space implements this
+- Provider tier field in config (`tier = "local" | "standard" | "frontier"`, default `"standard"`) — required for the router to know what to filter
+- Tier-aware provider selection: filter by tier, then cost-sort within tier — the core routing decision
+- Configurable thresholds (local_max, standard_max) in `[scoring]` config section — hardcoded thresholds are the top complaint in every routing system
+- `X-Arbstr-Tier` header override to bypass scoring — follows existing `X-Arbstr-Policy` precedent, required escape hatch for misclassifications
+- `x-arbstr-complexity-score` and `x-arbstr-tier` response headers — observability is non-negotiable
+- `complexity_score` and `tier` columns in `requests` DB table — required for stats analysis
+- Tier escalation on circuit break — without this, all local-tier providers being down causes 503s instead of graceful degradation
 
-**Should have (competitive differentiators):**
-- State change logging — Emit tracing::warn! on Open, tracing::info! on recovery. Enables alerting via log aggregation. Practically free to implement.
-- Configurable thresholds in config.toml — Allow global override of failure_threshold and recovery_timeout_secs. Low effort, sensible defaults mean zero-config works.
-- Circuit state in response headers — x-arbstr-circuit-state header shows which providers were filtered. Useful for debugging.
-- Open-since and recovery-at timestamps in /health — Operators can estimate time to recovery without log watching.
+**Should have (differentiators):**
+- Configurable signal weights in `[scoring.weights]` — lets users adapt to their workload distribution
+- Conversation depth as a distinct signal — no other heuristic router tracks this; arbstr sees the full messages array
+- `stats?group_by=tier` — tier-level cost analytics not available in any other local proxy
+- Cost endpoint tier awareness — `POST /v1/cost` shows "this prompt would route to local tier at X sats"
+- Per-policy tier overrides (`allowed_tiers` on policy rules) — prevents code generation from hitting local models
+- `x-arbstr-escalated: true` header — makes escalation events visible to clients
 
-**Defer (anti-features for v1):**
-- Sliding window failure rate (percentage-based) — Requires time window tracking, ratio computation, tuning. arbstr is a local proxy with 1-10 providers and low-moderate traffic. Consecutive failure counting is sufficient.
-- Active health probing (periodic pings) — Adds background polling, consumes provider API quota, requires health endpoint most LLM providers don't expose. Use passive detection via real request outcomes.
-- Adaptive/ML-based threshold tuning — Massive overengineering for a local proxy.
-- Request queuing/replay — LLM requests are not meaningfully replayable. Fail fast with 503, let client retry.
-- Per-model circuit breakers — Multiplies state space (providers x models). LLM provider failures are almost always infrastructure-level (entire endpoint down), not model-specific.
-- Global circuit breaker — Would prevent routing to healthy providers when only one is down. Keep circuits strictly per-provider.
-- Distributed/shared circuit state — arbstr is single-process local proxy, not a distributed fleet. In-memory state is correct.
+**Defer beyond v1.7:**
+- Downgrade on budget pressure (vault balance drives tier bias) — high complexity, unclear UX, vault integration risk
+- Configurable keyword sets (ship hardcoded defaults, make configurable only if users request it)
+- ML-based classifier — explicitly out of scope per PROJECT.md, can be added later behind the scorer trait boundary
+- Response-quality cascading — doubles cost on escalation, inappropriate for a transparent proxy
 
 ### Architecture Approach
 
-The circuit breaker lives in a new `src/proxy/circuit_breaker.rs` module at the proxy layer, NOT in the router (which stays pure: model/cost/policy selection only) or storage (circuit state is ephemeral, in-memory). It integrates with existing code at the handler level, filtering provider candidates BEFORE retry logic runs and recording outcomes AFTER requests complete.
+The complexity scorer is a pure function in `src/scorer/mod.rs`, called inline in the `chat_completions` handler after request body parsing but before `resolve_candidates`. It receives the full `ChatCompletionRequest` and returns a `ComplexityScore { score: f32, tier: Tier, signals: SignalBreakdown }`. The tier value flows into a modified `resolve_candidates_with_tier` which builds an escalation-ordered candidate list (scored-tier providers first, then higher tiers if circuits are all open). This is composition, not middleware — the scorer needs the parsed request body, which is unavailable to axum middleware layers.
 
 **Major components:**
-1. **CircuitBreakerRegistry** — DashMap<String, ProviderCircuitBreaker> shared via Arc in AppState. Provides filter_available(), record_success(), record_failure(), provider_states() methods. Thread-safe, cheaply cloneable.
-2. **ProviderCircuitBreaker** — Per-provider state machine with CircuitState enum (Closed/Open/HalfOpen), failure_count, opened_at timestamp, half_open_successes counter. Wrapped in Mutex for atomic multi-field updates. Plain fields (not atomics) because DashMap provides per-shard locking.
-3. **Integration hooks** — Handler filters candidates through circuit breaker between router.select_candidates() and retry_with_fallback(). After retry outcome, records success/failure for each attempted provider. Streaming path records outcomes in spawned background task (circuit registry is Send + Sync).
-4. **Enhanced /health handler** — Accepts State<AppState>, queries circuit_breakers.provider_states(), adds database ping, returns structured JSON with per-provider circuit state and overall status (ok/degraded/unhealthy).
+1. `src/scorer/mod.rs` (NEW) — pure function scorer, 6 heuristic signals, weighted sum, tier mapping via thresholds
+2. `src/config.rs` additions (MODIFIED) — `ScorerConfig`, `SignalWeights`, `TierThresholds`, `tier` field on `ProviderConfig`
+3. `src/router/selector.rs` (MODIFIED) — `select_candidates` gains `max_tier: Option<Tier>` filter parameter
+4. `src/proxy/handlers.rs` (MODIFIED) — call scorer, parse `X-Arbstr-Tier` header, implement `resolve_candidates_with_tier` with one-way escalation
+5. DB migration (NEW) — `complexity_score REAL` and `tier TEXT` columns on `requests` table
 
-**Request flow:**
-```
-1. chat_completions handler receives request
-2. router.select_candidates() returns Vec<SelectedProvider> sorted cheapest-first
-3. circuit_breakers.filter_available(candidates) removes Open-state providers  <-- NEW
-4. If empty after filter, return 503 immediately (all circuits open)           <-- NEW
-5. retry_with_fallback(filtered_candidates, ...)
-6. send_to_provider() makes HTTP call
-7. Record outcome: circuit_breakers.record_success/failure(provider_name)      <-- NEW
-```
-
-**Lazy state transitions:** Open->HalfOpen transition is checked lazily when is_available() is called, not via background timer. No background tasks to manage. Transition happens exactly when needed (at request time). Simpler to test with tokio::time::pause().
+**Build order (dependency-driven):** Tier enum + ProviderConfig field first (everything depends on the Tier type), then scorer pure logic (independently testable), then router tier filtering, then handler integration + escalation, then DB observability, then cost endpoint update.
 
 ### Critical Pitfalls
 
-1. **Retry storm amplification if circuit checks are inside retry loop** — If circuit breaker checks happen PER-ATTEMPT instead of PRE-ROUTING, a downed provider consumes all 3 retry attempts (plus 1s+2s backoff = 3s minimum) before circuit trips. With 10 concurrent requests, that's 30 failed attempts hammering a downed provider. Prevention: Filter candidates BEFORE entering retry_with_fallback. Circuit-open rejections must trigger immediate fallback, not consume retry attempts. Modify is_retryable() to treat circuit-open as "skip this provider, try next" without backoff.
+1. **False negatives route complex prompts to local models** — Default to frontier when uncertain. Only route down when MULTIPLE simple signals agree. Conservative bias from day one; wrong downgrades are strictly worse than wasted frontier calls.
 
-2. **Race conditions in consecutive failure counting with atomics** — Using AtomicU32 for failure_count and AtomicU8 for state creates TOCTOU races. Two threads can both see count==3 and attempt transition. Worse: success can reset counter while another thread is incrementing, breaking "consecutive" semantics. Prevention: Use Mutex<CircuitState> wrapping ALL mutable fields (state, failure_count, timestamps). Lock duration is nanoseconds (pure state machine transitions, no I/O). Matches existing codebase pattern (Arc<Mutex<Vec<AttemptRecord>>> in retry module).
+2. **Scoring only the last message misses conversation context** — Scorer function signature must be `score(messages: &[Message], ...)` not `score(prompt: &str, ...)`. Conversation depth (`messages.len()`) is a first-class signal. Hard to fix after call sites are established.
 
-3. **Streaming failures invisible to circuit breaker** — Streaming path returns 200 OK immediately (provider accepted connection). Real failures (stream interruption, timeout) are discovered in spawned background task AFTER response is returned. If circuit breaker only records initial HTTP status, streaming failures never trip circuits. Prevention: Record outcomes in spawned stream completion task. Circuit registry must be Arc (shared across threads) and methods must be Send + Sync. Only record success when done_received==true. Mid-stream failures count equally toward circuit threshold.
+3. **Scorer latency on hot path** — 1ms budget, enforced by benchmark test. Use `str::contains()` not compiled regex for keyword matching on small keyword sets. Short-circuit on byte-length (>32KB = complex). No tokenization, no lowercase copies of full prompts.
 
-4. **Circuit breaker hides providers from router, creating misleading "no providers" 400 errors** — If all providers for a model have open circuits, filtering returns empty candidate list. Existing error handling treats empty list as Error::NoProviders (400 Bad Request). Clients see "No providers available" which implies misconfiguration, not transient failure. Prevention: New error variant Error::AllCircuitOpen mapping to 503 with Retry-After header. Include x-arbstr-circuit-state response header showing which providers were skipped.
+4. **Tier escalation cycling creates infinite retry loops** — One-way gate: once escalated, never de-escalate within the same request. Implement as candidate-list expansion (local + standard + frontier in order), not as re-routing. Score is immutable per request.
 
-5. **Half-open probe race — multiple requests enter HalfOpen simultaneously** — When circuit transitions Open->HalfOpen (after 30s timeout), multiple concurrent requests check state simultaneously, all see HalfOpen, and all send probe requests. Recovering provider gets burst instead of single probe. Worse: if some succeed and some fail, last transition wins, causing circuit flapping. Prevention: Use single-permit model with probe_in_flight bool flag. Only first request that atomically claims the permit (inside Mutex) sends probe. All other concurrent requests during HalfOpen rejected as if circuit still Open.
+5. **Config complexity explosion** — One primary user-facing knob (bias: conservative/balanced/aggressive). Individual signal weights are tunable but secondary. `[scoring]` section fully optional; zero-config produces balanced behavior.
+
+6. **`tier` field breaks existing configs without `#[serde(default)]`** — Must default to `Tier::Standard`. Existing configs parse unchanged. Write migration test as part of Phase 1.
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+### Phase 1: Tier Type and Provider Config
+**Rationale:** The `Tier` enum is the foundational type used by every other component. Config backward compatibility must be established here, not retrofitted. Zero-risk phase — pure additions, no behavioral changes.
+**Delivers:** `Tier` enum with `Ord` (Local < Standard < Frontier), `tier` field on `ProviderConfig` with `#[serde(default)]`, `tier` on `SelectedProvider`, updated `config.example.toml`.
+**Addresses:** Provider tier assignment (table stakes)
+**Avoids:** Pitfall 6 (config breakage) — migration test written in this phase
 
-### Phase 1: Circuit Breaker Core (foundation)
-**Rationale:** State machine must exist and be correct before any integration. This is independently testable with no HTTP server, no database, no routes. Pure unit tests with deterministic time control (tokio::test start_paused).
-**Delivers:** src/proxy/circuit_breaker.rs with CircuitState enum, CircuitBreakerConfig, ProviderCircuitBreaker state machine (is_available, record_success, record_failure methods), CircuitBreakerRegistry with DashMap, ProviderHealthInfo struct for /health.
-**Addresses:** 3-state machine, consecutive failure threshold, timeout-based transition, half-open single-probe (table stakes from FEATURES.md).
-**Avoids:** Pitfall 2 (uses Mutex not atomics), Pitfall 5 (single-permit half-open model), Pitfall 9 (uses tokio::time::Instant for testability).
-**Tests:** Pure unit tests for all state transitions, failure threshold boundary behavior, success resets counter, half-open probe logic. Use start_paused = true with tokio::time::advance() for deterministic 30s timeout tests.
+### Phase 2: Complexity Scorer (Pure Logic)
+**Rationale:** Pure functions with no integration dependencies, independently testable before touching production code paths. The scoring behavior and signal balance must be correct before the routing pipeline depends on it.
+**Delivers:** `src/scorer/mod.rs` with `score(messages: &[Message], config: &ScorerConfig)`, all 6 signals, `ScorerConfig`/`SignalWeights`/`TierThresholds` in config, `[scoring]` TOML section, unit tests on sample prompt corpus with 1ms benchmark.
+**Addresses:** Heuristic scorer, configurable thresholds and weights (table stakes)
+**Avoids:** Pitfall 2 (conversation context) — function signature decided here; Pitfall 3 (latency) — benchmark established here; Pitfall 5 (config explosion) — optional section, balanced defaults
 
-### Phase 2: Handler Integration (Non-Streaming)
-**Rationale:** Non-streaming path handles all retried requests (majority of traffic). This phase delivers the core circuit protection value. Streaming can be added separately because it uses a completely different code path (execute_request vs retry_with_fallback).
-**Delivers:** Modified src/proxy/handlers.rs chat_completions handler to filter candidates through circuit_breakers.filter_available() BEFORE retry_with_fallback(), return 503 if all circuits open, record success/failure AFTER retry outcome. Modified src/proxy/server.rs to add circuit_breakers to AppState, initialize from config provider names.
-**Addresses:** Skip open-circuit providers in routing, fail-fast 503 when all open, success resets counter (table stakes).
-**Avoids:** Pitfall 1 (filters PRE-ROUTING not inside retry loop), Pitfall 4 (new error variant for all-circuit-open distinct from NoProviders), Pitfall 6 (only count 5xx as circuit failures, reuse is_retryable logic), Pitfall 10 (mandate record_success on every Ok path).
-**Tests:** Integration tests with mock providers. Trigger 5 consecutive failures, verify circuit opens. Verify next request skips open provider and uses fallback. Verify request with all providers open returns 503 immediately.
+### Phase 3: Router Tier Filtering
+**Rationale:** Isolated change to `selector.rs` — adds one parameter and one filter. Independently unit-testable with mock providers. Establishes the tier-filtering contract before handler integration.
+**Delivers:** `select_candidates` gains `max_tier: Option<Tier>`, tier filtering (`p.tier <= max_tier`), `Error::NoTierMatch`, all existing call sites pass `None` (backward compatible).
+**Addresses:** Tier-aware provider selection (table stakes)
+**Avoids:** Cost-sort within tier preserved; NoTierMatch returned to caller, not handled inside router (enables clean escalation in Phase 4)
 
-### Phase 3: Enhanced /health Endpoint
-**Rationale:** Observability surface for external monitoring. Can be implemented in parallel with Phase 2 (no dependency) or immediately after. Low risk, purely additive (new response format, no behavior change).
-**Delivers:** Modified src/proxy/handlers.rs health handler to accept State<AppState>, query circuit_breakers.provider_states(), add database ping, return structured JSON with per-provider circuit state and overall status.
-**Addresses:** Enhanced /health with per-provider circuit state (table stakes).
-**Avoids:** Pitfall 8 (three-level health model: ok when all closed, degraded when some open, unhealthy when all open).
-**Tests:** Integration tests for /health response structure. Verify reflects circuit state changes. Verify top-level status degrades appropriately.
+### Phase 4: Handler Integration and Escalation
+**Rationale:** Integration phase — depends on all prior phases. Highest-risk: escalation + circuit breaker interaction. One-way candidate-list expansion pattern prevents the cycling pitfall but must be implemented carefully.
+**Delivers:** Scorer called in handler, `resolve_candidates_with_tier` with one-way escalation, `X-Arbstr-Tier` header override, `x-arbstr-complexity-score` / `x-arbstr-tier` / `x-arbstr-escalated` response headers, SSE trailing metadata updated.
+**Addresses:** Header override, response headers, escalation on circuit break (all table stakes)
+**Avoids:** Pitfall 1 (false negatives) — conservative default in handler; Pitfall 4 (cycling) — candidate-list expansion, score immutable per request
 
-### Phase 4: Streaming Path Integration
-**Rationale:** Streaming path is separate from retry logic (execute_request directly calls router.select, no retry). Lower priority because streaming already has no retry protection, so circuit breaker is additive value but not critical for correctness. Can be deferred if needed.
-**Delivers:** Modified src/proxy/handlers.rs execute_request to check circuit breaker before using selected provider, fall back to select_candidates + filter if primary is circuit-broken. Record outcome in spawned background task after stream completes.
-**Addresses:** Equal treatment of streaming and non-streaming failures for circuit health.
-**Avoids:** Pitfall 3 (streaming failures recorded via spawned task callback).
-**Tests:** Integration tests for streaming path with circuit-broken providers. Verify mid-stream failures count toward threshold.
+### Phase 5: Observability (DB and Stats)
+**Rationale:** Pure observability additions after routing is live. No behavioral changes. Enables threshold tuning based on real traffic distribution.
+**Delivers:** DB migration (`complexity_score REAL`, `tier TEXT`), `RequestLog` updated, INSERT/UPDATE queries updated, `stats?group_by=tier`.
+**Addresses:** Complexity/tier in DB logging (table stakes), stats group_by=tier (differentiator)
 
-### Phase 5: Polish and Observability
-**Rationale:** Nice-to-haves that improve debugging and monitoring but are not blocking. Can be done incrementally.
-**Delivers:** State change logging (tracing::info! on transitions), x-arbstr-circuit-state response header, open-since and recovery-at timestamps in /health response, Error::CircuitOpen variant for clearer error messages.
-**Addresses:** Differentiators from FEATURES.md (state change logging, circuit state in response headers).
-**Avoids:** N/A (polish phase).
-**Tests:** Verify logs emit on state transitions with correct structured fields. Verify response headers appear when filtering occurs.
+### Phase 6: Cost Endpoint Update
+**Rationale:** Minor extension of existing `/v1/cost` handler. Low risk, independent of Phase 5. Useful for users wanting to understand routing economics before sending a request.
+**Delivers:** `POST /v1/cost` accepts optional tier parameter and returns tier-filtered cost estimate.
+**Addresses:** Cost estimation with tier awareness (differentiator)
 
 ### Phase Ordering Rationale
 
-- Phase 1 first because state machine is foundation — all integration depends on it. Independently testable with no integration risk.
-- Phase 2 next because non-streaming path is highest value (handles all retried requests). This delivers core circuit protection.
-- Phase 3 can run concurrently with Phase 2 (no dependency) or immediately after. Purely additive, low risk.
-- Phase 4 deferred because streaming path is lower priority (already no retry, so circuit breaker is additive value but not critical).
-- Phase 5 last because polish is not blocking. Can be done incrementally or deferred to v2.
-
-Phases 1-3 deliver complete circuit breaker protection for non-streaming requests plus full observability. This is the MVP. Phase 4 extends to streaming. Phase 5 is polish.
+- Phase 1 must be first: `Tier` is used by scorer, router, handler, and DB — nothing else can compile without it
+- Phase 2 before Phase 3: scorer produces the `Tier` value that the router consumes as input
+- Phase 3 before Phase 4: the handler calls the router with the tier, so router API must exist first
+- Phase 4 is the integration gate: only meaningful end-to-end after phases 1+2+3 are complete and tested
+- Phase 5 after Phase 4: DB columns should store real routing decisions, not placeholder values
+- Phase 6 last: lowest risk, no blocking dependencies after Phase 3
 
 ### Research Flags
 
-Phases with standard patterns (skip research-phase):
-- **Phase 1:** Circuit breaker state machine is well-documented pattern (Azure Architecture Center, Martin Fowler, Resilience4j). Implementation is straightforward Rust state machine.
-- **Phase 2:** Integration points identified through direct codebase analysis (retry.rs, handlers.rs, selector.rs all read and understood).
-- **Phase 3:** /health endpoint enhancement is trivial JSON serialization of circuit state snapshot.
-- **Phase 4:** Streaming path integration follows same pattern as Phase 2, just different code path.
-- **Phase 5:** Logging and headers are standard axum/tracing patterns.
+Phases with well-documented patterns (skip research-phase):
+- **Phase 1:** Serde default patterns in Rust are established; `Ord` on enums is standard
+- **Phase 2:** Weighted-sum heuristic scorer with 5-6 signals has known implementation patterns from research
+- **Phase 3:** Adding an optional filter parameter to an existing selection function is a minimal change
+- **Phase 5:** SQLite ALTER TABLE migration and GROUP BY query patterns already established in this codebase
+- **Phase 6:** Extends existing `/v1/cost` endpoint using same patterns as Phase 3
 
-**No phases need /gsd:research-phase.** All patterns are established and integration points are known from codebase analysis.
+Phase warranting careful pre-implementation review:
+- **Phase 4:** Escalation + existing circuit breaker + existing retry loop interaction is the highest-risk integration. Recommend reviewing `handlers.rs`, `retry.rs`, and `circuit_breaker.rs` together before writing code. The one-way gate and candidate-list expansion pattern is clear, but the exact insertion point in the existing `resolve_candidates` flow needs tracing carefully.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | DashMap verified as standard concurrent map (170M+ downloads). tokio::time::Instant verified as correct for deterministic tests (existing retry.rs tests use start_paused). Mutex vs atomics decision based on direct analysis of race conditions. |
-| Features | HIGH | Table stakes features verified against Azure Architecture Center (canonical circuit breaker reference), Kong/Envoy/KrakenD docs (production proxy implementations). Anti-features justified based on arbstr's context (local proxy, low traffic volume, no distributed coordination). |
-| Architecture | HIGH | Integration points identified through direct codebase inspection (retry.rs, handlers.rs, stream.rs, selector.rs, server.rs all read). Handler-level integration (not router or middleware) matches existing patterns. Lazy state transitions match existing time-based logic. |
-| Pitfalls | HIGH | Retry amplification math is deterministic (MAX_RETRIES=2 means 3 attempts). Race conditions verified against Rust Atomics and Locks reference. Streaming invisibility verified from actual fire-and-forget spawned task pattern in handlers.rs. Half-open race documented in Azure/Resilience4j sources. |
+| Stack | HIGH | Verified via `cargo tree` (regex already transitive), `cargo search` for current versions, explicit rejection of alternatives with rationale |
+| Features | HIGH | Cross-referenced against 10+ production routing systems; signal weights validated against NVIDIA DeBERTa formula and RouteLLM research |
+| Architecture | HIGH | Derived from direct codebase analysis of all relevant source files; integration points explicitly located in selector.rs and handlers.rs |
+| Pitfalls | HIGH | Based on codebase analysis + production LLM routing system patterns + heuristic classifier anti-patterns from search/ranking literature |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-No significant gaps. Research is complete and actionable.
-
-Minor areas to validate during implementation:
-- **Exact circuit-open error handling in retry module:** The retry_with_fallback function may need a small modification to distinguish "circuit open, skip to fallback" from "request failed, retry with backoff." The is_retryable() function provides a template, but circuit-open may need a third outcome ("skip" vs "retry" vs "abort"). This is a small implementation detail, not a research gap.
-- **Mock provider 503 behavior in tests:** Integration tests will need mock providers that deterministically return 503 to trip circuits. The existing mock mode may need minor extension. Not a blocker — mock server can be inline in test.
+- **Default threshold calibration (local_max=0.3, standard_max=0.7):** These values are drawn from analogical reasoning against NVIDIA's formula and RouteLLM calibration but have not been validated against real arbstr traffic. Ship conservative (bias toward frontier) and plan to tune after collecting distribution data via `stats?group_by=tier`.
+- **Keyword set completeness:** The default reasoning keyword list is research-derived but unvalidated against real user prompts. Config should allow adding keywords (`extra_keywords`) rather than requiring full replacement, so defaults can be updated without breaking user configs.
+- **Vault reservation under escalation:** When tier escalation is possible (local-tier request might escalate to frontier), vault reservation must use frontier-tier pricing (worst case) to avoid under-reservation rejections. This `vault.rs` interaction needs explicit design during Phase 4 planning — it is flagged in PITFALLS.md but not fully resolved in ARCHITECTURE.md.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Local codebase analysis: Cargo.toml, src/proxy/server.rs (AppState), src/proxy/handlers.rs (health handler, send_to_provider, streaming path), src/proxy/retry.rs (retry pattern, start_paused tests, is_retryable), src/router/selector.rs (select_candidates), src/proxy/stream.rs (spawned task pattern) — all read and verified
-- [Circuit Breaker Pattern - Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker) — Definitive reference for 3-state machine, counter approaches, concurrency considerations, half-open permit model
-- [Martin Fowler - Circuit Breaker](https://martinfowler.com/bliki/CircuitBreaker.html) — Canonical pattern description
-- [DashMap documentation](https://docs.rs/dashmap/latest/dashmap/struct.DashMap.html) — Per-shard locking confirmed
-- [DashMap on crates.io](https://crates.io/crates/dashmap) — 170M+ downloads, version 6.x stable
-- [tokio::time::Instant docs](https://docs.rs/tokio/latest/tokio/time/struct.Instant.html) — Virtual time control for testing confirmed
+- Direct codebase analysis: `src/router/selector.rs`, `src/proxy/handlers.rs`, `src/proxy/circuit_breaker.rs`, `src/proxy/retry.rs`, `src/config.rs`, `src/storage/logging.rs`
+- `cargo tree` output — confirmed `regex` 1.12.3 already transitive via `tracing-subscriber`
+- `.planning/PROJECT.md` — scope, constraints, out-of-scope items
 
 ### Secondary (MEDIUM confidence)
-- [Retry Storm Antipattern - Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/antipatterns/retry-storm/) — Retry amplification, circuit breaker as mitigation
-- [Resilience4j CircuitBreaker Documentation](https://resilience4j.readme.io/docs/circuitbreaker) — Atomic state management, sliding window (anti-pattern for arbstr), half-open permit model
-- [Circuit Breaker - KrakenD API Gateway](https://www.krakend.io/docs/backends/circuit-breaker/) — Real-world gateway using consecutive errors per backend
-- [Health checks and circuit breakers - Kong Gateway](https://docs.konghq.com/gateway/latest/how-kong-works/health-checks/) — Active vs passive health checking, per-upstream status
-- [Circuit Breakers - Tyk Documentation](https://tyk.io/docs/planning-for-production/ensure-high-availability/circuit-breakers/) — Per-endpoint circuit breaking, 503 on open
-- [Outlier detection - Envoy Proxy](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier) — Per-upstream host ejection based on consecutive errors
-- [Resilience Design Patterns - Codecentric](https://www.codecentric.de/en/knowledge-hub/blog/resilience-design-patterns-retry-fallback-timeout-circuit-breaker) — Pattern composition guidance
-- [Linkerd Circuit Breaking](https://linkerd.io/2-edge/reference/circuit-breaking/) — Per-endpoint circuit breaking in proxy context
+- [RouteLLM Blog (LMSYS)](https://www.lmsys.org/blog/2024-07-01-routellm/) — MF router, 95% GPT-4 quality at 48% cost reduction
+- [NVIDIA Prompt Task and Complexity Classifier](https://huggingface.co/nvidia/prompt-task-and-complexity-classifier) — 6-dimension weighted scoring formula, DeBERTa backbone, 98% accuracy
+- [Portkey Conditional Routing](https://portkey.ai/docs/product/ai-gateway/conditional-routing) — runtime routing on request params and metadata
+- [LiteLLM Auto Routing](https://docs.litellm.ai/docs/proxy/auto_routing) — embedding-based semantic matching (evaluated and rejected)
+- [LLM Routing in Production (LogRocket)](https://blog.logrocket.com/llm-routing-right-model-for-requests/) — input length as complexity proxy, keyword classification
+- [Requesty Intelligent Routing](https://www.requesty.ai/blog/intelligent-llm-routing-in-enterprise-ai-uptime-cost-efficiency-and-model) — hybrid local/cloud routing, 30-70% cost reduction
 
 ### Tertiary (LOW confidence)
-- [failsafe crate docs](https://docs.rs/failsafe/latest/failsafe/) — Evaluated but architectural mismatch (call-wrapping API conflicts with retry architecture)
-- [tower-circuitbreaker docs](https://docs.rs/tower-circuitbreaker/latest/tower_circuitbreaker/) — Evaluated but wrong abstraction (Tower Service middleware operates on individual requests, not routing decisions)
+- [Complexity-Based Prompting (ICLR 2023)](https://openreview.net/pdf?id=yf1icZHC-l9) — reasoning steps as primary complexity factor (academic, production applicability uncertain)
+- [SLM-default LLM-fallback Pattern](https://www.strathweb.com/2025/12/slm-default-llm-fallback-pattern-with-agent-framework-and-azure-ai-foundry/) — confidence-gated escalation pattern (evaluated and rejected as anti-feature for transparent proxy)
 
 ---
-*Research completed: 2026-02-16*
+*Research completed: 2026-04-08*
 *Ready for roadmap: yes*
