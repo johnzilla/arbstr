@@ -8,7 +8,16 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: Planning next milestone
+## Current Milestone: v1.7 Intelligent Complexity Routing
+
+**Goal:** Route simple requests to local/mesh-llm providers at zero cost and escalate complex requests to frontier models automatically — the user never picks a model.
+
+**Target features:**
+- Heuristic complexity scorer (context length, code blocks, multi-file refs, reasoning keywords, conversation depth, header override)
+- Provider tier system (local/standard/frontier) with config field
+- Tier-aware routing pipeline with automatic escalation on circuit break
+- Configurable complexity thresholds and signal weights in config.toml
+- Full observability: response headers, SSE metadata, DB columns, stats group_by=tier
 
 ## Requirements
 
@@ -65,7 +74,12 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 
 ### Active
 
-(None — planning next milestone)
+- [ ] Heuristic complexity scorer with configurable signal weights
+- [ ] Provider tier system (local/standard/frontier)
+- [ ] Tier-aware routing with automatic escalation on circuit break
+- [ ] Complexity score + tier in response headers and SSE metadata
+- [ ] Complexity score + tier columns in request log DB
+- [ ] Stats endpoint group_by=tier support
 
 ### Future
 
@@ -154,4 +168,22 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 | Hardcoded circuit constants (threshold=3, timeout=30s) | Defer configurability to future milestone | ✓ Good — simplicity, can add config later |
 
 ---
-*Last updated: 2026-02-16 after v1.4 milestone complete*
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-04-08 after v1.7 milestone started*
