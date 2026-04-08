@@ -1,7 +1,7 @@
 # Requirements: arbstr
 
 **Defined:** 2026-04-08
-**Core Value:** Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
+**Core Value:** Smart model selection that minimizes sats spent per request without sacrificing quality -- pick the cheapest model that fits the task.
 
 ## v1.7 Requirements
 
@@ -9,7 +9,7 @@ Requirements for v1.7 Intelligent Complexity Routing. Each maps to roadmap phase
 
 ### Complexity Scoring
 
-- [ ] **SCORE-01**: Proxy scores every request 0.0–1.0 using weighted heuristic signals (context length, code blocks, multi-file indicators, reasoning keywords, conversation depth)
+- [ ] **SCORE-01**: Proxy scores every request 0.0-1.0 using weighted heuristic signals (context length, code blocks, multi-file indicators, reasoning keywords, conversation depth)
 - [ ] **SCORE-02**: Signal weights are configurable in `[routing.complexity_weights]` config section
 - [ ] **SCORE-03**: `X-Arbstr-Complexity: high|low` header overrides the scorer
 - [ ] **SCORE-04**: Scorer operates on full `&[Message]` array for conversation-aware analysis
@@ -27,7 +27,7 @@ Requirements for v1.7 Intelligent Complexity Routing. Each maps to roadmap phase
 - [ ] **ROUTE-02**: Score < low threshold routes to local tier only; mid-range includes local + standard; above high threshold includes all tiers
 - [ ] **ROUTE-03**: Thresholds configurable via `complexity_threshold_low` and `complexity_threshold_high` in `[routing]`
 - [ ] **ROUTE-04**: When scored tier has no healthy providers (circuit broken), router escalates to next tier automatically
-- [ ] **ROUTE-05**: Escalation is one-way per request (local → standard → frontier, never de-escalates)
+- [ ] **ROUTE-05**: Escalation is one-way per request (local -> standard -> frontier, never de-escalates)
 
 ### Observability
 
@@ -54,9 +54,9 @@ Requirements for v1.7 Intelligent Complexity Routing. Each maps to roadmap phase
 
 | Feature | Reason |
 |---------|--------|
-| ML-based classifier | Requires Python/ONNX deps, adds 50-200ms latency — heuristics first, ML in future milestone |
+| ML-based classifier | Requires Python/ONNX deps, adds 50-200ms latency -- heuristics first, ML in future milestone |
 | Cascading (run cheap, check quality, escalate) | Double-inference latency, arbstr is a transparent proxy |
-| Auto-discovery of mesh-llm models | User configures providers like any other — consistency over magic |
+| Auto-discovery of mesh-llm models | User configures providers like any other -- consistency over magic |
 | Vault/billing changes | Local providers settle at zero sats through existing paths |
 | More than 3 tiers | local/standard/frontier covers the use case; extensibility is future work |
 | `complexity_bias` single-knob config | Research suggested it but per-signal weights give more control |
@@ -65,30 +65,30 @@ Requirements for v1.7 Intelligent Complexity Routing. Each maps to roadmap phase
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SCORE-01 | — | Pending |
-| SCORE-02 | — | Pending |
-| SCORE-03 | — | Pending |
-| SCORE-04 | — | Pending |
-| SCORE-05 | — | Pending |
-| TIER-01 | — | Pending |
-| TIER-02 | — | Pending |
-| TIER-03 | — | Pending |
-| ROUTE-01 | — | Pending |
-| ROUTE-02 | — | Pending |
-| ROUTE-03 | — | Pending |
-| ROUTE-04 | — | Pending |
-| ROUTE-05 | — | Pending |
-| OBS-01 | — | Pending |
-| OBS-02 | — | Pending |
-| OBS-03 | — | Pending |
-| OBS-04 | — | Pending |
-| OBS-05 | — | Pending |
+| TIER-01 | Phase 16 | Pending |
+| TIER-02 | Phase 16 | Pending |
+| TIER-03 | Phase 16 | Pending |
+| SCORE-01 | Phase 17 | Pending |
+| SCORE-02 | Phase 17 | Pending |
+| SCORE-04 | Phase 17 | Pending |
+| SCORE-05 | Phase 17 | Pending |
+| ROUTE-01 | Phase 18 | Pending |
+| ROUTE-02 | Phase 18 | Pending |
+| ROUTE-03 | Phase 18 | Pending |
+| SCORE-03 | Phase 19 | Pending |
+| ROUTE-04 | Phase 19 | Pending |
+| ROUTE-05 | Phase 19 | Pending |
+| OBS-01 | Phase 20 | Pending |
+| OBS-02 | Phase 20 | Pending |
+| OBS-03 | Phase 20 | Pending |
+| OBS-04 | Phase 20 | Pending |
+| OBS-05 | Phase 20 | Pending |
 
 **Coverage:**
 - v1.7 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18 ⚠️
+- Mapped to phases: 18
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-08*
-*Last updated: 2026-04-08 after initial definition*
+*Last updated: 2026-04-08 after roadmap creation*

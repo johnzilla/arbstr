@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.7
 milestone_name: Intelligent Complexity Routing
-status: defining_requirements
+status: ready_to_plan
 last_updated: "2026-04-08"
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -18,36 +18,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-08)
 
 **Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** v1.7 Intelligent Complexity Routing
+**Current focus:** v1.7 Phase 16 - Provider Tier Foundation
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-08 — Milestone v1.7 started
+Phase: 16 of 20 (Provider Tier Foundation) -- first of 5 phases in v1.7
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-04-08 — Roadmap created for v1.7 (5 phases, 18 requirements)
+
+Progress: [....................] 0%
 
 ## Performance Metrics
 
-**v1 Velocity:**
-- Total plans completed: 10
-- Average duration: 2 min
-
-**v1.1 Velocity:**
-- Total plans completed: 4
-- Average duration: 2.75 min
-
-**v1.2 Velocity:**
-- Total plans completed: 4
-- Average duration: 3.5 min
-
-**v1.3 Velocity:**
-- Total plans completed: 4
-- Average duration: 3.5 min
-
-**v1.4 Velocity:**
-- Total plans completed: 5
-- Average duration: 3 min
+**Historical Velocity (v1-v1.4):**
+- Total plans completed: 27
+- Average duration: ~3 min per plan
 
 ## Accumulated Context
 
@@ -55,16 +41,6 @@ Last activity: 2026-04-08 — Milestone v1.7 started
 
 Decisions are logged in PROJECT.md Key Decisions table.
 See .planning/milestones/ for per-milestone decision history.
-- [Phase quick]: Input token estimation uses 4 chars/token heuristic for cost preview
-- [Phase quick]: Default output token estimate is 256 when max_tokens absent
-- [Phase quick]: Pin bytes = 1.11.1 minimum in Cargo.toml to fix RUSTSEC-2026-0007
-- [Phase quick]: RUSTSEC-2023-0071 (rsa) acknowledged as unfixable -- crate never compiled, no patched version exists
-- [Phase quick]: Retained retry.rs last_error .expect() with SAFETY comment (provably unreachable)
-- [Phase quick]: Used futures::future::Either for fallible closure in retry_with_fallback
-- [Phase quick]: No backtrace capture in panic hook -- controlled by RUST_BACKTRACE env var
-- [Phase quick]: Used structured tracing fields (panic.message, panic.location) for log aggregator filtering
-- [Phase quick]: Only modified production code mutex locks; left test .unwrap() unchanged
-- [Phase quick]: Kept all CLAUDE.md technical content verbatim in DEVELOPMENT.md for accuracy
 
 ### Pending Todos
 
@@ -73,6 +49,7 @@ None.
 ### Blockers/Concerns
 
 - Routstr provider stream_options support unknown -- safe degradation (NULL usage) prevents regression
+- Vault reservation under tier escalation: when local request might escalate to frontier, vault reservation must use frontier-tier pricing (worst case) -- needs design in Phase 19
 
 ### Quick Tasks Completed
 
@@ -87,6 +64,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-08
-Stopped at: Completed quick-6 (Reorganize developer docs - DEVELOPMENT.md, CONTRIBUTING.md)
-Resume file: Between milestones. Next: /gsd:new-milestone
+Last session: 2026-04-08
+Stopped at: Roadmap created for v1.7 Intelligent Complexity Routing
+Resume file: None -- next: /gsd-plan-phase 16
