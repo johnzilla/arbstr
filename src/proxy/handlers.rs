@@ -1362,6 +1362,7 @@ pub struct HealthResponse {
 pub struct ProviderHealth {
     pub state: String,
     pub failure_count: u32,
+    pub tier: String,
 }
 
 /// Handle GET /health
@@ -1373,14 +1374,26 @@ pub struct ProviderHealth {
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let snapshots = state.circuit_breakers.all_states();
 
+    let tier_map: std::collections::HashMap<&str, String> = state
+        .router
+        .providers()
+        .iter()
+        .map(|p| (p.name.as_str(), p.tier.to_string()))
+        .collect();
+
     let providers: std::collections::HashMap<String, ProviderHealth> = snapshots
         .iter()
         .map(|snap| {
+            let tier = tier_map
+                .get(snap.name.as_str())
+                .cloned()
+                .unwrap_or_else(|| "standard".to_string());
             (
                 snap.name.clone(),
                 ProviderHealth {
                     state: snap.state.as_str().to_string(),
                     failure_count: snap.failure_count,
+                    tier,
                 },
             )
         })
@@ -1472,6 +1485,7 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
                 "input_rate_sats_per_1k": p.input_rate,
                 "output_rate_sats_per_1k": p.output_rate,
                 "base_fee_sats": p.base_fee,
+                "tier": p.tier.to_string(),
                 "api_key": match &p.api_key {
                     Some(key) => serde_json::Value::String(key.masked_prefix()),
                     None => serde_json::Value::Null,

@@ -2,9 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::config::{ApiKey, PolicyRule, ProviderConfig};
-#[cfg(test)]
-use crate::config::Tier;
+use crate::config::{ApiKey, PolicyRule, ProviderConfig, Tier};
 use crate::error::{Error, Result};
 
 /// A provider selected for routing.
@@ -16,6 +14,7 @@ pub struct SelectedProvider {
     pub input_rate: u64,
     pub output_rate: u64,
     pub base_fee: u64,
+    pub tier: Tier,
 }
 
 impl From<&ProviderConfig> for SelectedProvider {
@@ -27,6 +26,7 @@ impl From<&ProviderConfig> for SelectedProvider {
             input_rate: config.input_rate,
             output_rate: config.output_rate,
             base_fee: config.base_fee,
+            tier: config.tier,
         }
     }
 }
