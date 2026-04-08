@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
-use arbstr::config::{Config, PoliciesConfig, ProviderConfig, ServerConfig};
+use arbstr::config::{Config, PoliciesConfig, ProviderConfig, RoutingConfig, ServerConfig, Tier};
 use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
 use arbstr::router::Router as ProviderRouter;
 
@@ -31,6 +31,7 @@ pub fn test_provider(name: &str) -> ProviderConfig {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+        tier: Tier::default(),
     }
 }
 
@@ -52,6 +53,7 @@ pub fn setup_circuit_test_app(
         providers: providers.clone(),
         policies: PoliciesConfig::default(),
         logging: Default::default(),
+        routing: RoutingConfig::default(),
     };
 
     let provider_router = ProviderRouter::new(
@@ -94,6 +96,7 @@ pub fn db_test_config() -> Config {
                 input_rate: 10,
                 output_rate: 30,
                 base_fee: 1,
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "beta".to_string(),
@@ -103,10 +106,12 @@ pub fn db_test_config() -> Config {
                 input_rate: 5,
                 output_rate: 15,
                 base_fee: 0,
+                tier: Tier::default(),
             },
         ],
         policies: PoliciesConfig::default(),
         logging: Default::default(),
+        routing: RoutingConfig::default(),
     }
 }
 

@@ -16,6 +16,8 @@ pub struct Config {
     pub policies: PoliciesConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub routing: RoutingConfig,
 }
 
 /// HTTP server configuration.
@@ -263,6 +265,10 @@ pub struct ProviderConfig {
     /// Base fee per request in sats
     #[serde(default)]
     pub base_fee: u64,
+    /// Provider tier for complexity-based routing (local/standard/frontier).
+    /// Default: standard (backward compatible).
+    #[serde(default)]
+    pub tier: Tier,
 }
 
 /// Policies configuration.
@@ -457,6 +463,8 @@ pub struct RawProviderConfig {
     output_rate: u64,
     #[serde(default)]
     base_fee: u64,
+    #[serde(default)]
+    tier: Tier,
 }
 
 /// Raw configuration deserialized directly from TOML.
@@ -472,6 +480,8 @@ pub struct RawConfig {
     policies: PoliciesConfig,
     #[serde(default)]
     logging: LoggingConfig,
+    #[serde(default)]
+    routing: RoutingConfig,
 }
 
 /// Expand all `${VAR}` references in a string using a custom lookup function.
@@ -592,6 +602,7 @@ impl Config {
                 input_rate: rp.input_rate,
                 output_rate: rp.output_rate,
                 base_fee: rp.base_fee,
+                tier: rp.tier,
             });
         }
 
@@ -602,6 +613,7 @@ impl Config {
             providers,
             policies: raw.policies,
             logging: raw.logging,
+            routing: raw.routing,
         };
 
         Ok((config, key_sources))
@@ -734,6 +746,7 @@ mod tests {
             input_rate: 10,
             output_rate: 30,
             base_fee: 1,
+            tier: Tier::default(),
         };
         let debug_output = format!("{:?}", config);
         assert!(
@@ -920,9 +933,11 @@ mod tests {
                 input_rate: 0,
                 output_rate: 0,
                 base_fee: 0,
+                tier: Tier::default(),
             }],
             policies: PoliciesConfig::default(),
             logging: LoggingConfig::default(),
+            routing: RoutingConfig::default(),
         }
     }
 
@@ -1154,5 +1169,78 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
         let result = check_file_permissions(&path);
         assert!(result.is_none(), "0400 should not trigger warning");
+    }
+
+    // ── Backward compatibility and tier/routing parsing tests ──
+
+    #[test]
+    fn test_parse_config_without_tier_field() {
+        let toml = r#"
+            [server]
+            listen = "127.0.0.1:8080"
+
+            [[providers]]
+            name = "test"
+            url = "http://localhost/v1"
+            input_rate = 5
+            output_rate = 15
+        "#;
+
+        let config = Config::parse_str(toml).unwrap();
+        assert_eq!(config.providers[0].tier, Tier::Standard);
+    }
+
+    #[test]
+    fn test_parse_config_with_tier_field() {
+        let toml = r#"
+            [server]
+            listen = "127.0.0.1:8080"
+
+            [[providers]]
+            name = "local-llm"
+            url = "http://localhost:1234/v1"
+            tier = "local"
+        "#;
+
+        let config = Config::parse_str(toml).unwrap();
+        assert_eq!(config.providers[0].tier, Tier::Local);
+    }
+
+    #[test]
+    fn test_parse_config_with_routing_section() {
+        let toml = r#"
+            [server]
+            listen = "127.0.0.1:8080"
+
+            [routing]
+            complexity_threshold_low = 0.3
+            complexity_threshold_high = 0.8
+
+            [routing.complexity_weights]
+            context_length = 2.0
+            code_blocks = 0.5
+        "#;
+
+        let config = Config::parse_str(toml).unwrap();
+        assert!((config.routing.complexity_threshold_low - 0.3).abs() < f64::EPSILON);
+        assert!((config.routing.complexity_threshold_high - 0.8).abs() < f64::EPSILON);
+        assert!((config.routing.complexity_weights.context_length - 2.0).abs() < f64::EPSILON);
+        assert!((config.routing.complexity_weights.code_blocks - 0.5).abs() < f64::EPSILON);
+        // Unset weights should default to 1.0
+        assert!(
+            (config.routing.complexity_weights.multi_file - 1.0).abs() < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn test_parse_config_without_routing_section() {
+        let toml = r#"
+            [server]
+            listen = "127.0.0.1:8080"
+        "#;
+
+        let config = Config::parse_str(toml).unwrap();
+        assert!((config.routing.complexity_threshold_low - 0.4).abs() < f64::EPSILON);
+        assert!((config.routing.complexity_threshold_high - 0.7).abs() < f64::EPSILON);
     }
 }

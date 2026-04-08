@@ -17,7 +17,7 @@ use axum::body::Body;
 use http::Request;
 use tower::ServiceExt;
 
-use arbstr::config::ProviderConfig;
+use arbstr::config::{ProviderConfig, Tier};
 use arbstr::proxy::{CircuitBreakerRegistry, CircuitState};
 
 /// Number of failures needed to trip a circuit (matches FAILURE_THRESHOLD in circuit_breaker.rs).
@@ -40,6 +40,7 @@ fn test_provider(name: &str) -> ProviderConfig {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+        tier: Tier::default(),
     }
 }
 

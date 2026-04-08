@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 
 use crate::config::{ApiKey, PolicyRule, ProviderConfig};
+#[cfg(test)]
+use crate::config::Tier;
 use crate::error::{Error, Result};
 
 /// A provider selected for routing.
@@ -230,6 +232,7 @@ mod tests {
                 input_rate: 5,
                 output_rate: 15,
                 base_fee: 0,
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "expensive".to_string(),
@@ -239,6 +242,7 @@ mod tests {
                 input_rate: 10,
                 output_rate: 30,
                 base_fee: 1,
+                tier: Tier::default(),
             },
         ]
     }
@@ -273,6 +277,7 @@ mod tests {
                 input_rate: 5,
                 output_rate: 10,
                 base_fee: 8,
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "high-rate-no-fee".to_string(),
@@ -282,6 +287,7 @@ mod tests {
                 input_rate: 8,
                 output_rate: 15,
                 base_fee: 0,
+                tier: Tier::default(),
             },
         ];
 
@@ -366,6 +372,7 @@ mod tests {
                 input_rate: 8,
                 output_rate: 20,
                 base_fee: 5, // routing cost: 25
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "cheapest".to_string(),
@@ -375,6 +382,7 @@ mod tests {
                 input_rate: 3,
                 output_rate: 10,
                 base_fee: 0, // routing cost: 10
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "pricey".to_string(),
@@ -384,6 +392,7 @@ mod tests {
                 input_rate: 15,
                 output_rate: 40,
                 base_fee: 10, // routing cost: 50
+                tier: Tier::default(),
             },
         ];
 
@@ -408,6 +417,7 @@ mod tests {
                 input_rate: 10,
                 output_rate: 30,
                 base_fee: 5, // routing cost: 35
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "alpha".to_string(),
@@ -417,6 +427,7 @@ mod tests {
                 input_rate: 3,
                 output_rate: 10,
                 base_fee: 0, // routing cost: 10
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "beta".to_string(),
@@ -426,6 +437,7 @@ mod tests {
                 input_rate: 5,
                 output_rate: 15,
                 base_fee: 2, // routing cost: 17
+                tier: Tier::default(),
             },
         ];
 
@@ -464,6 +476,7 @@ mod tests {
                 input_rate: 5,
                 output_rate: 15,
                 base_fee: 0,
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "no-model".to_string(),
@@ -473,6 +486,7 @@ mod tests {
                 input_rate: 3,
                 output_rate: 10,
                 base_fee: 0,
+                tier: Tier::default(),
             },
         ];
 

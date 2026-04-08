@@ -137,6 +137,7 @@ async fn test_non_streaming_503_all_circuits_open() {
             input_rate: 5,
             output_rate: 15,
             base_fee: 0,
+            tier: arbstr::config::Tier::default(),
         },
         ProviderConfig {
             name: "provider-b".to_string(),
@@ -146,6 +147,7 @@ async fn test_non_streaming_503_all_circuits_open() {
             input_rate: 10,
             output_rate: 30,
             base_fee: 1,
+            tier: arbstr::config::Tier::default(),
         },
     ];
 
@@ -191,6 +193,7 @@ async fn test_non_streaming_skips_open_circuit() {
             input_rate: 3, // cheaper, would be selected first
             output_rate: 10,
             base_fee: 0,
+            tier: arbstr::config::Tier::default(),
         },
         ProviderConfig {
             name: "provider-b".to_string(),
@@ -200,6 +203,7 @@ async fn test_non_streaming_skips_open_circuit() {
             input_rate: 10,
             output_rate: 30,
             base_fee: 1,
+            tier: arbstr::config::Tier::default(),
         },
     ];
 
@@ -242,6 +246,7 @@ async fn test_streaming_503_all_circuits_open() {
             input_rate: 5,
             output_rate: 15,
             base_fee: 0,
+            tier: arbstr::config::Tier::default(),
         },
         ProviderConfig {
             name: "provider-b".to_string(),
@@ -251,6 +256,7 @@ async fn test_streaming_503_all_circuits_open() {
             input_rate: 10,
             output_rate: 30,
             base_fee: 1,
+            tier: arbstr::config::Tier::default(),
         },
     ];
 
@@ -296,6 +302,7 @@ async fn test_streaming_skips_open_circuit() {
             input_rate: 3, // cheaper
             output_rate: 10,
             base_fee: 0,
+            tier: arbstr::config::Tier::default(),
         },
         ProviderConfig {
             name: "provider-b".to_string(),
@@ -305,6 +312,7 @@ async fn test_streaming_skips_open_circuit() {
             input_rate: 10,
             output_rate: 30,
             base_fee: 1,
+            tier: arbstr::config::Tier::default(),
         },
     ];
 
@@ -352,6 +360,7 @@ async fn test_circuit_records_failure_on_5xx() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+            tier: arbstr::config::Tier::default(),
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -395,6 +404,7 @@ async fn test_circuit_stays_closed_on_4xx() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+            tier: arbstr::config::Tier::default(),
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -437,6 +447,7 @@ async fn test_non_streaming_records_success() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+            tier: arbstr::config::Tier::default(),
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -484,6 +495,7 @@ async fn test_streaming_records_failure_on_5xx() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+            tier: arbstr::config::Tier::default(),
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -520,6 +532,7 @@ async fn test_503_has_request_id_header() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
+            tier: arbstr::config::Tier::default(),
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);

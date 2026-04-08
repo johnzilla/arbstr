@@ -264,6 +264,7 @@ fn mock_config() -> Config {
                 input_rate: 5,
                 output_rate: 15,
                 base_fee: 0,
+                tier: Tier::default(),
             },
             ProviderConfig {
                 name: "mock-expensive".to_string(),
@@ -273,6 +274,7 @@ fn mock_config() -> Config {
                 input_rate: 10,
                 output_rate: 30,
                 base_fee: 1,
+                tier: Tier::default(),
             },
         ],
         policies: PoliciesConfig {
@@ -293,5 +295,6 @@ fn mock_config() -> Config {
             level: "debug".to_string(),
             log_requests: true,
         },
+        routing: RoutingConfig::default(),
     }
 }

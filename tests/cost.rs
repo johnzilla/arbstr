@@ -18,7 +18,9 @@ use axum::body::Body;
 use http::Request;
 use tower::ServiceExt;
 
-use arbstr::config::{Config, PoliciesConfig, PolicyRule, ProviderConfig, ServerConfig};
+use arbstr::config::{
+    Config, PoliciesConfig, PolicyRule, ProviderConfig, RoutingConfig, ServerConfig, Tier,
+};
 use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
 use arbstr::router::Router as ProviderRouter;
 
@@ -44,6 +46,7 @@ fn setup_cost_test_app(
             rules: policy_rules.clone(),
         },
         logging: Default::default(),
+        routing: RoutingConfig::default(),
     };
 
     let provider_router = ProviderRouter::new(
@@ -82,6 +85,7 @@ fn setup_cost_test_app_with_auth(providers: Vec<ProviderConfig>, auth_token: &st
         providers: providers.clone(),
         policies: PoliciesConfig::default(),
         logging: Default::default(),
+        routing: RoutingConfig::default(),
     };
 
     let provider_router = ProviderRouter::new(
@@ -119,6 +123,7 @@ fn provider_with_rates(
         input_rate,
         output_rate,
         base_fee,
+        tier: Tier::default(),
     }
 }
 

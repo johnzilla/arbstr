@@ -42,6 +42,8 @@ input_rate = 10   # sats per 1k input tokens
 output_rate = 30  # sats per 1k output tokens
 # Optional: base fee per request
 base_fee = 1
+# Provider tier: "local", "standard" (default), or "frontier"
+tier = "standard"
 
 [[providers]]
 name = "example-provider-2"
@@ -52,6 +54,7 @@ models = ["gpt-4o", "claude-3.5-sonnet", "claude-3-haiku"]
 input_rate = 8
 output_rate = 35
 base_fee = 0
+# tier = "local"
 
 # Routing policies
 [policies]
@@ -82,6 +85,20 @@ name = "analysis"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
 strategy = "lowest_cost"
 # No keywords - must be explicitly requested via header
+
+# Complexity-based routing (optional, all values have defaults)
+# Scores below low threshold route to local tier; above high threshold to frontier
+# [routing]
+# complexity_threshold_low = 0.4
+# complexity_threshold_high = 0.7
+
+# Signal weights for complexity scoring (all default to 1.0)
+# [routing.complexity_weights]
+# context_length = 1.0
+# code_blocks = 1.0
+# multi_file = 1.0
+# reasoning_keywords = 1.0
+# conversation_depth = 1.0
 
 # Logging configuration
 [logging]
