@@ -226,6 +226,9 @@ pub struct ComplexityWeightsConfig {
     pub reasoning_keywords: f64,
     #[serde(default = "default_weight")]
     pub conversation_depth: f64,
+    /// Additional keywords that boost the reasoning signal (user-extensible).
+    #[serde(default)]
+    pub extra_keywords: Vec<String>,
 }
 
 fn default_weight() -> f64 {
@@ -240,6 +243,7 @@ impl Default for ComplexityWeightsConfig {
             multi_file: default_weight(),
             reasoning_keywords: default_weight(),
             conversation_depth: default_weight(),
+            extra_keywords: Vec::new(),
         }
     }
 }

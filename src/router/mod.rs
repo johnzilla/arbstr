@@ -5,6 +5,8 @@
 //! - Cost (input/output rates)
 //! - Policy constraints
 
+mod complexity;
 mod selector;
 
+pub use complexity::score_complexity;
 pub use selector::{actual_cost_sats, Router, SelectedProvider};
