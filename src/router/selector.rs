@@ -70,8 +70,9 @@ impl Router {
         model: &str,
         policy_name: Option<&str>,
         prompt: Option<&str>,
+        max_tier: Option<Tier>,
     ) -> Result<SelectedProvider> {
-        self.select_candidates(model, policy_name, prompt)
+        self.select_candidates(model, policy_name, prompt, max_tier)
             .map(|mut v| v.remove(0))
     }
 
@@ -91,6 +92,7 @@ impl Router {
         model: &str,
         policy_name: Option<&str>,
         prompt: Option<&str>,
+        max_tier: Option<Tier>,
     ) -> Result<Vec<SelectedProvider>> {
         // Find matching policy
         let policy = self.find_policy(policy_name, prompt);
@@ -106,6 +108,14 @@ impl Router {
             return Err(Error::NoProviders {
                 model: model.to_string(),
             });
+        }
+
+        // Filter by tier when max_tier is set
+        if let Some(max_tier) = max_tier {
+            candidates.retain(|p| p.tier <= max_tier);
+            if candidates.is_empty() {
+                return Err(Error::NoPolicyMatch);
+            }
         }
 
         // Apply policy constraints if present
@@ -251,7 +261,7 @@ mod tests {
     fn test_select_cheapest() {
         let router = Router::new(test_providers(), vec![], "cheapest".to_string());
 
-        let selected = router.select("gpt-4o", None, None).unwrap();
+        let selected = router.select("gpt-4o", None, None, None).unwrap();
         assert_eq!(selected.name, "cheap");
     }
 
@@ -259,7 +269,7 @@ mod tests {
     fn test_no_providers_for_model() {
         let router = Router::new(test_providers(), vec![], "cheapest".to_string());
 
-        let result = router.select("nonexistent-model", None, None);
+        let result = router.select("nonexistent-model", None, None, None);
         assert!(matches!(result, Err(Error::NoProviders { .. })));
     }
 
@@ -292,7 +302,7 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let selected = router.select("gpt-4o", None, None).unwrap();
+        let selected = router.select("gpt-4o", None, None, None).unwrap();
         assert_eq!(
             selected.name, "high-rate-no-fee",
             "Provider with lower output_rate+base_fee (15+0=15) should beat (10+8=18)"
@@ -355,7 +365,7 @@ mod tests {
 
         // Should match "code" policy and select cheap provider (under 20 sats)
         let selected = router
-            .select("gpt-4o", None, Some("Write a function to sort"))
+            .select("gpt-4o", None, Some("Write a function to sort"), None)
             .unwrap();
         assert_eq!(selected.name, "cheap");
     }
@@ -397,7 +407,7 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
 
         assert_eq!(candidates.len(), 3);
         assert_eq!(candidates[0].name, "cheapest");
@@ -442,7 +452,7 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
 
         // alpha appears twice in config but should only appear once in results
         assert_eq!(candidates.len(), 2);
@@ -456,8 +466,8 @@ mod tests {
     fn test_select_delegates_to_candidates() {
         let router = Router::new(test_providers(), vec![], "cheapest".to_string());
 
-        let selected = router.select("gpt-4o", None, None).unwrap();
-        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+        let selected = router.select("gpt-4o", None, None, None).unwrap();
+        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
 
         assert_eq!(selected.name, candidates[0].name);
         assert_eq!(selected.url, candidates[0].url);
@@ -491,17 +501,109 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let candidates = router.select_candidates("gpt-4o", None, None).unwrap();
+        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "has-model");
+    }
+
+    fn tiered_providers() -> Vec<ProviderConfig> {
+        vec![
+            ProviderConfig {
+                name: "local-cheap".to_string(),
+                url: "https://local.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 1,
+                output_rate: 5,
+                base_fee: 0,
+                tier: Tier::Local,
+            },
+            ProviderConfig {
+                name: "standard-mid".to_string(),
+                url: "https://standard.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 5,
+                output_rate: 15,
+                base_fee: 1,
+                tier: Tier::Standard,
+            },
+            ProviderConfig {
+                name: "frontier-expensive".to_string(),
+                url: "https://frontier.example.com/v1".to_string(),
+                api_key: None,
+                models: vec!["gpt-4o".to_string()],
+                input_rate: 10,
+                output_rate: 30,
+                base_fee: 2,
+                tier: Tier::Frontier,
+            },
+        ]
+    }
+
+    #[test]
+    fn test_tier_filter_local_only() {
+        let router = Router::new(tiered_providers(), vec![], "cheapest".to_string());
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, Some(Tier::Local))
+            .unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "local-cheap");
+    }
+
+    #[test]
+    fn test_tier_filter_standard_includes_local() {
+        let router = Router::new(tiered_providers(), vec![], "cheapest".to_string());
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, Some(Tier::Standard))
+            .unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].name, "local-cheap");
+        assert_eq!(candidates[1].name, "standard-mid");
+    }
+
+    #[test]
+    fn test_tier_filter_frontier_includes_all() {
+        let router = Router::new(tiered_providers(), vec![], "cheapest".to_string());
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, Some(Tier::Frontier))
+            .unwrap();
+        assert_eq!(candidates.len(), 3);
+    }
+
+    #[test]
+    fn test_tier_filter_none_includes_all() {
+        let router = Router::new(tiered_providers(), vec![], "cheapest".to_string());
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, None)
+            .unwrap();
+        assert_eq!(candidates.len(), 3);
+    }
+
+    #[test]
+    fn test_tier_filter_no_match_returns_error() {
+        // Only frontier providers, filter to local
+        let providers = vec![ProviderConfig {
+            name: "frontier-only".to_string(),
+            url: "https://frontier.example.com/v1".to_string(),
+            api_key: None,
+            models: vec!["gpt-4o".to_string()],
+            input_rate: 10,
+            output_rate: 30,
+            base_fee: 2,
+            tier: Tier::Frontier,
+        }];
+        let router = Router::new(providers, vec![], "cheapest".to_string());
+        let result = router.select_candidates("gpt-4o", None, None, Some(Tier::Local));
+        assert!(matches!(result, Err(Error::NoPolicyMatch)));
     }
 
     #[test]
     fn test_select_candidates_empty_returns_error() {
         let router = Router::new(test_providers(), vec![], "cheapest".to_string());
 
-        let result = router.select_candidates("nonexistent-model", None, None);
+        let result = router.select_candidates("nonexistent-model", None, None, None);
         assert!(matches!(result, Err(Error::NoProviders { .. })));
     }
 }

@@ -245,7 +245,7 @@ async fn resolve_candidates(
     let candidates =
         match state
             .router
-            .select_candidates(&ctx.model, ctx.policy_name.as_deref(), user_prompt)
+            .select_candidates(&ctx.model, ctx.policy_name.as_deref(), user_prompt, None)
         {
             Ok(c) => c,
             Err(e) => {
@@ -1444,7 +1444,7 @@ pub async fn cost_estimate(
     let provider =
         state
             .router
-            .select(&request.model, policy_name.as_deref(), prompt.as_deref())?;
+            .select(&request.model, policy_name.as_deref(), prompt.as_deref(), None)?;
 
     // Estimate tokens using shared estimation logic (256 default for display)
     let (estimated_input_tokens, estimated_output_tokens) = request.estimate_tokens(256);
