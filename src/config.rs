@@ -144,6 +144,104 @@ impl std::fmt::Display for KeySource {
     }
 }
 
+/// Provider tier for complexity-based routing.
+///
+/// Ordering: Local < Standard < Frontier. The router uses this ordering
+/// to filter providers: a request at a given tier can route to that tier
+/// or below (e.g., `provider.tier <= max_tier`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Local,
+    Standard,
+    Frontier,
+}
+
+impl Default for Tier {
+    fn default() -> Self {
+        Tier::Standard
+    }
+}
+
+impl std::fmt::Display for Tier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Tier::Local => write!(f, "local"),
+            Tier::Standard => write!(f, "standard"),
+            Tier::Frontier => write!(f, "frontier"),
+        }
+    }
+}
+
+/// Routing configuration for complexity-based tier selection.
+///
+/// Parsed in Phase 16 but routing logic is implemented in Phase 18.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoutingConfig {
+    /// Requests scoring below this threshold route to local tier.
+    /// Default: 0.4
+    #[serde(default = "default_threshold_low")]
+    pub complexity_threshold_low: f64,
+    /// Requests scoring above this threshold may route to frontier tier.
+    /// Default: 0.7
+    #[serde(default = "default_threshold_high")]
+    pub complexity_threshold_high: f64,
+    /// Signal weights for the complexity scorer.
+    #[serde(default)]
+    pub complexity_weights: ComplexityWeightsConfig,
+}
+
+fn default_threshold_low() -> f64 {
+    0.4
+}
+fn default_threshold_high() -> f64 {
+    0.7
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            complexity_threshold_low: default_threshold_low(),
+            complexity_threshold_high: default_threshold_high(),
+            complexity_weights: ComplexityWeightsConfig::default(),
+        }
+    }
+}
+
+/// Signal weights for the heuristic complexity scorer.
+///
+/// All weights default to 1.0 (equal weighting). Parsed in Phase 16 but
+/// consumed by the scorer in Phase 17.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ComplexityWeightsConfig {
+    #[serde(default = "default_weight")]
+    pub context_length: f64,
+    #[serde(default = "default_weight")]
+    pub code_blocks: f64,
+    #[serde(default = "default_weight")]
+    pub multi_file: f64,
+    #[serde(default = "default_weight")]
+    pub reasoning_keywords: f64,
+    #[serde(default = "default_weight")]
+    pub conversation_depth: f64,
+}
+
+fn default_weight() -> f64 {
+    1.0
+}
+
+impl Default for ComplexityWeightsConfig {
+    fn default() -> Self {
+        Self {
+            context_length: default_weight(),
+            code_blocks: default_weight(),
+            multi_file: default_weight(),
+            reasoning_keywords: default_weight(),
+            conversation_depth: default_weight(),
+        }
+    }
+}
+
 /// Provider configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
@@ -979,6 +1077,71 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let result = check_file_permissions(&path);
         assert!(result.is_none(), "0600 should not trigger warning");
+    }
+
+    // ── Tier enum tests ──
+
+    #[test]
+    fn test_tier_default_is_standard() {
+        assert_eq!(Tier::default(), Tier::Standard);
+    }
+
+    #[test]
+    fn test_tier_ordering() {
+        assert!(Tier::Local < Tier::Standard);
+        assert!(Tier::Standard < Tier::Frontier);
+        assert!(Tier::Local < Tier::Frontier);
+    }
+
+    #[test]
+    fn test_tier_serialize_lowercase() {
+        assert_eq!(serde_json::to_string(&Tier::Local).unwrap(), "\"local\"");
+        assert_eq!(
+            serde_json::to_string(&Tier::Standard).unwrap(),
+            "\"standard\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Tier::Frontier).unwrap(),
+            "\"frontier\""
+        );
+    }
+
+    #[test]
+    fn test_tier_deserialize_lowercase() {
+        assert_eq!(
+            serde_json::from_str::<Tier>("\"local\"").unwrap(),
+            Tier::Local
+        );
+        assert_eq!(
+            serde_json::from_str::<Tier>("\"standard\"").unwrap(),
+            Tier::Standard
+        );
+        assert_eq!(
+            serde_json::from_str::<Tier>("\"frontier\"").unwrap(),
+            Tier::Frontier
+        );
+    }
+
+    #[test]
+    fn test_tier_deserialize_invalid_fails() {
+        assert!(serde_json::from_str::<Tier>("\"invalid\"").is_err());
+    }
+
+    #[test]
+    fn test_routing_config_defaults() {
+        let rc = RoutingConfig::default();
+        assert!((rc.complexity_threshold_low - 0.4).abs() < f64::EPSILON);
+        assert!((rc.complexity_threshold_high - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_complexity_weights_defaults() {
+        let cw = ComplexityWeightsConfig::default();
+        assert!((cw.context_length - 1.0).abs() < f64::EPSILON);
+        assert!((cw.code_blocks - 1.0).abs() < f64::EPSILON);
+        assert!((cw.multi_file - 1.0).abs() < f64::EPSILON);
+        assert!((cw.reasoning_keywords - 1.0).abs() < f64::EPSILON);
+        assert!((cw.conversation_depth - 1.0).abs() < f64::EPSILON);
     }
 
     #[cfg(unix)]
