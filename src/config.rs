@@ -151,18 +151,15 @@ impl std::fmt::Display for KeySource {
 /// Ordering: Local < Standard < Frontier. The router uses this ordering
 /// to filter providers: a request at a given tier can route to that tier
 /// or below (e.g., `provider.tier <= max_tier`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
     Local,
+    #[default]
     Standard,
     Frontier,
-}
-
-impl Default for Tier {
-    fn default() -> Self {
-        Tier::Standard
-    }
 }
 
 impl std::fmt::Display for Tier {
