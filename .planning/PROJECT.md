@@ -74,7 +74,7 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 
 ### Active
 
-- [ ] Heuristic complexity scorer with configurable signal weights
+- [x] Heuristic complexity scorer with configurable signal weights — v1.7 Phase 17
 - [x] Provider tier system (local/standard/frontier) — v1.7 Phase 16
 - [ ] Tier-aware routing with automatic escalation on circuit break
 - [ ] Complexity score + tier in response headers and SSE metadata
