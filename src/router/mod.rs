@@ -8,5 +8,5 @@
 mod complexity;
 mod selector;
 
-pub use complexity::score_complexity;
+pub use complexity::{score_complexity, score_to_max_tier};
 pub use selector::{actual_cost_sats, Router, SelectedProvider};

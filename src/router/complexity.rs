@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::config::ComplexityWeightsConfig;
+use crate::config::{ComplexityWeightsConfig, Tier};
 use crate::proxy::types::Message;
 
 /// Minimum total text length (chars) to attempt scoring.
@@ -47,6 +47,21 @@ const DEFAULT_KEYWORDS: &[&str] = &[
     "evaluate",
     "debug",
 ];
+
+/// Map a complexity score to the maximum provider tier allowed.
+///
+/// - `score < low` -> `Tier::Local` (simple requests, use cheapest models)
+/// - `low <= score <= high` -> `Tier::Standard` (moderate requests)
+/// - `score > high` -> `Tier::Frontier` (complex requests, use best models)
+pub fn score_to_max_tier(score: f64, low: f64, high: f64) -> Tier {
+    if score < low {
+        Tier::Local
+    } else if score > high {
+        Tier::Frontier
+    } else {
+        Tier::Standard
+    }
+}
 
 /// Score the complexity of a chat conversation.
 ///
@@ -337,6 +352,26 @@ mod tests {
         weights.conversation_depth = 0.0;
         let score = score_complexity(&messages, &weights);
         assert_eq!(score, 1.0, "All-zero weights should return 1.0 (frontier)");
+    }
+
+    #[test]
+    fn test_score_to_max_tier_below_low() {
+        assert_eq!(score_to_max_tier(0.2, 0.4, 0.7), Tier::Local);
+        assert_eq!(score_to_max_tier(0.0, 0.4, 0.7), Tier::Local);
+        assert_eq!(score_to_max_tier(0.39, 0.4, 0.7), Tier::Local);
+    }
+
+    #[test]
+    fn test_score_to_max_tier_at_and_between_thresholds() {
+        assert_eq!(score_to_max_tier(0.4, 0.4, 0.7), Tier::Standard);
+        assert_eq!(score_to_max_tier(0.5, 0.4, 0.7), Tier::Standard);
+        assert_eq!(score_to_max_tier(0.7, 0.4, 0.7), Tier::Standard);
+    }
+
+    #[test]
+    fn test_score_to_max_tier_above_high() {
+        assert_eq!(score_to_max_tier(0.71, 0.4, 0.7), Tier::Frontier);
+        assert_eq!(score_to_max_tier(1.0, 0.4, 0.7), Tier::Frontier);
     }
 
     #[test]
