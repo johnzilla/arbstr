@@ -78,10 +78,15 @@ Route inference to the cheapest qualified provider and settle in bitcoin — Nic
 - ✓ Complexity score + tier in response headers and SSE metadata — v1.7
 - ✓ Complexity score + tier columns in request log DB — v1.7
 - ✓ Stats endpoint group_by=tier support — v1.7
+- ✓ Vault billing wiring — agent token extraction, reserve/settle/release in handler hot path — v2.0
+- ✓ Frontier-tier reserve pricing — worst-case rates prevent under-reservation on tier escalation — v2.0
+- ✓ Vault auth replaces server auth when vault configured — v2.0
+- ✓ Free proxy mode preserved when vault absent — v2.0
+- ✓ Mock vault integration tests (9 tests) — v2.0
 
 ### Active
 
-- [ ] End-to-end vault billing — arbstr core calls vault /internal/reserve, /internal/settle, /internal/release with live agent accounts
+- [ ] Vault fault tolerance — pending settlement persistence and crash recovery verification
 - [ ] mesh-llm provider support — localhost:9337 as a first-class provider type with auto-discovery
 - [ ] arbstr-node Docker Compose deployment — core + vault + LND + Cashu mint in one `docker compose up`
 - [ ] arbstr.com landing page — marketplace positioning, anti-token manifesto, getting started guide
@@ -193,4 +198,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-09 after v2.0 milestone started*
+*Last updated: 2026-04-09 after Phase 21 complete*
