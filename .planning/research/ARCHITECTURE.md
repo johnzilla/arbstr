@@ -1,514 +1,329 @@
 # Architecture Patterns
 
-**Domain:** Complexity scoring and tier-aware routing integration for LLM proxy
-**Researched:** 2026-04-08
+**Domain:** Inference marketplace (LLM routing + Bitcoin billing + Docker deployment)
+**Researched:** 2026-04-09
 
-## Recommended Architecture
-
-### High-Level Integration Point
-
-The complexity scorer sits **after** request parsing and **before** `resolve_candidates`. It runs in the `chat_completions` handler, immediately after extracting the user prompt and before calling `state.router.select_candidates()`. The scorer produces a `ComplexityScore` struct that feeds into tier-filtered provider selection.
+## Current Architecture (Baseline)
 
 ```
-Request -> Parse -> Score Complexity -> Select Candidates (tier-filtered) -> Circuit Breaker Filter -> Retry Loop -> Provider
-                    ^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                    NEW component       MODIFIED: Router gains tier awareness
+                           +-----------+
+   OpenAI clients -------->| arbstr    |--------> Routstr / remote providers
+   (Claude Code,           | core      |--------> mesh-llm (localhost:9337)
+    Cursor, SDKs)          | (Rust)    |--------> Ollama / any OpenAI-compat
+                           +-----+-----+
+                                 |
+                          +------+------+
+                          |   SQLite    |
+                          | (requests,  |
+                          |  pending    |
+                          |  settlements|
+                          +-------------+
+```
+
+Core is a single Rust binary (`axum` server) with:
+- `proxy/handlers.rs` -- request entry, vault billing hooks, circuit breaker integration
+- `proxy/vault.rs` -- `VaultClient` with reserve/settle/release over HTTP, pending settlement persistence, reconciliation loop
+- `router/selector.rs` -- cheapest-first provider selection with tier awareness (local/standard/frontier)
+- `router/complexity.rs` -- heuristic complexity scoring (5 weighted signals)
+- `storage/` -- bounded channel writer to SQLite
+
+Vault is a separate TypeScript/Fastify service (github.com/johnzilla/arbstr-vault) with:
+- `/internal/reserve`, `/internal/settle`, `/internal/release` endpoints
+- Agent sub-accounts with RESERVE/RELEASE/PAYMENT ledger
+- Cashu ecash for micropayments, Lightning for larger settlements
+- `X-Internal-Token` auth between core and vault
+
+## Recommended Architecture (v2.0)
+
+### System Topology
+
+```
+ docker-compose.yml (arbstr-node)
+ +---------------------------------------------------------+
+ |                                                         |
+ |  +----------+    HTTP     +----------+                  |
+ |  | core     |----------->| vault    |                  |
+ |  | :8080    |<-----------| :3000    |                  |
+ |  +----+-----+            +----+-----+                  |
+ |       |                       |                         |
+ |       |                  +----+-----+    +----------+  |
+ |       |                  | lnd      |    | mint     |  |
+ |       |                  | :10009   |    | :3338    |  |
+ |       |                  +----------+    +----------+  |
+ |       |                                                 |
+ +-------|------ Docker bridge network -------------------+
+         |
+         | host.docker.internal (or host network)
+         v
+   +----------+
+   | mesh-llm |  (runs on host, not in Docker)
+   | :9337    |
+   +----------+
 ```
 
 ### Component Boundaries
 
-| Component | Responsibility | New/Modified | Communicates With |
-|-----------|---------------|--------------|-------------------|
-| `ComplexityScorer` | Score prompt complexity using heuristic signals | **NEW** `src/scorer/` | Handler (called inline) |
-| `ComplexityScore` | Struct holding score value, tier, individual signal weights | **NEW** `src/scorer/mod.rs` | Handler, Router, DB logging |
-| `ScorerConfig` | Configurable weights, thresholds, tier boundaries | **NEW** `src/config.rs` addition | Config parsing, Scorer |
-| `ProviderConfig.tier` | New field: `local` / `standard` / `frontier` | **MODIFIED** `src/config.rs` | Router |
-| `Router::select_candidates` | Filter by tier before cost-sorting | **MODIFIED** `src/router/selector.rs` | Handler |
-| `resolve_candidates` | Pass tier constraint from score to router | **MODIFIED** `src/proxy/handlers.rs` | Router, Circuit Breaker |
-| `RequestLog` | Add `complexity_score` and `tier` columns | **MODIFIED** `src/storage/logging.rs` | DB writer |
-| Response headers | Add `x-arbstr-complexity` and `x-arbstr-tier` | **MODIFIED** `src/proxy/handlers.rs` | Client |
+| Component | Responsibility | Communicates With | New vs Modified |
+|-----------|---------------|-------------------|-----------------|
+| **core** (Rust) | Request routing, vault billing, circuit breaking, complexity scoring, SSE streaming | vault (HTTP), providers (HTTP), SQLite (embedded) | MODIFIED -- Dockerfile, agent token passthrough, end-to-end vault testing |
+| **vault** (TypeScript) | Agent accounts, balance management, Cashu/Lightning settlement, ledger | lnd (gRPC), mint (HTTP), core (responds to HTTP) | EXISTING -- needs Dockerfile in arbstr-vault repo |
+| **lnd** | Lightning Network daemon for payment settlement | vault (gRPC) | EXISTING -- upstream image `lightninglabs/lnd:v0.18.4-beta` |
+| **mint** | Cashu mint for ecash micropayments | vault (HTTP) | EXISTING -- upstream image `cashubtc/nutshell:0.16.3` |
+| **mesh-llm** | Distributed P2P inference, model serving | core (receives HTTP from core) | NOT CONTAINERIZED -- runs on host |
+| **landing page** | Marketing site, anti-token manifesto | None (static) | NEW -- separate concern, not in Docker stack |
 
 ### Data Flow
 
+#### Request Flow with Live Vault Billing
+
 ```
-1. Handler receives ChatCompletionRequest
-2. Extract user_prompt (existing) + full messages array
-3. ComplexityScorer.score(&request, headers) -> ComplexityScore {
-       score: f32,        // 0.0 - 1.0 normalized
-       tier: Tier,        // Local | Standard | Frontier
-       signals: SignalBreakdown,  // for observability
-   }
-4. Check X-Arbstr-Tier header override (explicit tier bypass)
-5. Router.select_candidates(model, policy, prompt, tier) -> Vec<SelectedProvider>
-   - Filter: providers where provider.tier <= requested_tier
-   - Sort: cheapest first within tier (existing logic)
-6. Circuit breaker filter (existing, unchanged)
-7. If all candidates filtered out by tier + circuit breaker:
-   - Escalate: retry with next tier up (Standard -> Frontier)
-   - This is automatic escalation, not cross-model fallback
-8. Retry loop with fallback (existing, unchanged)
-9. Log: complexity_score + tier to DB
-10. Headers: x-arbstr-complexity, x-arbstr-tier in response
+1. Client POST /v1/chat/completions (Bearer token = agent token)
+2. Core extracts agent token from Authorization header
+3. Core scores complexity -> selects tier -> picks cheapest candidate
+4. Core calls vault POST /internal/reserve
+   - Sends: agent_token, estimated_msats, correlation_id, model
+   - Receives: reservation_id
+   - On 402: return 402 to client (insufficient balance)
+5. Core forwards request to provider (mesh-llm, Routstr, etc.)
+6. Provider returns response (streaming or non-streaming)
+7. Core extracts token usage from response
+8. Core calls vault POST /internal/settle
+   - Sends: reservation_id, actual_msats, metadata
+   - On failure: persists to pending_settlements, reconciliation loop retries
+9. Core returns response to client with arbstr headers
 ```
 
-## New Components
+This flow is already coded in `handlers.rs` and `vault.rs`. The `reserve()` method in `vault.rs` already accepts `agent_token: &str`. The critical integration work is:
 
-### 1. Complexity Scorer (`src/scorer/mod.rs`)
+1. **Agent token extraction:** The handler must pull the bearer token from the incoming `Authorization` header and pass it to `vault.reserve()`. Currently, `auth_token` in server config is used for core-level auth. When vault is active, the client's bearer token serves dual purpose -- authenticating with core AND identifying the agent in vault.
+2. **End-to-end testing:** All vault paths (reserve success, insufficient balance, settle failure with pending persistence, reconciliation replay) need testing against a real vault instance, not just unit tests.
 
-Pure function, no async, no state. Takes the request and optional headers, returns a score.
+#### Docker Network Communication
 
-```rust
-/// Complexity tier for routing decisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Tier {
-    Local,     // Simple lookups, short answers, translation
-    Standard,  // Moderate reasoning, summarization, code snippets
-    Frontier,  // Complex reasoning, multi-step, large context
-}
-
-/// Result of complexity scoring.
-#[derive(Debug, Clone)]
-pub struct ComplexityScore {
-    pub score: f32,           // 0.0 - 1.0 normalized
-    pub tier: Tier,           // Derived from score + thresholds
-    pub signals: SignalBreakdown,
-}
-
-/// Individual signal contributions for observability.
-#[derive(Debug, Clone, Serialize)]
-pub struct SignalBreakdown {
-    pub context_length: f32,
-    pub code_blocks: f32,
-    pub reasoning_keywords: f32,
-    pub conversation_depth: f32,
-    pub multi_file_refs: f32,
-    pub system_prompt_complexity: f32,
-}
-
-/// Score a request's complexity.
-pub fn score(
-    request: &ChatCompletionRequest,
-    config: &ScorerConfig,
-    tier_override: Option<Tier>,
-) -> ComplexityScore {
-    // If explicit tier override via header, skip scoring
-    if let Some(tier) = tier_override {
-        return ComplexityScore {
-            score: tier_to_default_score(tier),
-            tier,
-            signals: SignalBreakdown::zeroed(),
-        };
-    }
-
-    // Heuristic signals (all 0.0-1.0 normalized)
-    let signals = SignalBreakdown {
-        context_length: score_context_length(request, config),
-        code_blocks: score_code_blocks(request),
-        reasoning_keywords: score_reasoning_keywords(request, config),
-        conversation_depth: score_conversation_depth(request),
-        multi_file_refs: score_multi_file_refs(request),
-        system_prompt_complexity: score_system_prompt(request),
-    };
-
-    // Weighted sum
-    let raw = signals.context_length * config.weights.context_length
-        + signals.code_blocks * config.weights.code_blocks
-        + signals.reasoning_keywords * config.weights.reasoning_keywords
-        + signals.conversation_depth * config.weights.conversation_depth
-        + signals.multi_file_refs * config.weights.multi_file_refs
-        + signals.system_prompt_complexity * config.weights.system_prompt_complexity;
-
-    let score = raw.clamp(0.0, 1.0);
-
-    let tier = if score < config.thresholds.local_max {
-        Tier::Local
-    } else if score < config.thresholds.standard_max {
-        Tier::Standard
-    } else {
-        Tier::Frontier
-    };
-
-    ComplexityScore { score, tier, signals }
-}
-```
-
-**Why a pure function, not a trait/struct with state:** The scorer has no runtime state. Making it a pure function keeps it trivially testable and avoids unnecessary abstraction. If ML-based scoring is added later (explicitly out of scope), it can replace this function behind a trait at that point.
-
-**Why `src/scorer/` not `src/policy/`:** The existing policy engine handles constraint matching (allowed models, max cost). Complexity scoring is a different concern -- it classifies the *request*, not the *routing constraints*. Keeping them separate avoids coupling scoring evolution to policy evolution.
-
-### 2. Scorer Configuration (`src/config.rs` additions)
-
-```rust
-/// Complexity scoring configuration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ScorerConfig {
-    #[serde(default)]
-    pub weights: SignalWeights,
-    #[serde(default)]
-    pub thresholds: TierThresholds,
-    /// Keywords that suggest complex reasoning tasks
-    #[serde(default = "default_reasoning_keywords")]
-    pub reasoning_keywords: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SignalWeights {
-    #[serde(default = "default_context_weight")]
-    pub context_length: f32,      // default: 0.25
-    #[serde(default = "default_code_weight")]
-    pub code_blocks: f32,         // default: 0.15
-    #[serde(default = "default_reasoning_weight")]
-    pub reasoning_keywords: f32,  // default: 0.25
-    #[serde(default = "default_depth_weight")]
-    pub conversation_depth: f32,  // default: 0.15
-    #[serde(default = "default_multifile_weight")]
-    pub multi_file_refs: f32,     // default: 0.10
-    #[serde(default = "default_system_weight")]
-    pub system_prompt_complexity: f32,  // default: 0.10
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TierThresholds {
-    #[serde(default = "default_local_max")]
-    pub local_max: f32,     // default: 0.3 (score < 0.3 = local)
-    #[serde(default = "default_standard_max")]
-    pub standard_max: f32,  // default: 0.7 (score < 0.7 = standard, >= 0.7 = frontier)
-}
-```
-
-TOML representation:
+Core-to-vault uses Docker Compose's default bridge network. The existing `config.toml` in arbstr-node already has the correct service-name-based URL:
 
 ```toml
-[scoring]
-reasoning_keywords = ["analyze", "explain why", "compare", "debug", "architect", "refactor"]
-
-[scoring.weights]
-context_length = 0.25
-code_blocks = 0.15
-reasoning_keywords = 0.25
-conversation_depth = 0.15
-multi_file_refs = 0.10
-system_prompt_complexity = 0.10
-
-[scoring.thresholds]
-local_max = 0.3
-standard_max = 0.7
+[vault]
+url = "http://vault:3000"
 ```
 
-### 3. Provider Tier Field (`src/config.rs` modification)
+Docker Compose creates a shared network where services resolve each other by service name. No extra network configuration needed. The `depends_on` with `condition: service_healthy` in docker-compose.yml ensures vault is ready before core starts. The dependency chain is: `lnd + mint -> vault -> core`.
 
-```rust
-/// Provider configuration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProviderConfig {
-    // ... existing fields ...
+#### mesh-llm Provider Access from Docker
 
-    /// Provider tier for complexity-based routing.
-    /// Defaults to "standard" for backward compatibility.
-    #[serde(default = "default_tier")]
-    pub tier: Tier,
-}
+mesh-llm runs on the host machine (not containerized -- it needs direct GPU access and manages its own P2P networking via Nostr discovery). Core running inside Docker needs to reach `localhost:9337` on the host.
 
-fn default_tier() -> Tier {
-    Tier::Standard  // Backward compatible: existing configs work unchanged
-}
-```
-
-TOML representation:
+**Use `host.docker.internal` (recommended):**
 
 ```toml
 [[providers]]
-name = "local-llama"
-url = "http://localhost:11434/v1"
-models = ["llama3"]
+name = "mesh-local"
+url = "http://host.docker.internal:9337/v1"
+models = ["Qwen3-32B"]
 tier = "local"
 input_rate = 0
 output_rate = 0
-
-[[providers]]
-name = "routstr-standard"
-url = "https://api.routstr.com/v1"
-models = ["gpt-4o-mini"]
-tier = "standard"
-input_rate = 2
-output_rate = 8
-
-[[providers]]
-name = "routstr-frontier"
-url = "https://api.routstr.com/v1"
-models = ["claude-sonnet-4", "gpt-4o"]
-tier = "frontier"
-input_rate = 10
-output_rate = 30
-base_fee = 1
 ```
 
-## Modified Components
+The arbstr-node docker-compose.yml needs one addition to the core service:
 
-### 4. Router: Tier-Aware Selection (`src/router/selector.rs`)
-
-The `select_candidates` method gains an optional `tier` parameter. When present, it filters providers to those at or below the requested tier before cost-sorting.
-
-```rust
-pub fn select_candidates(
-    &self,
-    model: &str,
-    policy_name: Option<&str>,
-    prompt: Option<&str>,
-    max_tier: Option<Tier>,  // NEW parameter
-) -> Result<Vec<SelectedProvider>> {
-    // ... existing policy matching ...
-
-    // Filter by model (existing)
-    let mut candidates = /* existing filter */;
-
-    // NEW: Filter by tier
-    if let Some(tier) = max_tier {
-        candidates.retain(|p| p.tier <= tier);
-        if candidates.is_empty() {
-            // No providers at this tier -- caller handles escalation
-            return Err(Error::NoTierMatch {
-                tier,
-                model: model.to_string(),
-            });
-        }
-    }
-
-    // Apply policy constraints (existing)
-    // Sort by cost (existing)
-    // Deduplicate (existing)
-}
+```yaml
+core:
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 ```
 
-**Key design: `Tier` implements `Ord` as `Local < Standard < Frontier`.** This makes `p.tier <= max_tier` the natural filter. A `Local` tier request only sees `Local` providers. A `Standard` request sees `Local + Standard`. A `Frontier` request sees all.
+This works on Linux (Docker Engine) and is automatic on Docker Desktop (macOS/Windows). The `host-gateway` special name maps to the host's gateway IP.
 
-**Why filter in Router, not Handler:** The router already owns provider filtering (by model, by policy). Tier is another filter dimension in the same category. Putting it in the handler would duplicate filtering logic.
+## New Components Detail
 
-### 5. Handler: Complexity-Aware Routing with Escalation (`src/proxy/handlers.rs`)
+### 1. Dockerfile for arbstr core
 
-The `chat_completions` handler changes:
+Multi-stage build. Builder stage compiles Rust; runtime stage copies the binary into a minimal image.
 
-```rust
-// After extracting user_prompt (existing):
-let tier_override = headers
-    .get("x-arbstr-tier")
-    .and_then(|v| v.to_str().ok())
-    .and_then(|s| s.parse::<Tier>().ok());
+```dockerfile
+# Stage 1: Build
+FROM rust:1.83-slim-bookworm AS builder
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY migrations/ migrations/
+RUN cargo build --release
 
-let complexity = scorer::score(&request, &state.config.scoring, tier_override);
-
-tracing::info!(
-    complexity_score = complexity.score,
-    tier = ?complexity.tier,
-    "Scored request complexity"
-);
-
-// Replace existing resolve_candidates call with tier-aware version:
-let resolved = match resolve_candidates_with_tier(
-    &state, &ctx, user_prompt, complexity.tier
-).await {
-    Ok(r) => r,
-    Err(response) => return Ok(response),
-};
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN useradd -r -s /bin/false arbstr
+COPY --from=builder /app/target/release/arbstr /usr/local/bin/arbstr
+USER arbstr
+EXPOSE 8080
+CMD ["arbstr", "serve", "-c", "/config/config.toml"]
 ```
 
-The `resolve_candidates` function becomes `resolve_candidates_with_tier` and handles escalation:
+Key decisions:
+- `debian:bookworm-slim` over `alpine` because sqlx with SQLite links against glibc. Musl builds require additional work (static linking, cross-compilation) for no meaningful size benefit at this stage.
+- `curl` included for the healthcheck command in docker-compose.yml.
+- Non-root `arbstr` user for security.
+- Config mounted as read-only volume (not baked into image) so the same image works across environments.
+- Expected image size: ~80-100MB.
 
-```rust
-async fn resolve_candidates_with_tier(
-    state: &AppState,
-    ctx: &RequestContext,
-    user_prompt: Option<&str>,
-    initial_tier: Tier,
-) -> Result<ResolvedCandidates, Response> {
-    let tiers = escalation_sequence(initial_tier);
-    // e.g., Local -> [Local, Standard, Frontier]
-    //       Standard -> [Standard, Frontier]
-    //       Frontier -> [Frontier]
+### 2. mesh-llm as Provider Type
 
-    for tier in &tiers {
-        match state.router.select_candidates(
-            &ctx.model, ctx.policy_name.as_deref(), user_prompt, Some(*tier)
-        ) {
-            Ok(candidates) => {
-                // Apply circuit breaker filter (existing logic)
-                let filtered = filter_by_circuit_breaker(state, ctx, &candidates).await;
-                if !filtered.candidates.is_empty() {
-                    if *tier != initial_tier {
-                        tracing::info!(
-                            from = ?initial_tier,
-                            to = ?tier,
-                            "Escalated tier due to no available providers"
-                        );
-                    }
-                    return Ok(filtered);
-                }
-                // All circuits open at this tier, try next
-            }
-            Err(_) => continue, // No providers at this tier, try next
-        }
-    }
+mesh-llm is already OpenAI-compatible on `localhost:9337/v1` (confirmed via docs.anarchai.org). It fits directly into the existing `[[providers]]` config with **zero code changes** to the routing engine. Everything needed already exists:
 
-    // All tiers exhausted -- return 503
-    // ... existing all-circuits-open error handling ...
-}
-```
+**Health checking:** The circuit breaker (`circuit_breaker.rs`) already handles mesh-llm -- 3 consecutive failures open the circuit, half-open probe after 30s. No new code.
 
-**Why escalation lives in the handler, not the router:** Escalation requires circuit breaker state, which the router does not (and should not) have access to. The handler already orchestrates the router + circuit breaker interaction. Escalation is a handler-level concern: "tried tier X, all circuits open, try tier X+1."
+**Model listing:** mesh-llm serves whatever models its mesh has loaded. The `models` list in config must be manually specified for v2.0. Auto-discovery (calling `GET /v1/models` at startup) is a useful enhancement but not required.
 
-### 6. Database: New Columns (`migrations/` + `src/storage/`)
+**No API key:** mesh-llm on localhost needs no auth. Config supports omitting `api_key` -- the convention-based discovery just silently finds nothing and continues.
 
-New migration:
+**Tier assignment:** `tier = "local"` -- integrates with complexity scorer from v1.7. Simple requests route to mesh-llm; complex ones escalate to Routstr/frontier.
 
-```sql
-ALTER TABLE requests ADD COLUMN complexity_score REAL;
-ALTER TABLE requests ADD COLUMN tier TEXT;
-```
+**Zero cost:** `input_rate = 0, output_rate = 0, base_fee = 0`. The cheapest-first selection naturally prefers mesh-llm when the model matches.
 
-`RequestLog` struct gains two fields:
+### 3. Landing Page (arbstr.com)
 
-```rust
-pub complexity_score: Option<f32>,
-pub tier: Option<String>,
-```
+Completely decoupled from the arbstr-node Docker stack. Should NOT be a service in docker-compose.yml.
 
-INSERT query updated to include both columns. Stats endpoint gains `group_by=tier` support via the existing column-whitelist pattern.
+**Hosting:** GitHub Pages or Cloudflare Pages. Static HTML/CSS, no build step.
 
-### 7. Response Headers and SSE Metadata
-
-Two new response headers:
-
-```
-x-arbstr-complexity: 0.72
-x-arbstr-tier: frontier
-```
-
-For streaming, these go in the trailing SSE metadata event (existing pattern from v1.2):
-
-```
-data: {"arbstr":{"cost_sats":2.35,"latency_ms":1200,"complexity":0.72,"tier":"frontier"}}
-```
-
-### 8. `SelectedProvider` Gains Tier
-
-```rust
-pub struct SelectedProvider {
-    // ... existing fields ...
-    pub tier: Tier,  // NEW
-}
-```
+**Technology:** Plain HTML + CSS, or a minimal static site generator. No React, no SPA. This is marketing, not an application.
 
 ## Patterns to Follow
 
-### Pattern 1: Composition Over Layering
-**What:** Each new concern (scoring, tier filtering) is a discrete function called from the handler, not a middleware layer.
-**When:** Always for request-specific logic that needs access to parsed request body.
-**Why:** axum middleware runs before body extraction. The scorer needs the parsed `ChatCompletionRequest`. Middleware would require double-parsing or shared state hacks.
+### Pattern 1: Graceful Degradation (Vault Optional)
 
-### Pattern 2: Opt-In Scoring (Backward Compatible Defaults)
-**What:** `tier` defaults to `Standard`, `ScorerConfig` has serde defaults for all fields, existing configs work unchanged.
-**When:** Always for config additions.
-**Why:** Zero-config upgrade path. Users who do not care about complexity routing get the same behavior as before (all providers treated as Standard, no tier filtering applied when no `[scoring]` section exists).
+Vault billing is opt-in. When `[vault]` is omitted from config, core runs in free proxy mode. All vault calls become no-ops via `Option<VaultClient>` in `AppState`.
 
-### Pattern 3: Header Override Escapes Heuristics
-**What:** `X-Arbstr-Tier: frontier` bypasses the scorer entirely and forces the requested tier.
-**When:** When the user knows better than the heuristic.
-**Why:** Heuristics will misclassify. Power users need escape valves. Follows the existing `X-Arbstr-Policy` pattern.
+```rust
+// Already in handlers.rs:
+if let Some(vault) = &state.vault {
+    let reservation = vault.reserve(...).await?;
+} else {
+    // Free proxy mode, skip billing
+}
+```
 
-### Pattern 4: Escalation as Retry Dimension
-**What:** When circuit breakers block all providers at the scored tier, automatically try the next tier up.
-**When:** Only during the candidate resolution phase, not during the retry loop itself.
-**Why:** Tier escalation is about provider availability, not transient failures. The retry loop handles transient failures within a tier.
+This is critical for v2.0: the same binary works for both free self-hosted use and paid marketplace use. Users can start without vault and add billing later.
+
+### Pattern 2: Docker Service Dependencies with Health Checks
+
+```yaml
+core:
+  depends_on:
+    vault:
+      condition: service_healthy
+vault:
+  depends_on:
+    lnd:
+      condition: service_healthy
+    mint:
+      condition: service_healthy
+```
+
+Already correct in docker-compose.yml. Creates startup chain: lnd + mint -> vault -> core. Each service has a curl-based healthcheck against its HTTP endpoint.
+
+### Pattern 3: Pending Settlement Persistence
+
+When vault is unreachable during settle/release, the operation persists to `pending_settlements` in SQLite and retries via background `reconciliation_loop`. This is fully implemented in `vault.rs`.
+
+For v2.0, verify this works under real conditions: vault restarts, network blips within Docker, core restarts with pending settlements in the database.
+
+### Pattern 4: Agent Token Passthrough
+
+The client's `Authorization: Bearer <token>` header serves dual purpose:
+1. Authenticates with arbstr core (if `auth_token` is configured)
+2. Identifies the agent in vault (passed as `agent_token` to reserve)
+
+The `reserve()` method already accepts `agent_token: &str`. The handler needs to extract it from the request and pass it through. This is the main integration wiring needed in `handlers.rs`.
+
+**Design question:** When `auth_token` is set in server config, should the client's bearer token match `auth_token` (core-level auth) AND be forwarded to vault? Or should vault handle all auth? Recommendation: when vault is configured, forward the bearer token to vault and let vault do auth. Core's `auth_token` becomes irrelevant when vault is active (vault validates the agent token). This avoids requiring two different tokens.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Scorer as Middleware
-**What:** Implementing complexity scoring as an axum middleware layer.
-**Why bad:** Middleware runs before `Json(request)` extraction. Would require re-parsing the body or storing partial state in extensions. Adds complexity for no benefit.
-**Instead:** Call scorer inline in handler after request parsing.
+### Anti-Pattern 1: Containerizing mesh-llm
 
-### Anti-Pattern 2: Tier as a Separate Routing Step
-**What:** Running tier selection in a separate pass after model/policy selection.
-**Why bad:** Creates two filtering passes over providers, makes the overall selection logic harder to reason about and test.
-**Instead:** Add tier as another filter dimension in `select_candidates`, alongside model and policy.
+**What:** Putting mesh-llm inside docker-compose.yml.
 
-### Anti-Pattern 3: Cross-Model Fallback Disguised as Escalation
-**What:** When a `local` tier provider fails, silently switching to a different (frontier) model.
-**Why bad:** Explicitly out of scope per PROJECT.md. Quality expectations change when the model changes. Breaks user trust.
-**Instead:** Escalation only broadens the provider pool for the *same model*. If the requested model is not available at any tier, return an error. Different models at different tiers is a config choice the user makes explicitly.
+**Why bad:** mesh-llm needs direct GPU access, manages its own P2P networking (Nostr-based mesh discovery, peer joining), and runs as a system-level daemon. Containerizing adds GPU passthrough complexity with no benefit.
 
-### Anti-Pattern 4: Stateful Scorer
-**What:** Scorer that maintains running averages, learned weights, or cached results.
-**Why bad:** Adds complexity, state management, and testing burden for v1.7. ML-based scoring is explicitly out of scope.
-**Instead:** Pure function. All state is in config. Learned scoring can come later behind a trait boundary.
+**Instead:** Run mesh-llm on the host. Core reaches it via `host.docker.internal:9337`.
 
-## Scalability Considerations
+### Anti-Pattern 2: Dynamic Provider Discovery at Runtime (for v2.0)
 
-| Concern | Current (single user) | Future (multi-user) |
-|---------|----------------------|---------------------|
-| Scorer CPU cost | Negligible (string scanning) | Still negligible -- O(message_count * keyword_count) |
-| Config per user | Single global config | Per-user scoring profiles would need config overhaul |
-| Tier provider pools | 3-10 providers total | Same, tiers are provider attributes not user attributes |
-| DB writes | Add 2 columns to existing writes | No additional overhead |
-| Header overhead | 2 new headers, minimal | Same |
+**What:** Core auto-discovers mesh-llm nodes, queries their models, adds them as providers.
 
-## Suggested Build Order
+**Why bad for v2.0:** Adds complexity, race conditions (mesh-llm changes models mid-request), and makes the system harder to reason about. Static `[[providers]]` config is simple and correct.
 
-The build order follows dependency chains and ensures each phase is independently testable and shippable.
+**Instead:** Manual config for v2.0. Auto-discovery (Pubky DHT, Nostr relay) is explicitly in the Future roadmap.
 
-### Phase 1: Tier Type + Provider Config
-- Add `Tier` enum to config (with `Ord`, serde, Default)
-- Add `tier` field to `ProviderConfig` (default: `Standard`)
-- Add `tier` field to `SelectedProvider`
-- Update `From<&ProviderConfig> for SelectedProvider`
-- Update `config.example.toml` with tier examples
-- **Tests:** Config parsing with/without tier field, Tier ordering
+### Anti-Pattern 3: Shared SQLite Across Containers
 
-### Phase 2: Complexity Scorer (Pure Logic)
-- Create `src/scorer/mod.rs` with `score()` function
-- Add `ScorerConfig`, `SignalWeights`, `TierThresholds` to config
-- Implement all 6 heuristic signal functions
-- Add `[scoring]` section parsing to Config
-- **Tests:** Score various prompts, verify signal contributions, tier boundary behavior, weight customization
-- **Independently testable:** No integration needed, pure functions
+**What:** Mounting the same SQLite file from both core and vault.
 
-### Phase 3: Router Tier Filtering
-- Add `max_tier: Option<Tier>` parameter to `select_candidates` and `select`
-- Implement tier filtering (retain where `p.tier <= max_tier`)
-- Add `Error::NoTierMatch` variant
-- Update all existing call sites to pass `None` (preserves behavior)
-- **Tests:** Tier filtering unit tests, backward compatibility (None = no filter)
+**Why bad:** SQLite is not designed for multi-process concurrent access from different containers. WAL mode helps within a single process but does not solve cross-container file locking.
 
-### Phase 4: Handler Integration + Escalation
-- Call scorer in `chat_completions` handler
-- Implement `resolve_candidates_with_tier` with escalation logic
-- Parse `X-Arbstr-Tier` header override
-- Add `x-arbstr-complexity` and `x-arbstr-tier` response headers
-- Add complexity/tier to SSE trailing metadata
-- **Tests:** Integration tests with mock providers at different tiers, escalation on circuit break
+**Instead:** Each service owns its own database. Core has `arbstr.db` (request log, pending settlements). Vault has `vault.db` (agent accounts, ledger). They communicate via HTTP, not shared state.
 
-### Phase 5: Observability (DB + Stats)
-- New migration: `complexity_score` and `tier` columns
-- Update `RequestLog` struct and INSERT query
-- Update streaming post-stream UPDATE
-- Add `group_by=tier` to stats endpoint
-- **Tests:** DB write/read with new columns, stats group_by=tier
+### Anti-Pattern 4: Landing Page in Docker Stack
 
-### Phase 6: Cost Estimate Update
-- Update `POST /v1/cost` to accept tier parameter and return tier-filtered estimate
-- **Tests:** Cost estimate with tier constraint
+**What:** Adding an nginx container to docker-compose.yml for arbstr.com.
 
-**Phase ordering rationale:**
-- Phase 1 first because `Tier` is used by everything else
-- Phase 2 before Phase 3 because scorer produces the tier value that the router consumes
-- Phase 3 before Phase 4 because the handler calls the router with the tier
-- Phase 4 is the integration point -- needs 1+2+3
-- Phase 5 is pure observability -- can run in parallel with Phase 4 but ordered after for clarity
-- Phase 6 is a minor extension, depends on Phase 3
+**Why bad:** Marketing content has nothing to do with the runtime inference stack. Couples unrelated deployment lifecycles.
+
+**Instead:** GitHub Pages or Cloudflare Pages with separate deployment.
+
+## Integration Points Summary
+
+### Files to CREATE
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `Dockerfile` | arbstr core repo | Multi-stage Rust build for containerized deployment |
+| Landing page | Separate repo or `arbstr.com/` directory | Static marketing site |
+
+### Files to MODIFY
+
+| File | Change | Why |
+|------|--------|-----|
+| `src/proxy/handlers.rs` | Extract bearer token, pass as `agent_token` to vault reserve; handle auth_token vs vault-token logic | Wire agent authentication for live billing |
+| `docker-compose.yml` (arbstr-node) | Add `extra_hosts` for mesh-llm access on core service | Enable core -> mesh-llm communication from Docker |
+| `config.toml` (arbstr-node) | Add/uncomment mesh-llm provider entry | Ship with working mesh-llm example |
+
+### Files that NEED NO CHANGES
+
+| File | Why |
+|------|-----|
+| `src/proxy/vault.rs` | Already implements full reserve/settle/release with retry, pending persistence, and reconciliation |
+| `src/proxy/circuit_breaker.rs` | Already handles all provider failures including mesh-llm |
+| `src/router/selector.rs` | Already does tier-aware cheapest-first selection |
+| `src/router/complexity.rs` | Already scores complexity and maps to tiers |
+| `src/config.rs` | Already supports vault config, provider tiers, all needed fields |
+| `src/proxy/server.rs` | AppState already has `Option<VaultClient>` |
+
+## Build Order (Dependency-Aware)
+
+Based on component dependencies:
+
+1. **Dockerfile for core** -- No dependencies on other work. Required before Docker-based testing.
+2. **Dockerfile for vault** -- Check if arbstr-vault repo already has one; create if not.
+3. **Agent token passthrough** -- Modify `handlers.rs` to extract bearer token and pass to vault. Test locally (core + vault both running natively) before Docker.
+4. **End-to-end vault billing** -- Test reserve/settle/release flow with real vault. Verify pending settlement persistence and reconciliation.
+5. **mesh-llm provider config** -- Zero code changes. Add `extra_hosts` to compose, add provider entry to config. Test with mesh-llm running on host.
+6. **Docker integration testing** -- `docker compose up` with all services, verify full flow.
+7. **Landing page** -- Completely independent. Can be done in parallel with 1-6.
+
+**Ordering rationale:**
+- Dockerfiles first because everything else needs to run in containers for integration testing
+- Vault billing before mesh-llm because vault integration is the harder problem with more failure modes
+- mesh-llm is trivial (config only) and should be last among infrastructure work
+- Landing page is fully parallel, no dependencies
 
 ## Sources
 
-- Codebase analysis: `src/router/selector.rs`, `src/proxy/handlers.rs`, `src/proxy/server.rs`, `src/config.rs`, `src/proxy/types.rs`, `src/storage/logging.rs`
-- `.planning/PROJECT.md` for scope, constraints, and key decisions
-- Architecture patterns derived from existing codebase conventions (handler-level integration, config-driven behavior, circuit breaker composition)
+- [mesh-llm documentation](https://docs.anarchai.org/) -- API on localhost:9337, Nostr-based discovery, model catalog
+- [mesh-llm GitHub](https://github.com/michaelneale/mesh-llm) -- Implementation details, README
+- [Docker multi-stage builds](https://docs.docker.com/get-started/docker-concepts/building-images/multi-stage-builds/) -- Official documentation
+- Existing arbstr codebase: `vault.rs` (600 lines, full reserve/settle/release), `handlers.rs` (vault integration hooks), `config.rs` (VaultConfig, ProviderConfig with tier), `server.rs` (AppState with Option<VaultClient>)
+- Existing arbstr-node repo: `docker-compose.yml` (4 services), `config.toml` (vault URL using Docker service name), `.env.example` (secrets template)
