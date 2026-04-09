@@ -84,7 +84,7 @@ See: .planning/milestones/v1.7-ROADMAP.md for full details.
 
 **Milestone Goal:** Wire arbstr core to arbstr vault for live billing, add mesh-llm as a provider type, ship arbstr-node deployment, and launch arbstr.com.
 
-- [ ] **Phase 21: Vault Billing Wiring** - End-to-end reserve/settle/release flow with agent token auth
+- [x] **Phase 21: Vault Billing Wiring** - End-to-end reserve/settle/release flow with agent token auth (completed 2026-04-09)
 - [ ] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery
 - [ ] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment
 - [ ] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery
@@ -102,11 +102,11 @@ See: .planning/milestones/v1.7-ROADMAP.md for full details.
   3. Reserve amount uses frontier-tier pricing regardless of scored tier, so tier escalation never under-reserves
   4. When vault config is absent, proxy operates identically to pre-v2.0 behavior (free proxy mode)
   5. Agent bearer token from Authorization header is forwarded to vault and replaces server-level auth_token for proxy endpoints
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
-- [ ] 21-01-PLAN.md -- Fix reserve pricing to use frontier-tier rates and add Router.frontier_rates method
-- [ ] 21-02-PLAN.md -- Mock vault integration tests verifying end-to-end billing flow
+- [x] 21-01-PLAN.md -- Fix reserve pricing to use frontier-tier rates and add Router.frontier_rates method
+- [x] 21-02-PLAN.md -- Mock vault integration tests verifying end-to-end billing flow
 
 ### Phase 22: Vault Fault Tolerance
 **Goal**: Vault billing survives crashes -- unsettled reservations are persisted and replayed on restart
@@ -155,7 +155,7 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 21. Vault Billing Wiring | v2.0 | 0/2 | Not started | - |
+| 21. Vault Billing Wiring | v2.0 | 2/2 | Complete    | 2026-04-09 |
 | 22. Vault Fault Tolerance | v2.0 | 0/TBD | Not started | - |
 | 23. Docker Deployment | v2.0 | 0/TBD | Not started | - |
 | 24. mesh-llm Provider | v2.0 | 0/TBD | Not started | - |
