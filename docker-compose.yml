@@ -2,7 +2,7 @@
 #
 # Services:
 #   core   — arbstr routing engine (Rust)
-#   vault  — arbstr treasury service (TypeScript, ex-vaultwarden)
+#   vault  — arbstr treasury service (TypeScript)
 #   lnd    — Lightning Network daemon (regtest for dev)
 #   mint   — Nutshell Cashu mint (self-hosted)
 #
