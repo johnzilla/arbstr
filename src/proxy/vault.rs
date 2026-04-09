@@ -338,6 +338,9 @@ pub struct PendingSettlement {
     pub metadata: String,
 }
 
+/// Maximum number of replay attempts before a pending settlement is evicted.
+const MAX_SETTLEMENT_ATTEMPTS: i64 = 10;
+
 // ── Pending settlement persistence (direct sqlx, not DbWriter) ──
 
 /// Insert a pending settlement into SQLite. Uses direct sqlx to guarantee
@@ -370,18 +373,20 @@ pub async fn count_pending(pool: &sqlx::SqlitePool) -> Result<i64, sqlx::Error> 
 }
 
 /// Fetch all pending settlements for replay.
-async fn fetch_pending(
+///
+/// Returns `(id, PendingSettlement, attempts)` tuples ordered by creation time.
+pub async fn fetch_pending(
     pool: &sqlx::SqlitePool,
-) -> Result<Vec<(i64, PendingSettlement)>, sqlx::Error> {
-    let rows: Vec<(i64, String, String, Option<i64>, String)> = sqlx::query_as(
-        "SELECT id, type, reservation_id, amount_msats, metadata FROM pending_settlements ORDER BY created_at ASC",
+) -> Result<Vec<(i64, PendingSettlement, i64)>, sqlx::Error> {
+    let rows: Vec<(i64, String, String, Option<i64>, String, i64)> = sqlx::query_as(
+        "SELECT id, type, reservation_id, amount_msats, metadata, attempts FROM pending_settlements ORDER BY created_at ASC",
     )
     .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, typ, rid, amt, meta)| {
+        .map(|(id, typ, rid, amt, meta, attempts)| {
             (
                 id,
                 PendingSettlement {
@@ -390,13 +395,14 @@ async fn fetch_pending(
                     amount_msats: amt.map(|v| v as u64),
                     metadata: meta,
                 },
+                attempts,
             )
         })
         .collect())
 }
 
-/// Delete a pending settlement after successful replay.
-async fn delete_pending(pool: &sqlx::SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+/// Delete a pending settlement after successful replay or eviction.
+pub async fn delete_pending(pool: &sqlx::SqlitePool, id: i64) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM pending_settlements WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -457,7 +463,7 @@ pub async fn reconciliation_loop(
     cancel: tokio::sync::watch::Receiver<bool>,
 ) {
     // Initial replay (non-blocking, runs in background)
-    reconcile_once(&vault, &pool).await;
+    let _ = reconcile_once(&vault, &pool).await;
 
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -465,12 +471,12 @@ pub async fn reconciliation_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                reconcile_once(&vault, &pool).await;
+                let _ = reconcile_once(&vault, &pool).await;
             }
             _ = cancel_wait(&cancel) => {
                 tracing::info!("Reconciliation task shutting down");
                 // Final reconciliation attempt before exit
-                reconcile_once(&vault, &pool).await;
+                let _ = reconcile_once(&vault, &pool).await;
                 break;
             }
         }
@@ -489,7 +495,11 @@ async fn cancel_wait(cancel: &tokio::sync::watch::Receiver<bool>) {
 }
 
 /// Run one reconciliation pass.
-async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) {
+///
+/// Returns `(replayed, failed, evicted)` counts for observability and testing.
+/// Settlements with `attempts >= MAX_SETTLEMENT_ATTEMPTS` are evicted (deleted)
+/// without replay, logged at error level.
+pub async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) -> (u32, u32, u32) {
     // Update backpressure flag
     match count_pending(pool).await {
         Ok(count) => {
@@ -509,13 +519,13 @@ async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) {
             }
 
             if count == 0 {
-                return;
+                return (0, 0, 0);
             }
             tracing::info!(count = count, "Replaying pending settlements");
         }
         Err(e) => {
             tracing::error!(error = %e, "Failed to count pending settlements");
-            return;
+            return (0, 0, 0);
         }
     }
 
@@ -524,14 +534,31 @@ async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "Failed to fetch pending settlements");
-            return;
+            return (0, 0, 0);
         }
     };
 
     let mut replayed = 0u32;
     let mut failed = 0u32;
+    let mut evicted = 0u32;
 
-    for (id, settlement) in &pending {
+    for (id, settlement, attempts) in &pending {
+        // Evict stale settlements that have exceeded max retry attempts
+        if *attempts >= MAX_SETTLEMENT_ATTEMPTS {
+            tracing::error!(
+                reservation_id = %settlement.reservation_id,
+                settlement_type = %settlement.settlement_type,
+                attempts = attempts,
+                "Evicting stale pending settlement after max attempts"
+            );
+            if let Err(e) = delete_pending(pool, *id).await {
+                tracing::error!(id = id, error = %e, "Failed to delete evicted settlement");
+            } else {
+                evicted += 1;
+            }
+            continue;
+        }
+
         match replay_one(vault, settlement).await {
             Ok(()) => {
                 if let Err(e) = delete_pending(pool, *id).await {
@@ -553,9 +580,11 @@ async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) {
         }
     }
 
-    if replayed > 0 || failed > 0 {
-        tracing::info!(replayed = replayed, failed = failed, "Reconciliation pass complete");
+    if replayed > 0 || failed > 0 || evicted > 0 {
+        tracing::info!(replayed = replayed, failed = failed, evicted = evicted, "Reconciliation pass complete");
     }
+
+    (replayed, failed, evicted)
 }
 
 #[cfg(test)]
