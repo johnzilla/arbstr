@@ -69,27 +69,27 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BILL-01 | — | Pending |
-| BILL-02 | — | Pending |
-| BILL-03 | — | Pending |
-| BILL-04 | — | Pending |
-| BILL-05 | — | Pending |
-| BILL-06 | — | Pending |
-| BILL-07 | — | Pending |
-| BILL-08 | — | Pending |
-| MESH-01 | — | Pending |
-| MESH-02 | — | Pending |
-| MESH-03 | — | Pending |
-| DEPLOY-01 | — | Pending |
-| DEPLOY-02 | — | Pending |
-| DEPLOY-03 | — | Pending |
-| DEPLOY-04 | — | Pending |
+| BILL-01 | Phase 21 | Pending |
+| BILL-02 | Phase 21 | Pending |
+| BILL-03 | Phase 21 | Pending |
+| BILL-04 | Phase 21 | Pending |
+| BILL-05 | Phase 21 | Pending |
+| BILL-06 | Phase 21 | Pending |
+| BILL-07 | Phase 22 | Pending |
+| BILL-08 | Phase 21 | Pending |
+| MESH-01 | Phase 24 | Pending |
+| MESH-02 | Phase 24 | Pending |
+| MESH-03 | Phase 24 | Pending |
+| DEPLOY-01 | Phase 23 | Pending |
+| DEPLOY-02 | Phase 23 | Pending |
+| DEPLOY-03 | Phase 23 | Pending |
+| DEPLOY-04 | Phase 25 | Pending |
 
 **Coverage:**
 - v2.0 requirements: 15 total
-- Mapped to phases: 0
-- Unmapped: 15 ⚠️
+- Mapped to phases: 15
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-09 after initial definition*
+*Last updated: 2026-04-09 after roadmap creation*

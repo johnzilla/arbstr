@@ -8,6 +8,7 @@
 - SHIPPED **v1.3 Cost Querying API** -- Phases 11-12 (shipped 2026-02-16)
 - SHIPPED **v1.4 Circuit Breaker** -- Phases 13-15 (shipped 2026-02-16)
 - SHIPPED **v1.7 Intelligent Complexity Routing** -- Phases 16-20 (shipped 2026-04-09)
+- IN PROGRESS **v2.0 Inference Marketplace Foundation** -- Phases 21-25
 
 ## Phases
 
@@ -78,3 +79,80 @@ See: .planning/milestones/v1.4-ROADMAP.md for full details.
 See: .planning/milestones/v1.7-ROADMAP.md for full details.
 
 </details>
+
+### v2.0 Inference Marketplace Foundation (In Progress)
+
+**Milestone Goal:** Wire arbstr core to arbstr vault for live billing, add mesh-llm as a provider type, ship arbstr-node deployment, and launch arbstr.com.
+
+- [ ] **Phase 21: Vault Billing Wiring** - End-to-end reserve/settle/release flow with agent token auth
+- [ ] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery
+- [ ] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment
+- [ ] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery
+- [ ] **Phase 25: Landing Page** - arbstr.com with marketplace positioning and getting started guide
+
+## Phase Details
+
+### Phase 21: Vault Billing Wiring
+**Goal**: Every inference request is billed through arbstr vault -- reserve before routing, settle on success, release on failure
+**Depends on**: Phase 20 (existing vault.rs client code)
+**Requirements**: BILL-01, BILL-02, BILL-03, BILL-04, BILL-05, BILL-06, BILL-08
+**Success Criteria** (what must be TRUE):
+  1. Sending a chat completion with a valid agent token reserves funds, routes inference, and settles actual cost to vault
+  2. A failed inference request releases the reservation back to the buyer's account (no funds lost)
+  3. Reserve amount uses frontier-tier pricing regardless of scored tier, so tier escalation never under-reserves
+  4. When vault config is absent, proxy operates identically to pre-v2.0 behavior (free proxy mode)
+  5. Agent bearer token from Authorization header is forwarded to vault and replaces server-level auth_token for proxy endpoints
+**Plans**: TBD
+
+### Phase 22: Vault Fault Tolerance
+**Goal**: Vault billing survives crashes -- unsettled reservations are persisted and replayed on restart
+**Depends on**: Phase 21
+**Requirements**: BILL-07
+**Success Criteria** (what must be TRUE):
+  1. If arbstr core crashes between reserve and settle, pending settlements are recovered from SQLite on restart
+  2. Background reconciliation replays pending settle/release operations against vault after restart
+**Plans**: TBD
+
+### Phase 23: Docker Deployment
+**Goal**: arbstr-node runs as a complete stack from a single docker compose up command
+**Depends on**: Phase 21 (vault must be wired for compose to be meaningful)
+**Requirements**: DEPLOY-01, DEPLOY-02, DEPLOY-03
+**Success Criteria** (what must be TRUE):
+  1. Multi-stage Dockerfile produces a slim arbstr core image (builder stage + runtime stage)
+  2. docker compose up from empty volumes starts lnd, mint, vault, and core in correct dependency order with health checks
+  3. A chat completion request through the composed stack returns a successful response with billing headers
+**Plans**: TBD
+
+### Phase 24: mesh-llm Provider
+**Goal**: mesh-llm nodes on localhost are usable as zero-cost local-tier providers with automatic model discovery
+**Depends on**: Phase 23 (Docker networking needed for compose integration)
+**Requirements**: MESH-01, MESH-02, MESH-03
+**Success Criteria** (what must be TRUE):
+  1. mesh-llm endpoint at localhost:9337 is configurable as a provider with tier=local and zero-cost rates
+  2. On startup, arbstr polls mesh-llm /v1/models and auto-populates the provider's available model list
+  3. Docker Compose core service can reach mesh-llm running on the host via extra_hosts configuration
+**Plans**: TBD
+
+### Phase 25: Landing Page
+**Goal**: arbstr.com communicates the marketplace vision and gets developers started
+**Depends on**: Nothing (fully independent, but sequenced last so shipped features inform copy)
+**Requirements**: DEPLOY-04
+**Success Criteria** (what must be TRUE):
+  1. arbstr.com loads with marketplace positioning (NiceHash for AI inference) and anti-token manifesto
+  2. Getting started guide shows how to run arbstr-node with docker compose up
+  3. Page links to GitHub repo and explains the Bitcoin-native settlement model
+**Plans**: TBD
+**UI hint**: yes
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 21. Vault Billing Wiring | v2.0 | 0/TBD | Not started | - |
+| 22. Vault Fault Tolerance | v2.0 | 0/TBD | Not started | - |
+| 23. Docker Deployment | v2.0 | 0/TBD | Not started | - |
+| 24. mesh-llm Provider | v2.0 | 0/TBD | Not started | - |
+| 25. Landing Page | v2.0 | 0/TBD | Not started | - |

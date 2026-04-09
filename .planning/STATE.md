@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Inference Marketplace Foundation
-status: defining_requirements
+status: ready_to_plan
 stopped_at: null
 last_updated: "2026-04-09"
 last_activity: 2026-04-09
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,14 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Route inference to the cheapest qualified provider and settle in bitcoin
-**Current focus:** Defining requirements for v2.0
+**Current focus:** Phase 21 - Vault Billing Wiring
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-09 — Milestone v2.0 started
+Phase: 21 of 25 (Vault Billing Wiring)
+Plan: 0 of TBD in current phase
+Status: Ready to plan
+Last activity: 2026-04-09 — Roadmap created for v2.0 (5 phases, 15 requirements)
+
+Progress: [..........] 0%
 
 ## Performance Metrics
 
@@ -52,6 +54,8 @@ None.
 
 - Vault integration needs end-to-end testing with both services running
 - mesh-llm provider API compatibility needs verification against arbstr's OpenAI-compatible proxy
+- Reserve at worst-case (frontier) rates to handle tier escalation safely
+- Verify pending settlement persistence survives crash scenarios
 
 ### Quick Tasks Completed
 
@@ -67,5 +71,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-04-09
-Stopped at: null
-Resume file: null
+Stopped at: Roadmap created for v2.0 milestone
+Resume file: None
