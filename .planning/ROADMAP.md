@@ -140,6 +140,10 @@ Plans:
   3. The requests table has `complexity_score` and `tier` columns populated for every request
   4. `GET /v1/stats?group_by=tier` returns per-tier cost and performance breakdown
   5. Each request logs complexity score, matched tier, and selected provider at INFO level
+**Plans:** 2 plans
+Plans:
+- [ ] 20-01-PLAN.md -- Headers, SSE metadata, DB columns, and INFO logging for complexity routing
+- [ ] 20-02-PLAN.md -- Stats endpoint group_by=tier with per-tier cost/performance breakdown
 
 ## Progress
 
@@ -152,4 +156,4 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19 -> 20
 | 17. Complexity Scorer | v1.7 | 1/1 | Complete    | 2026-04-08 |
 | 18. Tier-Aware Routing | v1.7 | 1/1 | Complete    | 2026-04-08 |
 | 19. Handler Integration and Escalation | v1.7 | 1/1 | Complete    | 2026-04-09 |
-| 20. Routing Observability | v1.7 | 0/? | Not started | - |
+| 20. Routing Observability | v1.7 | 0/2 | Not started | - |
