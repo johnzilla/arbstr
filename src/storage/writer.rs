@@ -32,6 +32,8 @@ enum WriteCommand {
         stream_duration_ms: i64,
         success: bool,
         error_message: Option<String>,
+        complexity_score: Option<f64>,
+        tier: Option<String>,
     },
 }
 
@@ -108,6 +110,8 @@ impl DbWriter {
         stream_duration_ms: i64,
         success: bool,
         error_message: Option<String>,
+        complexity_score: Option<f64>,
+        tier: Option<String>,
     ) {
         if let Err(e) = self.tx.try_send(WriteCommand::UpdateStreamCompletion {
             correlation_id,
@@ -117,6 +121,8 @@ impl DbWriter {
             stream_duration_ms,
             success,
             error_message,
+            complexity_score,
+            tier,
         }) {
             match e {
                 mpsc::error::TrySendError::Full(_) => {
@@ -187,6 +193,8 @@ async fn writer_loop(pool: SqlitePool, mut rx: mpsc::Receiver<WriteCommand>) {
                 stream_duration_ms,
                 success,
                 error_message,
+                complexity_score,
+                tier,
             } => {
                 match super::logging::update_stream_completion(
                     &pool,
@@ -197,6 +205,8 @@ async fn writer_loop(pool: SqlitePool, mut rx: mpsc::Receiver<WriteCommand>) {
                     stream_duration_ms,
                     success,
                     error_message.as_deref(),
+                    complexity_score,
+                    tier.as_deref(),
                 )
                 .await
                 {
@@ -256,6 +266,8 @@ mod tests {
             success: true,
             error_status: None,
             error_message: None,
+            complexity_score: None,
+            tier: None,
         });
 
         // Give the writer task time to process
@@ -291,6 +303,8 @@ mod tests {
             success: true,
             error_status: None,
             error_message: None,
+            complexity_score: None,
+            tier: None,
         });
 
         // Let insert complete
@@ -304,6 +318,8 @@ mod tests {
             Some(42.5),
             2500,
             true,
+            None,
+            None,
             None,
         );
 

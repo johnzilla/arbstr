@@ -201,6 +201,8 @@ fn log_error_to_db(
             success: false,
             error_status: Some(status_code),
             error_message: Some(message),
+            complexity_score: None,
+            tier: None,
         });
     }
 }
@@ -228,6 +230,8 @@ fn log_success_to_db(
             success: true,
             error_status: None,
             error_message: None,
+            complexity_score: None,
+            tier: None,
         });
     }
 }
@@ -1284,6 +1288,8 @@ async fn handle_streaming_response(
                 stream_duration_ms,
                 success,
                 error_message.clone(),
+                None,
+                None,
             );
         }
 

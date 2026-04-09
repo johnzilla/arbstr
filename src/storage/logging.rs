@@ -20,6 +20,8 @@ pub struct RequestLog {
     pub success: bool,
     pub error_status: Option<u16>,
     pub error_message: Option<String>,
+    pub complexity_score: Option<f64>,
+    pub tier: Option<String>,
 }
 
 impl RequestLog {
@@ -30,8 +32,9 @@ impl RequestLog {
                 correlation_id, timestamp, model, provider, policy,
                 streaming, input_tokens, output_tokens,
                 cost_sats, provider_cost_sats,
-                latency_ms, success, error_status, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                latency_ms, success, error_status, error_message,
+                complexity_score, tier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&self.correlation_id)
         .bind(&self.timestamp)
@@ -47,6 +50,8 @@ impl RequestLog {
         .bind(self.success)
         .bind(self.error_status.map(|v| v as i32))
         .bind(self.error_message.as_deref())
+        .bind(self.complexity_score)
+        .bind(self.tier.as_deref())
         .execute(pool)
         .await?;
         Ok(())
@@ -155,9 +160,11 @@ pub async fn update_stream_completion(
     stream_duration_ms: i64,
     success: bool,
     error_message: Option<&str>,
+    complexity_score: Option<f64>,
+    tier: Option<&str>,
 ) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
-        "UPDATE requests SET input_tokens = ?, output_tokens = ?, cost_sats = ?, stream_duration_ms = ?, success = ?, error_message = ? WHERE correlation_id = ?",
+        "UPDATE requests SET input_tokens = ?, output_tokens = ?, cost_sats = ?, stream_duration_ms = ?, success = ?, error_message = ?, complexity_score = ?, tier = ? WHERE correlation_id = ?",
     )
     .bind(input_tokens.map(|v| v as i64))
     .bind(output_tokens.map(|v| v as i64))
@@ -165,6 +172,8 @@ pub async fn update_stream_completion(
     .bind(stream_duration_ms)
     .bind(success)
     .bind(error_message)
+    .bind(complexity_score)
+    .bind(tier)
     .bind(correlation_id)
     .execute(pool)
     .await?;
@@ -185,6 +194,8 @@ pub fn spawn_stream_completion_update(
     stream_duration_ms: i64,
     success: bool,
     error_message: Option<String>,
+    complexity_score: Option<f64>,
+    tier: Option<String>,
 ) {
     let pool = pool.clone();
     tokio::spawn(async move {
@@ -197,6 +208,8 @@ pub fn spawn_stream_completion_update(
             stream_duration_ms,
             success,
             error_message.as_deref(),
+            complexity_score,
+            tier.as_deref(),
         )
         .await
         {
@@ -251,6 +264,8 @@ mod tests {
             success: true,
             error_status: None,
             error_message: None,
+            complexity_score: None,
+            tier: None,
         };
         log.insert(pool).await.unwrap();
     }
@@ -331,6 +346,8 @@ mod tests {
             2500,
             true,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -369,6 +386,8 @@ mod tests {
             1800,
             true,
             Some("client_disconnected"),
+            None,
+            None,
         )
         .await
         .unwrap();
