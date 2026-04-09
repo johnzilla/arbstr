@@ -114,7 +114,10 @@ impl Router {
         if let Some(max_tier) = max_tier {
             candidates.retain(|p| p.tier <= max_tier);
             if candidates.is_empty() {
-                return Err(Error::NoPolicyMatch);
+                return Err(Error::NoTierMatch {
+                    tier: max_tier,
+                    model: model.to_string(),
+                });
             }
         }
 
@@ -596,7 +599,7 @@ mod tests {
         }];
         let router = Router::new(providers, vec![], "cheapest".to_string());
         let result = router.select_candidates("gpt-4o", None, None, Some(Tier::Local));
-        assert!(matches!(result, Err(Error::NoPolicyMatch)));
+        assert!(matches!(result, Err(Error::NoTierMatch { .. })));
     }
 
     #[test]

@@ -172,6 +172,18 @@ impl std::fmt::Display for Tier {
     }
 }
 
+impl Tier {
+    /// Return the next tier up, or None if already at Frontier.
+    /// Escalation is one-way: Local -> Standard -> Frontier.
+    pub fn escalate(&self) -> Option<Tier> {
+        match self {
+            Tier::Local => Some(Tier::Standard),
+            Tier::Standard => Some(Tier::Frontier),
+            Tier::Frontier => None,
+        }
+    }
+}
+
 /// Routing configuration for complexity-based tier selection.
 ///
 /// Parsed in Phase 16 but routing logic is implemented in Phase 18.
@@ -1243,5 +1255,20 @@ mod tests {
         let config = Config::parse_str(toml).unwrap();
         assert!((config.routing.complexity_threshold_low - 0.4).abs() < f64::EPSILON);
         assert!((config.routing.complexity_threshold_high - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_tier_escalate_local() {
+        assert_eq!(Tier::Local.escalate(), Some(Tier::Standard));
+    }
+
+    #[test]
+    fn test_tier_escalate_standard() {
+        assert_eq!(Tier::Standard.escalate(), Some(Tier::Frontier));
+    }
+
+    #[test]
+    fn test_tier_escalate_frontier() {
+        assert_eq!(Tier::Frontier.escalate(), None);
     }
 }

@@ -159,7 +159,10 @@ struct ResolvedCandidates {
 /// Map a routing error to an HTTP status code.
 fn routing_error_status(e: &Error) -> u16 {
     match e {
-        Error::NoProviders { .. } | Error::NoPolicyMatch | Error::BadRequest(_) => 400,
+        Error::NoProviders { .. }
+        | Error::NoPolicyMatch
+        | Error::NoTierMatch { .. }
+        | Error::BadRequest(_) => 400,
         _ => 500,
     }
 }

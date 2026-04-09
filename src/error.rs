@@ -33,6 +33,12 @@ pub enum Error {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("No providers match tier '{tier}' for model '{model}'")]
+    NoTierMatch {
+        tier: crate::config::Tier,
+        model: String,
+    },
+
     #[error("All providers have open circuits for model '{model}'")]
     CircuitOpen { model: String },
 
@@ -46,6 +52,7 @@ impl IntoResponse for Error {
             Error::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Error::NoProviders { .. } => (StatusCode::BAD_REQUEST, self.to_string()),
             Error::NoPolicyMatch => (StatusCode::BAD_REQUEST, self.to_string()),
+            Error::NoTierMatch { .. } => (StatusCode::BAD_REQUEST, self.to_string()),
             Error::Provider(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Error::Upstream(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Error::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
