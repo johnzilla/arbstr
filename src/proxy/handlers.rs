@@ -620,15 +620,25 @@ pub async fn chat_completions(
             request.max_tokens = Some(vault.default_reserve_tokens);
         }
 
-        // Estimate cost using cheapest candidate's rates
-        let cheapest = &resolved.candidates[0];
+        // Reserve at frontier (worst-case) rates per D-03/D-04.
+        // This handles tier escalation safely -- if a local request escalates
+        // to frontier on circuit break, the reservation already covers it.
         let (est_input, est_output) = request.estimate_tokens(vault.default_reserve_tokens);
+        let (reserve_input_rate, reserve_output_rate, reserve_base_fee) = state
+            .router
+            .frontier_rates(&ctx.model)
+            .unwrap_or_else(|| {
+                // Fallback to cheapest candidate if frontier_rates returns None
+                // (should not happen since we already resolved candidates)
+                let c = &resolved.candidates[0];
+                (c.input_rate, c.output_rate, c.base_fee)
+            });
         let reserve_msats = super::vault::estimate_reserve_msats(
             est_input,
             est_output,
-            cheapest.input_rate,
-            cheapest.output_rate,
-            cheapest.base_fee,
+            reserve_input_rate,
+            reserve_output_rate,
+            reserve_base_fee,
         );
 
         // Reserve funds from vault

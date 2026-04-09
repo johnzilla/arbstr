@@ -206,6 +206,28 @@ impl Router {
         Ok(filtered)
     }
 
+    /// Return the most expensive (frontier-tier) rates for a model across all providers.
+    ///
+    /// Used for worst-case reserve estimation (per D-03/D-04). Takes the maximum
+    /// `input_rate`, `output_rate`, and `base_fee` independently across all providers
+    /// that serve the requested model.
+    ///
+    /// Returns `(input_rate, output_rate, base_fee)` or `None` if no providers serve the model.
+    pub fn frontier_rates(&self, model: &str) -> Option<(u64, u64, u64)> {
+        let candidates: Vec<&ProviderConfig> = self
+            .providers
+            .iter()
+            .filter(|p| p.models.is_empty() || p.models.iter().any(|m| m == model))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let max_input = candidates.iter().map(|p| p.input_rate).max().unwrap_or(0);
+        let max_output = candidates.iter().map(|p| p.output_rate).max().unwrap_or(0);
+        let max_base = candidates.iter().map(|p| p.base_fee).max().unwrap_or(0);
+        Some((max_input, max_output, max_base))
+    }
+
     /// Get all configured providers.
     pub fn providers(&self) -> &[ProviderConfig] {
         &self.providers
