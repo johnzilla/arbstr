@@ -231,6 +231,20 @@ pub fn setup_vault_test_app_with_auth(
     create_router(state)
 }
 
+/// Create an in-memory SQLite pool with migrations applied for direct DB tests.
+pub async fn setup_test_db() -> SqlitePool {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("Failed to create in-memory SQLite pool");
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    pool
+}
+
 /// Build a test app WITHOUT vault (free proxy mode) but with a real mock provider URL.
 pub fn setup_free_proxy_test_app(provider_url: &str) -> axum::Router {
     let config = Config {
