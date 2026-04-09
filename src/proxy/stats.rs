@@ -114,6 +114,8 @@ pub struct StatsResponse {
     pub performance: PerformanceSection,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<serde_json::Value>,
 }
 
 /// Request count breakdown.
@@ -179,9 +181,9 @@ pub async fn stats_handler(
 
     // Validate group_by
     if let Some(ref gb) = params.group_by {
-        if gb != "model" {
+        if gb != "model" && gb != "tier" {
             return Err(Error::BadRequest(
-                "Invalid group_by value. Supported: 'model'".to_string(),
+                "Invalid group_by value. Supported: 'model', 'tier'".to_string(),
             ));
         }
     }
@@ -245,6 +247,47 @@ pub async fn stats_handler(
         None
     };
 
+    // Build tiers map if group_by=tier
+    let tiers_value = if params.group_by.as_deref() == Some("tier") {
+        let tier_rows = storage::stats::query_grouped_by_tier(
+            pool,
+            &since_str,
+            &until_str,
+            params.model.as_deref(),
+            params.provider.as_deref(),
+        )
+        .await?;
+
+        let mut tiers_map = serde_json::Map::new();
+
+        // Index SQL rows by tier name
+        let mut sql_tiers: std::collections::HashMap<String, &storage::stats::TierRow> =
+            std::collections::HashMap::new();
+        for tr in &tier_rows {
+            sql_tiers.insert(tr.tier.clone(), tr);
+        }
+
+        // Add known tiers with zeroed stats if no traffic
+        for known_tier in ["local", "standard", "frontier"] {
+            let key = known_tier.to_string();
+            let value = if let Some(tr) = sql_tiers.remove(known_tier) {
+                tier_row_to_json(tr)
+            } else {
+                zeroed_model_json()
+            };
+            tiers_map.insert(key, value);
+        }
+
+        // Add any remaining tiers from SQL (e.g., "unknown")
+        for (tier_name, tr) in sql_tiers {
+            tiers_map.insert(tier_name, tier_row_to_json(tr));
+        }
+
+        Some(serde_json::Value::Object(tiers_map))
+    } else {
+        None
+    };
+
     // Determine empty state
     let (empty, message) = if row.total_requests == 0 {
         (
@@ -275,6 +318,7 @@ pub async fn stats_handler(
             avg_latency_ms: row.avg_latency_ms,
         },
         models: models_value,
+        tiers: tiers_value,
     };
 
     Ok(Json(response))
@@ -296,6 +340,26 @@ fn model_row_to_json(mr: &storage::stats::ModelRow) -> serde_json::Value {
         },
         "performance": {
             "avg_latency_ms": mr.avg_latency_ms,
+        }
+    })
+}
+
+/// Convert a TierRow to JSON for the tiers map.
+fn tier_row_to_json(tr: &storage::stats::TierRow) -> serde_json::Value {
+    serde_json::json!({
+        "counts": {
+            "total": tr.total_requests,
+            "success": tr.success_count,
+            "error": tr.error_count,
+            "streaming": tr.streaming_count,
+        },
+        "costs": {
+            "total_cost_sats": tr.total_cost_sats,
+            "total_input_tokens": tr.total_input_tokens as i64,
+            "total_output_tokens": tr.total_output_tokens as i64,
+        },
+        "performance": {
+            "avg_latency_ms": tr.avg_latency_ms,
         }
     })
 }
