@@ -2,13 +2,21 @@
 
 ## What This Is
 
-arbstr is a local proxy that sits between your applications and the Routstr decentralized AI marketplace. It provides an OpenAI-compatible API and selects the optimal model for each request based on cost and policy constraints, enabling sats-denominated model arbitrage through a single Routstr endpoint. It retries failed requests with exponential backoff and falls back to alternate providers, logs every request to SQLite with cost and latency tracking, and exposes per-request metadata via response headers. Built in Rust, it's designed for personal use today with architectural decisions that support future multi-user deployment.
+arbstr is an open-source inference marketplace that routes AI compute requests to the cheapest qualified provider and settles payment in bitcoin over Lightning. It combines a Rust routing engine (arbstr core) with a TypeScript treasury service (arbstr vault) into a single deployable stack (arbstr node). Providers include mesh-llm nodes, Routstr endpoints, Ollama instances, or any OpenAI-compatible API. No tokens — just sats.
 
 ## Core Value
 
-Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
+Route inference to the cheapest qualified provider and settle in bitcoin — NiceHash for AI inference.
 
-## Current Milestone: Planning next milestone
+## Current Milestone: v2.0 Inference Marketplace Foundation
+
+**Goal:** Wire arbstr core to arbstr vault for live billing, add mesh-llm as a provider type, ship arbstr-node deployment, and launch arbstr.com.
+
+**Target features:**
+- Live vault billing via reserve/settle/release
+- mesh-llm as a first-class provider
+- arbstr-node Docker Compose full-stack deployment
+- arbstr.com landing page with marketplace positioning
 
 ## Requirements
 
@@ -73,7 +81,10 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 
 ### Active
 
-(None — planning next milestone)
+- [ ] End-to-end vault billing — arbstr core calls vault /internal/reserve, /internal/settle, /internal/release with live agent accounts
+- [ ] mesh-llm provider support — localhost:9337 as a first-class provider type with auto-discovery
+- [ ] arbstr-node Docker Compose deployment — core + vault + LND + Cashu mint in one `docker compose up`
+- [ ] arbstr.com landing page — marketplace positioning, anti-token manifesto, getting started guide
 
 ### Future
 
@@ -81,30 +92,31 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - Per-policy cost breakdown queries
 - Learned token ratios per policy (predict cost before seeing response)
 - Per-provider timeout configuration (replace global 30s)
+- Pubky DHT provider discovery
+- Nostr relay bridge for provider availability
+- L402 anonymous access tier
+- Seller account type with Lightning withdrawal
+- Cross-node federation
+- Provider reputation via Pubky semantic tags
 
 ### Out of Scope
 
-- Multi-provider routing across different Routstr nodes — single endpoint (api.routstr.com) is the current use case
 - Web dashboard UI — query endpoints are sufficient, CLI or curl for now
-- Client authentication to arbstr — running on home network, only user
-- Rate limiting — single user, no abuse vector
-- Cashu wallet management — balance monitored externally at the mint
 - ML-based policy classification — keyword heuristics are sufficient for now
-- Production deployment tooling (Docker, systemd) — runs locally
 - Cross-model fallback — silently substituting cheaper model changes quality
+- Invented tokens / governance / staking — bitcoin is the only money
+- Multi-mint Cashu support — single self-hosted mint sufficient for v2.0
 
 ## Context
 
-- **Routstr marketplace**: Live decentralized AI inference protocol at api.routstr.com. OpenAI-compatible API, payments via Cashu tokens (Bitcoin eCash). Fund a session with sats, get an sk- API key, each request deducts cost based on token usage.
+- **Product vision**: NiceHash for AI inference — an open marketplace for buying and selling AI compute, settled in bitcoin. No tokens, no staking, no governance theater. PRD at ~/Downloads/arbstr-prd.md.
+- **Three repos**: arbstr (core routing, Rust), arbstr-vault (treasury, TypeScript, github.com/johnzilla/arbstr-vault), arbstr-node (deployment, github.com/johnzilla/arbstr-node).
+- **Vault integration**: arbstr core's vault.rs calls 3 endpoints on arbstr vault: POST /internal/reserve, POST /internal/settle, POST /internal/release. Both sides are built and use X-Internal-Token auth. Vault has RESERVE/RELEASE/PAYMENT ledger pattern with crash-safe async wallet calls.
+- **mesh-llm**: Block's distributed P2P inference network at docs.anarchai.org. Exposes OpenAI-compatible API on localhost:9337. Provides compute pool but no economic/arbitrage layer — that's arbstr.
+- **Routstr**: One provider source among many. Live at api.routstr.com, OpenAI-compatible, Cashu token payments.
 - **Cost formula**: `(input_tokens * input_price) + (output_tokens * output_price) + request_fee` — all in satoshis.
-- **Current architecture**: Config models "multiple providers" with different URLs, but actual usage is one Routstr endpoint with multiple models at different price points. The multi-provider abstraction supports future flexibility.
-- **Shipped v1**: Working proxy with routing, policy engine, SQLite logging, response metadata headers, retry with fallback.
-- **Shipped v1.1**: API keys protected by SecretString type with zeroize-on-drop. Environment variable expansion (`${VAR}`) and convention-based auto-discovery (`ARBSTR_<NAME>_API_KEY`). File permission warnings, masked key prefixes, literal key warnings. 3,892 lines Rust, 69 automated tests, clippy clean.
-- **Shipped v1.2**: Streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status. Clients receive trailing SSE event with arbstr cost/latency metadata. ~5,000 lines Rust, 94 automated tests, clippy clean.
-- **Shipped v1.3**: Cost querying API — GET /v1/stats for aggregate cost/performance data with time range presets, model/provider filtering, per-model breakdown. GET /v1/requests for paginated request log browsing with filtering and sorting. Read-only analytics pool isolated from proxy writes. ~6,000 lines Rust, 137 automated tests, clippy clean.
-- **Shipped v1.4**: Circuit breaker — per-provider 3-state circuit breaker (Closed/Open/Half-Open) with DashMap-backed registry, queue-and-wait half-open recovery with ProbeGuard RAII, handler-level filtering that skips open circuits before retry loop with 503 fail-fast. Enhanced /health endpoint with per-provider circuit state and computed ok/degraded/unhealthy status. ~9,900 lines Rust, 183 automated tests, clippy clean.
-- **Shipped v1.7**: Intelligent complexity routing — heuristic scorer with 5 weighted signals (context length, code blocks, multi-file, reasoning keywords, conversation depth), provider tier system (local/standard/frontier), tier-aware routing with configurable thresholds, X-Arbstr-Complexity header override, automatic one-way tier escalation on circuit break, full observability (response headers, SSE metadata, DB columns, stats group_by=tier). ~10,000 lines Rust, 244 automated tests, clippy clean.
-- **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification. Routstr provider stream_options support unknown — safe degradation (NULL usage) prevents regression. Multimodal MessageContent::as_str() drops text parts after first (scorer under-counts for multi-part prompts). No validation that complexity_threshold_low < complexity_threshold_high.
+- **Codebase**: ~10,000 lines Rust, 244 automated tests, clippy clean. 7 shipped milestones (v1 through v1.7).
+- **Known concerns**: Streaming errors are silent (no retry for streaming). Multimodal MessageContent::as_str() drops text parts after first. No validation that complexity_threshold_low < complexity_threshold_high.
 
 ## Constraints
 
@@ -181,4 +193,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-09 after v1.7 milestone complete*
+*Last updated: 2026-04-09 after v2.0 milestone started*

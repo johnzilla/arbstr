@@ -1,42 +1,40 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.7
-milestone_name: Intelligent Complexity Routing
-status: executing
-stopped_at: Phase 20 context gathered
-last_updated: "2026-04-09T11:44:03.490Z"
+milestone: v2.0
+milestone_name: Inference Marketplace Foundation
+status: defining_requirements
+stopped_at: null
+last_updated: "2026-04-09"
 last_activity: 2026-04-09
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 7
-  completed_plans: 7
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-08)
+See: .planning/PROJECT.md (updated 2026-04-09)
 
-**Core value:** Smart model selection that minimizes sats spent per request without sacrificing quality
-**Current focus:** Phase 20 — Routing Observability
+**Core value:** Route inference to the cheapest qualified provider and settle in bitcoin
+**Current focus:** Defining requirements for v2.0
 
 ## Current Position
 
-Phase: 20
-Plan: Not started
-Status: Executing Phase 20
-Last activity: 2026-04-09
-
-Progress: [....................] 0%
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-09 — Milestone v2.0 started
 
 ## Performance Metrics
 
-**Historical Velocity (v1-v1.4):**
+**Historical Velocity (v1-v1.7):**
 
-- Total plans completed: 34
+- Total plans completed: 41
 - Average duration: ~3 min per plan
 
 ## Accumulated Context
@@ -52,8 +50,8 @@ None.
 
 ### Blockers/Concerns
 
-- Routstr provider stream_options support unknown -- safe degradation (NULL usage) prevents regression
-- Vault reservation under tier escalation: when local request might escalate to frontier, vault reservation must use frontier-tier pricing (worst case) -- needs design in Phase 19
+- Vault integration needs end-to-end testing with both services running
+- mesh-llm provider API compatibility needs verification against arbstr's OpenAI-compatible proxy
 
 ### Quick Tasks Completed
 
@@ -68,6 +66,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T02:00:22.282Z
-Stopped at: Phase 20 context gathered
-Resume file: .planning/phases/20-routing-observability/20-CONTEXT.md
+Last session: 2026-04-09
+Stopped at: null
+Resume file: null
