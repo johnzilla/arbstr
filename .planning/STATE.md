@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Inference Marketplace Foundation
 status: executing
-stopped_at: Phase 21 context gathered
-last_updated: "2026-04-09T19:12:49.354Z"
+stopped_at: Phase 22 context gathered
+last_updated: "2026-04-09T20:20:38.071Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
@@ -70,6 +70,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-09T14:22:45.835Z
-Stopped at: Phase 21 context gathered
-Resume file: .planning/phases/21-vault-billing-wiring/21-CONTEXT.md
+Last session: 2026-04-09T20:20:38.068Z
+Stopped at: Phase 22 context gathered
+Resume file: .planning/phases/22-vault-fault-tolerance/22-CONTEXT.md
