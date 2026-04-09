@@ -1,5 +1,17 @@
 # Project Milestones: arbstr
 
+## v1.7 Intelligent Complexity Routing (Shipped: 2026-04-09)
+
+**Phases completed:** 5 phases, 7 plans, 13 tasks
+
+**Key accomplishments:**
+
+- Commit:
+- score_to_max_tier mapping and tier-filtered provider selection via max_tier parameter on select_candidates/select
+- Storage layer (src/storage/stats.rs):
+
+---
+
 ## v1 Reliability and Observability (Shipped: 2026-02-04)
 
 **Delivered:** Added reliability (retry with fallback) and observability (SQLite logging, response metadata headers) to the existing proxy, with corrected cost calculation as foundation.
@@ -57,7 +69,6 @@
 
 ---
 
-
 ## v1.2 Streaming Observability (Shipped: 2026-02-16)
 
 **Delivered:** Complete streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status, with cost surfaced to clients via trailing SSE event.
@@ -86,7 +97,6 @@
 **What's next:** Planning next milestone
 
 ---
-
 
 ## v1.3 Cost Querying API (Shipped: 2026-02-16)
 
@@ -118,7 +128,6 @@
 
 ---
 
-
 ## v1.4 Circuit Breaker (Shipped: 2026-02-16)
 
 **Delivered:** Per-provider circuit breaker that stops sending to unhealthy providers, with automatic half-open recovery and enhanced /health reporting for operator visibility.
@@ -146,4 +155,3 @@
 **What's next:** Planning next milestone
 
 ---
-

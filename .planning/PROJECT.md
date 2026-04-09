@@ -8,16 +8,7 @@ arbstr is a local proxy that sits between your applications and the Routstr dece
 
 Smart model selection that minimizes sats spent per request without sacrificing quality — pick the cheapest model that fits the task.
 
-## Current Milestone: v1.7 Intelligent Complexity Routing
-
-**Goal:** Route simple requests to local/mesh-llm providers at zero cost and escalate complex requests to frontier models automatically — the user never picks a model.
-
-**Target features:**
-- Heuristic complexity scorer (context length, code blocks, multi-file refs, reasoning keywords, conversation depth, header override)
-- Provider tier system (local/standard/frontier) with config field
-- Tier-aware routing pipeline with automatic escalation on circuit break
-- Configurable complexity thresholds and signal weights in config.toml
-- Full observability: response headers, SSE metadata, DB columns, stats group_by=tier
+## Current Milestone: Planning next milestone
 
 ## Requirements
 
@@ -71,15 +62,18 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - ✓ Router skips open-circuit providers during selection — v1.4
 - ✓ 503 fail-fast when all providers for a model have open circuits — v1.4
 - ✓ Enhanced /health endpoint with per-provider circuit state and failure counts — v1.4
+- ✓ Provider tier system (local/standard/frontier) with config field — v1.7
+- ✓ Heuristic complexity scorer with 5 configurable weighted signals — v1.7
+- ✓ Tier-aware routing with configurable thresholds — v1.7
+- ✓ X-Arbstr-Complexity header override (high/medium/low) — v1.7
+- ✓ Automatic one-way tier escalation on circuit break — v1.7
+- ✓ Complexity score + tier in response headers and SSE metadata — v1.7
+- ✓ Complexity score + tier columns in request log DB — v1.7
+- ✓ Stats endpoint group_by=tier support — v1.7
 
 ### Active
 
-- [x] Heuristic complexity scorer with configurable signal weights — v1.7 Phase 17
-- [x] Provider tier system (local/standard/frontier) — v1.7 Phase 16
-- [x] Tier-aware routing with automatic escalation on circuit break — v1.7 Phase 18+19
-- [x] Complexity score + tier in response headers and SSE metadata — v1.7 Phase 20
-- [x] Complexity score + tier columns in request log DB — v1.7 Phase 20
-- [x] Stats endpoint group_by=tier support — v1.7 Phase 20
+(None — planning next milestone)
 
 ### Future
 
@@ -109,7 +103,8 @@ Smart model selection that minimizes sats spent per request without sacrificing 
 - **Shipped v1.2**: Streaming observability — every streaming request now logs accurate token counts, cost, full-duration latency, and completion status. Clients receive trailing SSE event with arbstr cost/latency metadata. ~5,000 lines Rust, 94 automated tests, clippy clean.
 - **Shipped v1.3**: Cost querying API — GET /v1/stats for aggregate cost/performance data with time range presets, model/provider filtering, per-model breakdown. GET /v1/requests for paginated request log browsing with filtering and sorting. Read-only analytics pool isolated from proxy writes. ~6,000 lines Rust, 137 automated tests, clippy clean.
 - **Shipped v1.4**: Circuit breaker — per-provider 3-state circuit breaker (Closed/Open/Half-Open) with DashMap-backed registry, queue-and-wait half-open recovery with ProbeGuard RAII, handler-level filtering that skips open circuits before retry loop with 503 fail-fast. Enhanced /health endpoint with per-provider circuit state and computed ok/degraded/unhealthy status. ~9,900 lines Rust, 183 automated tests, clippy clean.
-- **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification. Routstr provider stream_options support unknown — safe degradation (NULL usage) prevents regression.
+- **Shipped v1.7**: Intelligent complexity routing — heuristic scorer with 5 weighted signals (context length, code blocks, multi-file, reasoning keywords, conversation depth), provider tier system (local/standard/frontier), tier-aware routing with configurable thresholds, X-Arbstr-Complexity header override, automatic one-way tier escalation on circuit break, full observability (response headers, SSE metadata, DB columns, stats group_by=tier). ~10,000 lines Rust, 244 automated tests, clippy clean.
+- **Known concerns**: Streaming errors are silent (no retry for streaming), Cashu token double-spend semantics during retry need verification. Routstr provider stream_options support unknown — safe degradation (NULL usage) prevents regression. Multimodal MessageContent::as_str() drops text parts after first (scorer under-counts for multi-part prompts). No validation that complexity_threshold_low < complexity_threshold_high.
 
 ## Constraints
 
@@ -186,4 +181,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-08 after Phase 16 complete*
+*Last updated: 2026-04-09 after v1.7 milestone complete*
