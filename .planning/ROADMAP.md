@@ -74,7 +74,7 @@ See: .planning/milestones/v1.4-ROADMAP.md for full details.
 - [x] **Phase 17: Complexity Scorer** - Heuristic scoring engine with configurable signal weights (completed 2026-04-08)
 - [x] **Phase 18: Tier-Aware Routing** - Router filters by tier based on complexity score and thresholds (completed 2026-04-08)
 - [x] **Phase 19: Handler Integration and Escalation** - End-to-end pipeline with header override and circuit-break escalation (completed 2026-04-09)
-- [ ] **Phase 20: Routing Observability** - Response headers, SSE metadata, DB columns, and stats breakdown
+- [x] **Phase 20: Routing Observability** - Response headers, SSE metadata, DB columns, and stats breakdown (completed 2026-04-09)
 
 ## Phase Details
 
@@ -140,10 +140,10 @@ Plans:
   3. The requests table has `complexity_score` and `tier` columns populated for every request
   4. `GET /v1/stats?group_by=tier` returns per-tier cost and performance breakdown
   5. Each request logs complexity score, matched tier, and selected provider at INFO level
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
-- [ ] 20-01-PLAN.md -- Headers, SSE metadata, DB columns, and INFO logging for complexity routing
-- [ ] 20-02-PLAN.md -- Stats endpoint group_by=tier with per-tier cost/performance breakdown
+- [x] 20-01-PLAN.md -- Headers, SSE metadata, DB columns, and INFO logging for complexity routing
+- [x] 20-02-PLAN.md -- Stats endpoint group_by=tier with per-tier cost/performance breakdown
 
 ## Progress
 
@@ -156,4 +156,4 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19 -> 20
 | 17. Complexity Scorer | v1.7 | 1/1 | Complete    | 2026-04-08 |
 | 18. Tier-Aware Routing | v1.7 | 1/1 | Complete    | 2026-04-08 |
 | 19. Handler Integration and Escalation | v1.7 | 1/1 | Complete    | 2026-04-09 |
-| 20. Routing Observability | v1.7 | 0/2 | Not started | - |
+| 20. Routing Observability | v1.7 | 2/2 | Complete    | 2026-04-09 |
