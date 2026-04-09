@@ -1,0 +1,10 @@
+target/
+.git/
+.planning/
+.github/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+config.toml
