@@ -589,6 +589,17 @@ mod tests {
     }
 
     #[test]
+    fn test_estimate_reserve_frontier_rates() {
+        // Frontier rates: input=10, output=30, base=2
+        // 100 input * 10/1k = 1 sat = 1000 msats
+        // 4096 output * 30/1k = 122.88 sats = 122880 msats
+        // base_fee 2 sats = 2000 msats
+        // total = 125880 msats
+        let result = estimate_reserve_msats(100, 4096, 10, 30, 2);
+        assert_eq!(result, 125880);
+    }
+
+    #[test]
     fn test_vault_error_status_codes() {
         assert_eq!(VaultError::InsufficientBalance.status_code(), 402);
         assert_eq!(VaultError::PolicyDenied("x".into()).status_code(), 403);

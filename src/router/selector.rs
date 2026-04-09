@@ -609,4 +609,37 @@ mod tests {
         let result = router.select_candidates("nonexistent-model", None, None, None);
         assert!(matches!(result, Err(Error::NoProviders { .. })));
     }
+
+    #[test]
+    fn test_frontier_rates_returns_max_across_tiers() {
+        // local(1,5,0), standard(5,15,1), frontier(10,30,2)
+        let router = Router::new(tiered_providers(), vec![], "cheapest".to_string());
+        let rates = router.frontier_rates("gpt-4o");
+        assert_eq!(rates, Some((10, 30, 2)));
+    }
+
+    #[test]
+    fn test_frontier_rates_single_tier_returns_that_tier() {
+        // Only local providers — local rates are the worst case
+        let providers = vec![ProviderConfig {
+            name: "local-only".to_string(),
+            url: "https://local.example.com/v1".to_string(),
+            api_key: None,
+            models: vec!["gpt-4o".to_string()],
+            input_rate: 1,
+            output_rate: 5,
+            base_fee: 0,
+            tier: Tier::Local,
+        }];
+        let router = Router::new(providers, vec![], "cheapest".to_string());
+        let rates = router.frontier_rates("gpt-4o");
+        assert_eq!(rates, Some((1, 5, 0)));
+    }
+
+    #[test]
+    fn test_frontier_rates_nonexistent_model_returns_none() {
+        let router = Router::new(tiered_providers(), vec![], "cheapest".to_string());
+        let rates = router.frontier_rates("nonexistent-model");
+        assert_eq!(rates, None);
+    }
 }
