@@ -16,7 +16,9 @@ use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, Ca
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
 use super::vault::{SettleMetadata, VaultClient};
+use crate::config::Tier;
 use crate::error::Error;
+use crate::router::{score_complexity, score_to_max_tier};
 use crate::storage::logging::RequestLog;
 
 pub use super::logs::logs_handler as logs;
@@ -24,6 +26,9 @@ pub use super::stats::stats_handler as stats;
 
 /// Custom header for policy selection.
 pub const ARBSTR_POLICY_HEADER: &str = "x-arbstr-policy";
+
+/// Custom header for complexity tier override.
+pub const ARBSTR_COMPLEXITY_HEADER: &str = "x-arbstr-complexity";
 
 /// Response header: correlation ID (UUID v4).
 pub const ARBSTR_REQUEST_ID_HEADER: &str = "x-arbstr-request-id";
@@ -154,6 +159,10 @@ struct RequestContext {
 struct ResolvedCandidates {
     candidates: Vec<crate::router::SelectedProvider>,
     probe_provider: Option<String>,
+    #[allow(dead_code)] // Used in Phase 20 for response headers
+    complexity_score: Option<f64>,
+    #[allow(dead_code)] // Used in Phase 20 for response headers
+    tier: Tier,
 }
 
 /// Map a routing error to an HTTP status code.
@@ -238,20 +247,80 @@ fn attach_retries_header(response: &mut Response, retries_header: &Option<String
 
 /// Select candidates and filter through circuit breakers.
 ///
-/// Handles routing errors and all-circuits-open with logging and response
-/// building. Returns filtered candidates or an early-return error response.
+/// Scores the request via the complexity scorer (or uses header override),
+/// selects candidates at the scored tier, filters through circuit breakers,
+/// and escalates one-way (Local -> Standard -> Frontier) if the tier has
+/// no available providers.
+///
+/// Returns filtered candidates or an early-return error response.
 async fn resolve_candidates(
     state: &AppState,
     ctx: &RequestContext,
     user_prompt: Option<&str>,
+    messages: &[crate::proxy::types::Message],
+    complexity_override: Option<Tier>,
 ) -> Result<ResolvedCandidates, Response> {
-    let candidates =
-        match state
-            .router
-            .select_candidates(&ctx.model, ctx.policy_name.as_deref(), user_prompt, None)
-        {
+    let routing = &state.config.routing;
+
+    // Determine max_tier: header override skips scorer (D-13, D-14)
+    let (complexity_score, max_tier) = if let Some(tier) = complexity_override {
+        (None, tier)
+    } else {
+        let score = score_complexity(messages, &routing.complexity_weights);
+        let tier = score_to_max_tier(
+            score,
+            routing.complexity_threshold_low,
+            routing.complexity_threshold_high,
+        );
+        (Some(score), tier)
+    };
+
+    // Escalation loop wrapping both select_candidates AND circuit breaker filtering
+    let mut current_tier = max_tier;
+    loop {
+        // Try select_candidates at current tier
+        let candidates = match state.router.select_candidates(
+            &ctx.model,
+            ctx.policy_name.as_deref(),
+            user_prompt,
+            Some(current_tier),
+        ) {
             Ok(c) => c,
+            Err(Error::NoTierMatch { .. }) => {
+                // No providers configured at this tier -- escalate (D-05)
+                if let Some(next) = current_tier.escalate() {
+                    tracing::warn!(
+                        from_tier = %current_tier,
+                        to_tier = %next,
+                        model = %ctx.model,
+                        "Tier escalation: {} -> {} (no healthy providers at {})",
+                        current_tier, next, current_tier
+                    );
+                    current_tier = next;
+                    continue;
+                }
+                // At Frontier, can't escalate -- return error
+                let latency_ms = ctx.start.elapsed().as_millis() as i64;
+                let message =
+                    format!("No providers match any tier for model '{}'", ctx.model);
+                log_error_to_db(state, ctx, latency_ms, None, 400, message);
+                let err = Error::NoTierMatch {
+                    tier: current_tier,
+                    model: ctx.model.clone(),
+                };
+                let mut response = err.into_response();
+                attach_arbstr_headers(
+                    &mut response,
+                    &ctx.correlation_id,
+                    latency_ms,
+                    None,
+                    None,
+                    ctx.is_streaming,
+                );
+                return Err(response);
+            }
             Err(e) => {
+                // Non-tier error (NoProviders, NoPolicyMatch, BadRequest) -- no escalation
                 let latency_ms = ctx.start.elapsed().as_millis() as i64;
                 let status_code = routing_error_status(&e);
                 let message = e.to_string();
@@ -269,49 +338,67 @@ async fn resolve_candidates(
             }
         };
 
-    let mut filtered = Vec::new();
-    let mut probe_provider: Option<String> = None;
-    for candidate in &candidates {
-        match state.circuit_breakers.acquire_permit(&candidate.name).await {
-            Ok(PermitType::Normal) => filtered.push(candidate.clone()),
-            Ok(PermitType::Probe) => {
-                probe_provider = Some(candidate.name.clone());
-                filtered.insert(0, candidate.clone());
-            }
-            Err(open_err) => {
-                tracing::debug!(
-                    provider = %candidate.name,
-                    reason = %open_err.reason,
-                    streaming = ctx.is_streaming,
-                    "Skipping provider: circuit open"
-                );
+        // Circuit breaker filtering
+        let mut filtered = Vec::new();
+        let mut probe_provider: Option<String> = None;
+        for candidate in &candidates {
+            match state.circuit_breakers.acquire_permit(&candidate.name).await {
+                Ok(PermitType::Normal) => filtered.push(candidate.clone()),
+                Ok(PermitType::Probe) => {
+                    probe_provider = Some(candidate.name.clone());
+                    filtered.insert(0, candidate.clone());
+                }
+                Err(open_err) => {
+                    tracing::debug!(
+                        provider = %candidate.name,
+                        reason = %open_err.reason,
+                        streaming = ctx.is_streaming,
+                        "Skipping provider: circuit open"
+                    );
+                }
             }
         }
-    }
 
-    if filtered.is_empty() {
-        let latency_ms = ctx.start.elapsed().as_millis() as i64;
-        let message = format!("All providers have open circuits for model '{}'", ctx.model);
-        log_error_to_db(state, ctx, latency_ms, None, 503, message);
-        let circuit_error = Error::CircuitOpen {
-            model: ctx.model.clone(),
-        };
-        let mut response = circuit_error.into_response();
-        attach_arbstr_headers(
-            &mut response,
-            &ctx.correlation_id,
-            latency_ms,
-            None,
-            None,
-            ctx.is_streaming,
-        );
-        return Err(response);
-    }
+        if filtered.is_empty() {
+            // All providers at this tier are circuit-broken -- try escalating (Pitfall 2)
+            if let Some(next) = current_tier.escalate() {
+                tracing::warn!(
+                    from_tier = %current_tier,
+                    to_tier = %next,
+                    model = %ctx.model,
+                    "Tier escalation: {} -> {} (all providers circuit-broken at {})",
+                    current_tier, next, current_tier
+                );
+                current_tier = next;
+                continue;
+            }
+            // At Frontier with all circuits open -- return 503
+            let latency_ms = ctx.start.elapsed().as_millis() as i64;
+            let message =
+                format!("All providers have open circuits for model '{}'", ctx.model);
+            log_error_to_db(state, ctx, latency_ms, None, 503, message);
+            let circuit_error = Error::CircuitOpen {
+                model: ctx.model.clone(),
+            };
+            let mut response = circuit_error.into_response();
+            attach_arbstr_headers(
+                &mut response,
+                &ctx.correlation_id,
+                latency_ms,
+                None,
+                None,
+                ctx.is_streaming,
+            );
+            return Err(response);
+        }
 
-    Ok(ResolvedCandidates {
-        candidates: filtered,
-        probe_provider,
-    })
+        return Ok(ResolvedCandidates {
+            candidates: filtered,
+            probe_provider,
+            complexity_score,
+            tier: current_tier,
+        });
+    }
 }
 
 /// Fire-and-forget vault settle in a background task.
@@ -438,7 +525,18 @@ pub async fn chat_completions(
         reservation_id: None,
     };
 
-    let resolved = match resolve_candidates(&state, &ctx, user_prompt).await {
+    // Parse complexity header override (D-10 through D-14)
+    let complexity_override: Option<Tier> = headers
+        .get(ARBSTR_COMPLEXITY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "high" => Some(Tier::Frontier),
+            "medium" => Some(Tier::Standard),
+            "low" => Some(Tier::Local),
+            _ => None, // D-12: invalid -> fall through to scorer
+        });
+
+    let resolved = match resolve_candidates(&state, &ctx, user_prompt, &request.messages, complexity_override).await {
         Ok(r) => r,
         Err(response) => return Ok(response),
     };
