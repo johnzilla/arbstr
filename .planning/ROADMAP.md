@@ -85,7 +85,7 @@ See: .planning/milestones/v1.7-ROADMAP.md for full details.
 **Milestone Goal:** Wire arbstr core to arbstr vault for live billing, add mesh-llm as a provider type, ship arbstr-node deployment, and launch arbstr.com.
 
 - [x] **Phase 21: Vault Billing Wiring** - End-to-end reserve/settle/release flow with agent token auth (completed 2026-04-09)
-- [ ] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery
+- [x] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery (completed 2026-04-09)
 - [ ] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment
 - [ ] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery
 - [ ] **Phase 25: Landing Page** - arbstr.com with marketplace positioning and getting started guide
@@ -115,10 +115,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. If arbstr core crashes between reserve and settle, pending settlements are recovered from SQLite on restart
   2. Background reconciliation replays pending settle/release operations against vault after restart
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
-- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
+- [x] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
 
 ### Phase 23: Docker Deployment
 **Goal**: arbstr-node runs as a complete stack from a single docker compose up command
@@ -131,7 +131,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
+- [x] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
 
 ### Phase 24: mesh-llm Provider
 **Goal**: mesh-llm nodes on localhost are usable as zero-cost local-tier providers with automatic model discovery
@@ -168,7 +168,7 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 21. Vault Billing Wiring | v2.0 | 2/2 | Complete    | 2026-04-09 |
-| 22. Vault Fault Tolerance | v2.0 | 0/TBD | Not started | - |
+| 22. Vault Fault Tolerance | v2.0 | 1/1 | Complete    | 2026-04-09 |
 | 23. Docker Deployment | v2.0 | 0/TBD | Not started | - |
 | 24. mesh-llm Provider | v2.0 | 0/TBD | Not started | - |
 | 25. Landing Page | v2.0 | 0/TBD | Not started | - |
