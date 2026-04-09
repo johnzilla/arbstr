@@ -128,10 +128,11 @@ Plans:
   1. Multi-stage Dockerfile produces a slim arbstr core image (builder stage + runtime stage)
   2. docker compose up from empty volumes starts lnd, mint, vault, and core in correct dependency order with health checks
   3. A chat completion request through the composed stack returns a successful response with billing headers
-**Plans:** 1 plan
+**Plans:** 2 plans
 
 Plans:
-- [x] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
+- [ ] 23-01-PLAN.md -- Multi-stage Dockerfile, .dockerignore, and sqlx offline metadata for arbstr core
+- [ ] 23-02-PLAN.md -- Update arbstr-node docker-compose.yml with GHCR image and verify full-stack startup
 
 ### Phase 24: mesh-llm Provider
 **Goal**: mesh-llm nodes on localhost are usable as zero-cost local-tier providers with automatic model discovery
@@ -144,7 +145,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
+- [ ] 24-01-PLAN.md -- [to be planned]
 
 ### Phase 25: Landing Page
 **Goal**: arbstr.com communicates the marketplace vision and gets developers started
@@ -157,7 +158,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
+- [ ] 25-01-PLAN.md -- [to be planned]
 **UI hint**: yes
 
 ## Progress
@@ -169,6 +170,6 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 |-------|-----------|----------------|--------|-----------|
 | 21. Vault Billing Wiring | v2.0 | 2/2 | Complete    | 2026-04-09 |
 | 22. Vault Fault Tolerance | v2.0 | 1/1 | Complete    | 2026-04-09 |
-| 23. Docker Deployment | v2.0 | 0/TBD | Not started | - |
+| 23. Docker Deployment | v2.0 | 0/2 | Not started | - |
 | 24. mesh-llm Provider | v2.0 | 0/TBD | Not started | - |
 | 25. Landing Page | v2.0 | 0/TBD | Not started | - |
