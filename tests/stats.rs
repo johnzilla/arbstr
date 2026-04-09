@@ -402,3 +402,136 @@ async fn test_stats_invalid_range_preset_400() {
 
     assert_eq!(status, 400);
 }
+
+// ──────────────────────────────────────────────────
+// Test 15: group_by=tier with no data returns tiers object
+// ──────────────────────────────────────────────────
+#[tokio::test]
+async fn test_stats_group_by_tier_empty() {
+    let (app, _pool) = common::setup_db_test_app().await;
+
+    let (status, body) = get(app, "/v1/stats?group_by=tier").await;
+
+    assert_eq!(status, 200);
+    let tiers = &body["tiers"];
+    assert!(tiers.is_object(), "Expected 'tiers' object in response");
+    // With no data, tiers should have zeroed entries
+    assert_eq!(body["counts"]["total"], 0);
+}
+
+// ──────────────────────────────────────────────────
+// Test 16: group_by=tier with data returns per-tier breakdown
+// ──────────────────────────────────────────────────
+#[tokio::test]
+async fn test_stats_group_by_tier_with_data() {
+    let (app, pool) = common::setup_db_test_app().await;
+
+    let now = chrono::Utc::now();
+    let recent = (now - chrono::Duration::hours(1)).to_rfc3339();
+
+    // Insert rows with different tier values using direct SQL
+    let corr1 = format!("test-tier-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    sqlx::query(
+        "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
+         input_tokens, output_tokens, cost_sats, latency_ms, success, complexity_score, tier) \
+         VALUES (?, ?, 'gpt-4o', 'alpha', 0, 100, 200, 10.0, 150, 1, 0.3, 'local')",
+    )
+    .bind(&corr1)
+    .bind(&recent)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let corr2 = format!("test-tier-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    sqlx::query(
+        "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
+         input_tokens, output_tokens, cost_sats, latency_ms, success, complexity_score, tier) \
+         VALUES (?, ?, 'gpt-4o', 'alpha', 0, 150, 300, 20.0, 200, 1, 0.7, 'standard')",
+    )
+    .bind(&corr2)
+    .bind(&recent)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let corr3 = format!("test-tier-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    sqlx::query(
+        "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
+         input_tokens, output_tokens, cost_sats, latency_ms, success, complexity_score, tier) \
+         VALUES (?, ?, 'claude-3.5-sonnet', 'alpha', 1, 200, 400, 30.0, 300, 1, 0.9, 'frontier')",
+    )
+    .bind(&corr3)
+    .bind(&recent)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = get(app, "/v1/stats?group_by=tier").await;
+
+    assert_eq!(status, 200);
+    let tiers = &body["tiers"];
+    assert!(tiers.is_object(), "Expected 'tiers' object");
+
+    // Check per-tier breakdown
+    assert_eq!(tiers["local"]["counts"]["total"], 1);
+    assert_eq!(tiers["local"]["costs"]["total_cost_sats"], 10.0);
+    assert_eq!(tiers["standard"]["counts"]["total"], 1);
+    assert_eq!(tiers["standard"]["costs"]["total_cost_sats"], 20.0);
+    assert_eq!(tiers["frontier"]["counts"]["total"], 1);
+    assert_eq!(tiers["frontier"]["costs"]["total_cost_sats"], 30.0);
+}
+
+// ──────────────────────────────────────────────────
+// Test 17: group_by=tier with NULL tier grouped as "unknown"
+// ──────────────────────────────────────────────────
+#[tokio::test]
+async fn test_stats_group_by_tier_null_tier() {
+    let (app, pool) = common::setup_db_test_app().await;
+
+    let now = chrono::Utc::now();
+    let recent = (now - chrono::Duration::hours(1)).to_rfc3339();
+
+    // Insert row without tier (NULL)
+    let corr1 = format!("test-tier-null-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    sqlx::query(
+        "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
+         input_tokens, output_tokens, cost_sats, latency_ms, success) \
+         VALUES (?, ?, 'gpt-4o', 'alpha', 0, 100, 200, 10.0, 150, 1)",
+    )
+    .bind(&corr1)
+    .bind(&recent)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = get(app, "/v1/stats?group_by=tier").await;
+
+    assert_eq!(status, 200);
+    let tiers = &body["tiers"];
+    assert!(tiers.is_object(), "Expected 'tiers' object");
+
+    // NULL tier should be grouped as "unknown"
+    assert_eq!(tiers["unknown"]["counts"]["total"], 1);
+    assert_eq!(tiers["unknown"]["costs"]["total_cost_sats"], 10.0);
+}
+
+// ──────────────────────────────────────────────────
+// Test 18: group_by=invalid returns 400
+// ──────────────────────────────────────────────────
+#[tokio::test]
+async fn test_stats_group_by_invalid_400() {
+    let (app, _pool) = common::setup_db_test_app().await;
+
+    let (status, body) = get(app, "/v1/stats?group_by=invalid").await;
+
+    assert_eq!(status, 400);
+    let message = body["error"]["message"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase();
+    assert!(
+        message.contains("model") && message.contains("tier"),
+        "Expected error to mention both 'model' and 'tier', got: {}",
+        message
+    );
+}
