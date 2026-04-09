@@ -15,7 +15,7 @@ Wire the existing VaultClient (src/proxy/vault.rs) into the handler hot path so 
 
 ### Auth Token Handling
 - **D-01:** `Authorization: Bearer` header serves both purposes depending on config. When vault is configured, the bearer token is forwarded to vault as the agent_token for billing. When vault is absent but auth_token is set, bearer token is checked against server-level auth_token. When neither is configured, no auth required.
-- **D-02:** Both server auth and vault auth layers remain active when both are configured. Server auth_token gates proxy access, vault agent_token gates billing. No custom headers — standard Authorization: Bearer for both, resolved by config state.
+- **D-02:** ~~SUPERSEDED~~ Originally "both layers active simultaneously" — superseded by D-01 after resolving the header conflict. When vault is configured, vault handles auth; server-level auth_token middleware is skipped. This matches existing code at server.rs lines 103-115.
 
 ### Reserve Pricing
 - **D-03:** Always reserve at frontier-tier rates regardless of the complexity scorer's tier result. This handles tier escalation safely — if a local-tier request escalates to frontier on circuit break, the reservation already covers the higher cost. Overage is refunded on settle.
