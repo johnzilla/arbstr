@@ -115,7 +115,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. If arbstr core crashes between reserve and settle, pending settlements are recovered from SQLite on restart
   2. Background reconciliation replays pending settle/release operations against vault after restart
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
 
 ### Phase 23: Docker Deployment
 **Goal**: arbstr-node runs as a complete stack from a single docker compose up command
@@ -125,7 +128,10 @@ Plans:
   1. Multi-stage Dockerfile produces a slim arbstr core image (builder stage + runtime stage)
   2. docker compose up from empty volumes starts lnd, mint, vault, and core in correct dependency order with health checks
   3. A chat completion request through the composed stack returns a successful response with billing headers
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
 
 ### Phase 24: mesh-llm Provider
 **Goal**: mesh-llm nodes on localhost are usable as zero-cost local-tier providers with automatic model discovery
@@ -135,7 +141,10 @@ Plans:
   1. mesh-llm endpoint at localhost:9337 is configurable as a provider with tier=local and zero-cost rates
   2. On startup, arbstr polls mesh-llm /v1/models and auto-populates the provider's available model list
   3. Docker Compose core service can reach mesh-llm running on the host via extra_hosts configuration
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
 
 ### Phase 25: Landing Page
 **Goal**: arbstr.com communicates the marketplace vision and gets developers started
@@ -145,7 +154,10 @@ Plans:
   1. arbstr.com loads with marketplace positioning (NiceHash for AI inference) and anti-token manifesto
   2. Getting started guide shows how to run arbstr-node with docker compose up
   3. Page links to GitHub repo and explains the Bitcoin-native settlement model
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 22-01-PLAN.md -- Add eviction logic for stale settlements and comprehensive fault tolerance tests
 **UI hint**: yes
 
 ## Progress
