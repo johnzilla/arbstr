@@ -83,10 +83,9 @@ Route inference to the cheapest qualified provider and settle in bitcoin — Nic
 - ✓ Vault auth replaces server auth when vault configured — v2.0
 - ✓ Free proxy mode preserved when vault absent — v2.0
 - ✓ Mock vault integration tests (9 tests) — v2.0
+- ✓ Vault fault tolerance — eviction after 10 attempts, 5 fault tolerance tests — v2.0
 
 ### Active
-
-- [ ] Vault fault tolerance — pending settlement persistence and crash recovery verification
 - [ ] mesh-llm provider support — localhost:9337 as a first-class provider type with auto-discovery
 - [ ] arbstr-node Docker Compose deployment — core + vault + LND + Cashu mint in one `docker compose up`
 - [ ] arbstr.com landing page — marketplace positioning, anti-token manifesto, getting started guide
@@ -198,4 +197,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-09 after Phase 21 complete*
+*Last updated: 2026-04-09 after Phase 22 complete*
