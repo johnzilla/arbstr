@@ -42,6 +42,10 @@ pub const ARBSTR_PROVIDER_HEADER: &str = "x-arbstr-provider";
 pub const ARBSTR_STREAMING_HEADER: &str = "x-arbstr-streaming";
 /// Response header: retry attempt history (e.g. "2/provider-alpha, 1/provider-beta").
 pub const ARBSTR_RETRIES_HEADER: &str = "x-arbstr-retries";
+/// Response header: complexity score (3 decimal places, e.g. "0.423").
+pub const ARBSTR_COMPLEXITY_SCORE_HEADER: &str = "x-arbstr-complexity-score";
+/// Response header: complexity tier (local, standard, frontier).
+pub const ARBSTR_TIER_HEADER: &str = "x-arbstr-tier";
 
 /// Total timeout for the retry+fallback chain (30 seconds).
 const RETRY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -159,9 +163,7 @@ struct RequestContext {
 struct ResolvedCandidates {
     candidates: Vec<crate::router::SelectedProvider>,
     probe_provider: Option<String>,
-    #[allow(dead_code)] // Used in Phase 20 for response headers
     complexity_score: Option<f64>,
-    #[allow(dead_code)] // Used in Phase 20 for response headers
     tier: Tier,
 }
 
@@ -177,6 +179,7 @@ fn routing_error_status(e: &Error) -> u16 {
 }
 
 /// Log a failed request to the database via the bounded writer.
+#[allow(clippy::too_many_arguments)]
 fn log_error_to_db(
     state: &AppState,
     ctx: &RequestContext,
@@ -184,6 +187,8 @@ fn log_error_to_db(
     provider: Option<String>,
     status_code: u16,
     message: String,
+    complexity_score: Option<f64>,
+    tier: Option<String>,
 ) {
     if let Some(writer) = &state.db_writer {
         writer.log_write(RequestLog {
@@ -201,8 +206,8 @@ fn log_error_to_db(
             success: false,
             error_status: Some(status_code),
             error_message: Some(message),
-            complexity_score: None,
-            tier: None,
+            complexity_score,
+            tier,
         });
     }
 }
@@ -213,6 +218,8 @@ fn log_success_to_db(
     ctx: &RequestContext,
     latency_ms: i64,
     outcome: &RequestOutcome,
+    complexity_score: Option<f64>,
+    tier: Option<String>,
 ) {
     if let Some(writer) = &state.db_writer {
         writer.log_write(RequestLog {
@@ -230,8 +237,8 @@ fn log_success_to_db(
             success: true,
             error_status: None,
             error_message: None,
-            complexity_score: None,
-            tier: None,
+            complexity_score,
+            tier,
         });
     }
 }
@@ -307,7 +314,7 @@ async fn resolve_candidates(
                 let latency_ms = ctx.start.elapsed().as_millis() as i64;
                 let message =
                     format!("No providers match any tier for model '{}'", ctx.model);
-                log_error_to_db(state, ctx, latency_ms, None, 400, message);
+                log_error_to_db(state, ctx, latency_ms, None, 400, message, complexity_score, Some(current_tier.to_string()));
                 let err = Error::NoTierMatch {
                     tier: current_tier,
                     model: ctx.model.clone(),
@@ -328,7 +335,7 @@ async fn resolve_candidates(
                 let latency_ms = ctx.start.elapsed().as_millis() as i64;
                 let status_code = routing_error_status(&e);
                 let message = e.to_string();
-                log_error_to_db(state, ctx, latency_ms, None, status_code, message);
+                log_error_to_db(state, ctx, latency_ms, None, status_code, message, None, None);
                 let mut response = e.into_response();
                 attach_arbstr_headers(
                     &mut response,
@@ -380,7 +387,7 @@ async fn resolve_candidates(
             let latency_ms = ctx.start.elapsed().as_millis() as i64;
             let message =
                 format!("All providers have open circuits for model '{}'", ctx.model);
-            log_error_to_db(state, ctx, latency_ms, None, 503, message);
+            log_error_to_db(state, ctx, latency_ms, None, 503, message, complexity_score, Some(current_tier.to_string()));
             let circuit_error = Error::CircuitOpen {
                 model: ctx.model.clone(),
             };
@@ -558,6 +565,8 @@ pub async fn chat_completions(
                 None,
                 503,
                 "Payment service backpressure: too many pending settlements".to_string(),
+                resolved.complexity_score,
+                Some(resolved.tier.to_string()),
             );
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
@@ -589,6 +598,8 @@ pub async fn chat_completions(
                     None,
                     401,
                     "Missing bearer token for vault billing".to_string(),
+                    resolved.complexity_score,
+                    Some(resolved.tier.to_string()),
                 );
                 return Ok(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
@@ -642,7 +653,7 @@ pub async fn chat_completions(
                     status = status_code,
                     "Vault reserve failed"
                 );
-                log_error_to_db(&state, &ctx, latency_ms, None, status_code, message.clone());
+                log_error_to_db(&state, &ctx, latency_ms, None, status_code, message.clone(), resolved.complexity_score, Some(resolved.tier.to_string()));
                 return Ok(Response::builder()
                     .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
                     .header(header::CONTENT_TYPE, "application/json")
@@ -686,7 +697,7 @@ async fn handle_streaming_path(
         .as_ref()
         .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
 
-    let result = send_to_provider(&state, &request, provider, &ctx.correlation_id, true, ctx.reservation_id.clone()).await;
+    let result = send_to_provider(&state, &request, provider, &ctx.correlation_id, true, ctx.reservation_id.clone(), resolved.complexity_score, Some(resolved.tier.to_string())).await;
 
     // Record circuit breaker outcome
     match &result {
@@ -724,7 +735,13 @@ async fn handle_streaming_path(
 
     match result {
         Ok(outcome) => {
-            log_success_to_db(&state, &ctx, latency_ms, &outcome);
+            tracing::info!(
+                complexity_score = ?resolved.complexity_score,
+                tier = %resolved.tier,
+                provider = %outcome.provider_name,
+                "Request routed"
+            );
+            log_success_to_db(&state, &ctx, latency_ms, &outcome, resolved.complexity_score, Some(resolved.tier.to_string()));
             let mut response = outcome.response;
             attach_arbstr_headers(
                 &mut response,
@@ -734,6 +751,21 @@ async fn handle_streaming_path(
                 outcome.cost_sats,
                 true,
             );
+            // Complexity headers (known at header-send time for streaming)
+            if let Some(score) = resolved.complexity_score {
+                let score_str = format!("{:.3}", score);
+                if let Ok(val) = HeaderValue::from_str(&score_str) {
+                    response.headers_mut().insert(
+                        HeaderName::from_static(ARBSTR_COMPLEXITY_SCORE_HEADER), val
+                    );
+                }
+            }
+            let tier_str = resolved.tier.to_string();
+            if let Ok(val) = HeaderValue::from_str(&tier_str) {
+                response.headers_mut().insert(
+                    HeaderName::from_static(ARBSTR_TIER_HEADER), val
+                );
+            }
             Ok(response)
         }
         Err(outcome_err) => {
@@ -744,6 +776,8 @@ async fn handle_streaming_path(
                 outcome_err.provider_name.clone(),
                 outcome_err.status_code,
                 outcome_err.message.clone(),
+                resolved.complexity_score,
+                Some(resolved.tier.to_string()),
             );
 
             // Vault: release on streaming send failure
@@ -820,6 +854,8 @@ async fn handle_non_streaming_path(
                 &ctx.correlation_id,
                 false,
                 None, // reservation_id not needed for non-streaming (settled in handler)
+                resolved.complexity_score,
+                Some(resolved.tier.to_string()),
             ))
         }),
     )
@@ -887,6 +923,8 @@ async fn handle_non_streaming_path(
                 last_provider,
                 504,
                 "Request timed out after 30 seconds (retry budget exhausted)".to_string(),
+                resolved.complexity_score,
+                Some(resolved.tier.to_string()),
             );
 
             // Vault: release on timeout
@@ -912,7 +950,13 @@ async fn handle_non_streaming_path(
         }
         Ok(retry_outcome) => match retry_outcome.result {
             Ok(outcome) => {
-                log_success_to_db(&state, &ctx, latency_ms, &outcome);
+                tracing::info!(
+                    complexity_score = ?resolved.complexity_score,
+                    tier = %resolved.tier,
+                    provider = %outcome.provider_name,
+                    "Request routed"
+                );
+                log_success_to_db(&state, &ctx, latency_ms, &outcome, resolved.complexity_score, Some(resolved.tier.to_string()));
 
                 // Vault: async settle on success
                 if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
@@ -943,6 +987,21 @@ async fn handle_non_streaming_path(
                     outcome.cost_sats,
                     false,
                 );
+                // Complexity headers
+                if let Some(score) = resolved.complexity_score {
+                    let score_str = format!("{:.3}", score);
+                    if let Ok(val) = HeaderValue::from_str(&score_str) {
+                        response.headers_mut().insert(
+                            HeaderName::from_static(ARBSTR_COMPLEXITY_SCORE_HEADER), val
+                        );
+                    }
+                }
+                let tier_str = resolved.tier.to_string();
+                if let Ok(val) = HeaderValue::from_str(&tier_str) {
+                    response.headers_mut().insert(
+                        HeaderName::from_static(ARBSTR_TIER_HEADER), val
+                    );
+                }
                 attach_retries_header(&mut response, &retries_header);
                 Ok(response)
             }
@@ -954,6 +1013,8 @@ async fn handle_non_streaming_path(
                     outcome_err.provider_name.clone(),
                     outcome_err.status_code,
                     outcome_err.message.clone(),
+                    resolved.complexity_score,
+                    Some(resolved.tier.to_string()),
                 );
 
                 // Vault: release on provider error
@@ -988,6 +1049,7 @@ async fn handle_non_streaming_path(
 /// and non-streaming (retry) paths. Adds an `Idempotency-Key` header
 /// with the correlation ID to allow providers to deduplicate retried
 /// requests.
+#[allow(clippy::too_many_arguments)]
 async fn send_to_provider(
     state: &AppState,
     request: &ChatCompletionRequest,
@@ -995,6 +1057,8 @@ async fn send_to_provider(
     correlation_id: &str,
     is_streaming: bool,
     reservation_id: Option<String>,
+    complexity_score: Option<f64>,
+    tier: Option<String>,
 ) -> std::result::Result<RequestOutcome, RequestError> {
     // Build upstream URL
     let upstream_url = format!("{}/chat/completions", provider.url.trim_end_matches('/'));
@@ -1069,6 +1133,8 @@ async fn send_to_provider(
             reservation_id,
             state.db.clone(),
             stream_start,
+            complexity_score,
+            tier,
         )
         .await
     } else {
@@ -1177,6 +1243,8 @@ async fn handle_streaming_response(
     reservation_id: Option<String>,
     db_pool: Option<sqlx::SqlitePool>,
     stream_start: std::time::Instant,
+    complexity_score: Option<f64>,
+    tier: Option<String>,
 ) -> std::result::Result<RequestOutcome, RequestError> {
     let provider_name = provider.name.clone();
 
@@ -1273,7 +1341,7 @@ async fn handle_streaming_response(
 
         // Emit trailing SSE event if client is still connected
         if client_connected {
-            let trailing = build_trailing_sse_event(cost_sats, stream_duration_ms);
+            let trailing = build_trailing_sse_event(cost_sats, stream_duration_ms, complexity_score, tier.clone());
             let _ = tx.send(Ok(bytes::Bytes::from(trailing))).await;
         }
         // tx is dropped here, closing the channel and signaling end-of-body
@@ -1288,8 +1356,8 @@ async fn handle_streaming_response(
                 stream_duration_ms,
                 success,
                 error_message.clone(),
-                None,
-                None,
+                complexity_score,
+                tier.clone(),
             );
         }
 
@@ -1412,18 +1480,24 @@ async fn handle_streaming_response(
 
 /// Build a trailing SSE event containing arbstr metadata.
 ///
-/// Format: `data: {"arbstr":{"cost_sats":<value_or_null>,"latency_ms":<i64>}}\n\ndata: [DONE]\n\n`
+/// Format: `data: {"arbstr":{"cost_sats":<value_or_null>,"latency_ms":<i64>,"complexity_score":<value_or_null>,"tier":<string_or_null>}}\n\ndata: [DONE]\n\n`
 ///
 /// If cost_sats is None or NaN, the JSON value is null.
-fn build_trailing_sse_event(cost_sats: Option<f64>, latency_ms: i64) -> Vec<u8> {
+fn build_trailing_sse_event(cost_sats: Option<f64>, latency_ms: i64, complexity_score: Option<f64>, tier: Option<String>) -> Vec<u8> {
     let cost_value = cost_sats
         .and_then(|c| serde_json::Number::from_f64(c).map(serde_json::Value::Number))
+        .unwrap_or(serde_json::Value::Null);
+
+    let score_value = complexity_score
+        .and_then(|s| serde_json::Number::from_f64(s).map(serde_json::Value::Number))
         .unwrap_or(serde_json::Value::Null);
 
     let event_json = serde_json::json!({
         "arbstr": {
             "cost_sats": cost_value,
             "latency_ms": latency_ms,
+            "complexity_score": score_value,
+            "tier": tier,
         }
     });
 
@@ -1781,7 +1855,7 @@ mod tests {
 
     #[test]
     fn test_build_trailing_sse_event_with_cost() {
-        let event = build_trailing_sse_event(Some(42.35), 1200);
+        let event = build_trailing_sse_event(Some(42.35), 1200, None, None);
         let text = String::from_utf8(event).unwrap();
 
         // Verify SSE format: data line + empty line + data: [DONE] + empty line
@@ -1799,7 +1873,7 @@ mod tests {
 
     #[test]
     fn test_build_trailing_sse_event_null_cost() {
-        let event = build_trailing_sse_event(None, 500);
+        let event = build_trailing_sse_event(None, 500, None, None);
         let text = String::from_utf8(event).unwrap();
 
         let data_line = text.lines().next().unwrap();
