@@ -126,7 +126,9 @@ Plans:
   2. Sending `X-Arbstr-Complexity: low` header bypasses the scorer and routes to local-tier providers
   3. When all local-tier providers have open circuits, a low-complexity request automatically escalates to standard tier (and then frontier if needed)
   4. Escalation is one-way per request -- a request that escalated from local to standard never de-escalates back to local
-**Plans**: TBD
+**Plans:** 1/1 plans
+Plans:
+- [ ] 19-01-PLAN.md -- Wire scoring, header override, and escalation into resolve_candidates
 
 ### Phase 20: Routing Observability
 **Goal**: Complexity scores and tier decisions are visible in response headers, SSE metadata, request logs, and stats
@@ -149,5 +151,5 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19 -> 20
 | 16. Provider Tier Foundation | v1.7 | 2/2 | Complete    | 2026-04-08 |
 | 17. Complexity Scorer | v1.7 | 1/1 | Complete    | 2026-04-08 |
 | 18. Tier-Aware Routing | v1.7 | 1/1 | Complete    | 2026-04-08 |
-| 19. Handler Integration and Escalation | v1.7 | 0/? | Not started | - |
+| 19. Handler Integration and Escalation | v1.7 | 0/1 | Not started | - |
 | 20. Routing Observability | v1.7 | 0/? | Not started | - |
