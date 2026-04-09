@@ -241,6 +241,7 @@ CREATE TABLE pending_settlements (
 - **v1.4** -- Resilience and compatibility: per-provider circuit breakers (Closed/Open/Half-Open with DashMap registry, watch-based probe signaling, RAII ProbeGuard), enhanced `/health` endpoint with per-provider state, graceful shutdown (SIGINT/SIGTERM), handler refactor (extracted shared routing/logging/circuit-breaker logic from streaming/non-streaming paths), `#[serde(flatten)]` passthrough for unknown OpenAI fields (`tools`, `tool_choice`, `response_format`, `seed`, etc.), `MessageContent` enum for multimodal content (string or content-part arrays)
 - **v1.5** -- Hardening: bounded DB writer (mpsc channel, capacity 1024, backpressure via `try_send`), database indexes on `model`/`provider`/`timestamp`/`correlation_id`, configurable rate limiting (`rate_limit_rps` via `tower::limit::RateLimitLayer` + `BufferLayer`), optional bearer token authentication on proxy endpoints (`auth_token` in `[server]` config)
 - **v1.6** -- Vault treasury integration: per-request billing via reserve/settle/release against arbstr vault, `VaultClient` with retry and exponential backoff, pending settlement persistence (`pending_settlements` table) for fault tolerance, `POST /v1/cost` endpoint for pre-request cost estimation, Docker Compose full-stack deployment (core + vault + LND + Cashu mint), `.env.example` for node secrets
+- **v1.7** -- Intelligent complexity routing: provider `tier` field (local/standard/frontier) with `[routing]` config, heuristic complexity scorer with 5 configurable weighted signals (`src/router/complexity.rs`), tier-aware `select_candidates` with `max_tier` parameter, `X-Arbstr-Complexity` header override (high/medium/low), automatic one-way tier escalation on circuit break, complexity score + tier surfaced in response headers/SSE metadata/request log DB, `group_by=tier` stats endpoint
 
 ## Key Files
 
@@ -264,7 +265,8 @@ src/
 │   └── types.rs         # OpenAI-compatible request/response types, MessageContent enum
 ├── router/
 │   ├── mod.rs
-│   └── selector.rs      # Provider selection (cheapest, policy constraints)
+│   ├── complexity.rs    # Heuristic complexity scorer (5 weighted signals → Tier)
+│   └── selector.rs      # Provider selection (cheapest, policy constraints, tier-aware)
 └── storage/
     ├── mod.rs
     ├── writer.rs        # Bounded channel DB writer (mpsc, backpressure via try_send)
@@ -279,6 +281,7 @@ tests/
 ├── logs.rs              # Integration tests for /v1/requests endpoint (20 tests)
 ├── health.rs            # Integration tests for /health endpoint (8 tests)
 ├── circuit_integration.rs # Integration tests for circuit breaker routing (9 tests)
+├── escalation.rs        # Integration tests for tier escalation on circuit break
 └── cost.rs              # Integration tests for /v1/cost endpoint
 migrations/
 └── *.sql                # Embedded SQLite schema migrations (including pending_settlements)

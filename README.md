@@ -33,6 +33,7 @@ Routstr is a decentralized LLM marketplace where multiple providers offer the sa
 - **Multi-provider routing** -- automatically selects the cheapest available provider
 - **Circuit breakers** -- per-provider circuit breakers (Closed/Open/Half-Open) with automatic recovery probing; `/health` endpoint reflects per-provider state (`ok`, `degraded`, `unhealthy`)
 - **Streaming observability** -- SSE stream interception extracts token counts and cost from streaming responses; trailing SSE event surfaces arbstr metadata (cost, latency) to clients
+- **Intelligent complexity routing** -- heuristic complexity scorer analyzes requests across 5 weighted signals, routes to the cheapest provider tier (local/standard/frontier) that fits the task; `X-Arbstr-Complexity` header for manual override; automatic one-way tier escalation on circuit break
 - **Policy engine** -- constrain routing by allowed models, max cost, and strategy
 - **Keyword heuristics** -- automatic policy matching based on message content
 - **Secret management** -- API keys protected by SecretString with zeroize-on-drop; never exposed in logs, debug output, or API responses
@@ -101,6 +102,7 @@ name = "provider-alpha"
 url = "https://alpha.routstr.example/v1"
 api_key = "${ALPHA_KEY}"       # env var reference (recommended)
 models = ["gpt-4o", "claude-3.5-sonnet"]
+tier = "frontier"              # local | standard | frontier
 input_rate = 10                # sats per 1k input tokens
 output_rate = 30               # sats per 1k output tokens
 base_fee = 1                   # per-request base fee in sats
@@ -110,8 +112,14 @@ name = "provider-beta"
 url = "https://beta.routstr.example/v1"
 # api_key omitted -- arbstr auto-checks ARBSTR_PROVIDER_BETA_API_KEY
 models = ["gpt-4o", "gpt-4o-mini"]
+tier = "standard"
 input_rate = 8
 output_rate = 35
+
+# Complexity routing (optional — controls tier selection thresholds)
+# [routing]
+# standard_threshold = 0.4    # score >= this → standard tier
+# frontier_threshold = 0.7    # score >= this → frontier tier
 
 # Routing policies
 [policies]
@@ -200,6 +208,7 @@ arbstr providers [OPTIONS]      List configured providers
 | `GET /v1/models` | List available models across all providers |
 | `GET /v1/stats` | Aggregate cost/performance stats with time range and model/provider filtering |
 | `GET /v1/stats?group_by=model` | Per-model stats breakdown |
+| `GET /v1/stats?group_by=tier` | Per-tier (local/standard/frontier) stats breakdown |
 | `GET /v1/requests` | Paginated request log listing with filtering and sorting |
 | `POST /v1/cost` | Estimate request cost before sending (input/output token counts and sats) |
 | `GET /health` | Health check |
@@ -226,6 +235,7 @@ cargo fmt && cargo clippy -- -D warnings  # Format and lint
 | **v1.4** | Resilience and compatibility -- per-provider circuit breakers with health endpoint, graceful shutdown, unknown field passthrough for full OpenAI API compatibility, multimodal message content support | Shipped |
 | **v1.5** | Hardening -- bounded DB writer, database indexes, configurable rate limiting, optional bearer token authentication | Shipped |
 | **v1.6** | Vault treasury integration -- per-request billing via reserve/settle/release, pending settlement reconciliation, Docker Compose full-stack deployment, cost estimation endpoint | Shipped |
+| **v1.7** | Intelligent complexity routing -- provider tier system (local/standard/frontier), heuristic complexity scorer with 5 weighted signals, tier-aware routing with configurable thresholds, header override, circuit-break tier escalation, complexity observability across headers/SSE/DB/stats | Shipped |
 
 ## Deployment
 
