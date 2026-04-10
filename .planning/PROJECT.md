@@ -87,8 +87,11 @@ Route inference to the cheapest qualified provider and settle in bitcoin — Nic
 - ✓ mesh-llm provider with auto_discover config and startup model polling — v2.0
 - ✓ Docker Compose deployment with full-stack startup and health checks — v2.0
 
+- ✓ arbstr.com landing page — dark theme, getting started guide, anti-token manifesto — v2.0
+
 ### Active
-- [ ] arbstr.com landing page — marketplace positioning, anti-token manifesto, getting started guide
+
+No active requirements — v2.0 milestone complete.
 
 ### Future
 
