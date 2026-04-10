@@ -86,7 +86,7 @@ See: .planning/milestones/v1.7-ROADMAP.md for full details.
 
 - [x] **Phase 21: Vault Billing Wiring** - End-to-end reserve/settle/release flow with agent token auth (completed 2026-04-09)
 - [x] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery (completed 2026-04-09)
-- [ ] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment
+- [x] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment (completed 2026-04-10)
 - [ ] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery
 - [ ] **Phase 25: Landing Page** - arbstr.com with marketplace positioning and getting started guide
 
@@ -128,11 +128,11 @@ Plans:
   1. Multi-stage Dockerfile produces a slim arbstr core image (builder stage + runtime stage)
   2. docker compose up from empty volumes starts lnd, mint, vault, and core in correct dependency order with health checks
   3. A chat completion request through the composed stack returns a successful response with billing headers
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
-- [ ] 23-01-PLAN.md -- Multi-stage Dockerfile, .dockerignore, and sqlx offline metadata for arbstr core
-- [ ] 23-02-PLAN.md -- Update arbstr-node docker-compose.yml with GHCR image and verify full-stack startup
+- [x] 23-01-PLAN.md -- Multi-stage Dockerfile, .dockerignore, and sqlx offline metadata for arbstr core
+- [x] 23-02-PLAN.md -- Update arbstr-node docker-compose.yml with GHCR image and verify full-stack startup
 
 ### Phase 24: mesh-llm Provider
 **Goal**: mesh-llm nodes on localhost are usable as zero-cost local-tier providers with automatic model discovery
@@ -170,6 +170,6 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 |-------|-----------|----------------|--------|-----------|
 | 21. Vault Billing Wiring | v2.0 | 2/2 | Complete    | 2026-04-09 |
 | 22. Vault Fault Tolerance | v2.0 | 1/1 | Complete    | 2026-04-09 |
-| 23. Docker Deployment | v2.0 | 0/2 | Not started | - |
+| 23. Docker Deployment | v2.0 | 2/2 | Complete   | 2026-04-10 |
 | 24. mesh-llm Provider | v2.0 | 0/TBD | Not started | - |
 | 25. Landing Page | v2.0 | 0/TBD | Not started | - |
