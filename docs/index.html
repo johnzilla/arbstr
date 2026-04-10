@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>arbstr — NiceHash for AI inference</title>
+  <meta name="description" content="Open-source inference marketplace. Route AI compute to the cheapest provider. Settle in bitcoin.">
+  <meta property="og:title" content="arbstr — NiceHash for AI inference">
+  <meta property="og:description" content="Open-source inference marketplace. Route AI compute to the cheapest provider. Settle in bitcoin.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://arbstr.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="hero" id="hero">
+    <div class="container">
+      <h1>arbstr</h1>
+      <p class="tagline">NiceHash for AI inference</p>
+      <p class="sub-tagline">Route AI compute to the cheapest qualified provider. Settle in bitcoin over Lightning.</p>
+      <div class="cta-buttons">
+        <a href="#getting-started" class="btn btn-primary">Get Started</a>
+        <a href="https://github.com/johnzilla/arbstr" class="btn btn-outline">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <section class="how-it-works" id="how-it-works">
+      <div class="container">
+        <h2>How It Works</h2>
+        <div class="steps">
+          <div class="step">
+            <span class="step-number">1</span>
+            <h3>Your App</h3>
+            <p>Any OpenAI-compatible client sends a request</p>
+          </div>
+          <div class="step">
+            <span class="step-number">2</span>
+            <h3>arbstr routes</h3>
+            <p>Scores complexity, matches policy, picks cheapest provider</p>
+          </div>
+          <div class="step">
+            <span class="step-number">3</span>
+            <h3>Provider responds</h3>
+            <p>Inference runs on the optimal node (local, cloud, or mesh)</p>
+          </div>
+          <div class="step">
+            <span class="step-number">4</span>
+            <h3>Bitcoin settles</h3>
+            <p>Actual cost settled in sats via Lightning/Cashu — no tokens, no subscriptions</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="manifesto" id="manifesto">
+      <div class="container">
+        <h2>The Manifesto</h2>
+        <p class="manifesto-lead">No tokens. No staking. No governance theater. Just sats.</p>
+        <p class="manifesto-body">Every other AI marketplace invents a token. We use bitcoin — the money that already works. arbstr settles inference costs in satoshis over Lightning. Providers get paid. Buyers pay fair price. No middleman token skimming value.</p>
+      </div>
+    </section>
+
+    <section class="getting-started" id="getting-started">
+      <div class="container">
+        <h2>Get Started</h2>
+        <p>Run your own inference marketplace in under a minute.</p>
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+          </div>
+          <pre><code>git clone https://github.com/johnzilla/arbstr-node &amp;&amp; cd arbstr-node
+cp .env.example .env  <span class="comment"># edit with your secrets</span>
+docker compose up</code></pre>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+          </div>
+          <pre><code>curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-agent-token" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'</code></pre>
+        </div>
+        <p>See the <a href="https://github.com/johnzilla/arbstr-node#readme">full documentation on GitHub</a>.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>arbstr is an open-source inference marketplace routing AI compute to the cheapest provider with Bitcoin settlement.</p>
+      <p class="footer-links">
+        <a href="https://github.com/johnzilla/arbstr">GitHub</a>
+        <span class="separator">&middot;</span>
+        <a href="https://github.com/johnzilla/arbstr/blob/main/LICENSE">MIT License</a>
+      </p>
+      <p class="copyright">&copy; 2026 arbstr contributors</p>
+    </div>
+  </footer>
+
+</body>
+</html>
