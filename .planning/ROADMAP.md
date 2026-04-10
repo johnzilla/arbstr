@@ -145,7 +145,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 24-01-PLAN.md -- [to be planned]
+- [ ] 24-01-PLAN.md -- Add auto_discover config field, discovery function, server integration, and arbstr-node mesh-llm config template
 
 ### Phase 25: Landing Page
 **Goal**: arbstr.com communicates the marketplace vision and gets developers started
@@ -171,5 +171,5 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 | 21. Vault Billing Wiring | v2.0 | 2/2 | Complete    | 2026-04-09 |
 | 22. Vault Fault Tolerance | v2.0 | 1/1 | Complete    | 2026-04-09 |
 | 23. Docker Deployment | v2.0 | 2/2 | Complete   | 2026-04-10 |
-| 24. mesh-llm Provider | v2.0 | 0/TBD | Not started | - |
+| 24. mesh-llm Provider | v2.0 | 0/1 | Not started | - |
 | 25. Landing Page | v2.0 | 0/TBD | Not started | - |
