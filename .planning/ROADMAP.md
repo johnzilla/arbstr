@@ -87,7 +87,7 @@ See: .planning/milestones/v1.7-ROADMAP.md for full details.
 - [x] **Phase 21: Vault Billing Wiring** - End-to-end reserve/settle/release flow with agent token auth (completed 2026-04-09)
 - [x] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery (completed 2026-04-09)
 - [x] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment (completed 2026-04-10)
-- [ ] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery
+- [x] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery (completed 2026-04-10)
 - [ ] **Phase 25: Landing Page** - arbstr.com with marketplace positioning and getting started guide
 
 ## Phase Details
@@ -142,10 +142,10 @@ Plans:
   1. mesh-llm endpoint at localhost:9337 is configurable as a provider with tier=local and zero-cost rates
   2. On startup, arbstr polls mesh-llm /v1/models and auto-populates the provider's available model list
   3. Docker Compose core service can reach mesh-llm running on the host via extra_hosts configuration
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
-- [ ] 24-01-PLAN.md -- Add auto_discover config field, discovery function, server integration, and arbstr-node mesh-llm config template
+- [x] 24-01-PLAN.md -- Add auto_discover config field, discovery function, server integration, and arbstr-node mesh-llm config template
 
 ### Phase 25: Landing Page
 **Goal**: arbstr.com communicates the marketplace vision and gets developers started
@@ -171,5 +171,5 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 | 21. Vault Billing Wiring | v2.0 | 2/2 | Complete    | 2026-04-09 |
 | 22. Vault Fault Tolerance | v2.0 | 1/1 | Complete    | 2026-04-09 |
 | 23. Docker Deployment | v2.0 | 2/2 | Complete   | 2026-04-10 |
-| 24. mesh-llm Provider | v2.0 | 0/1 | Not started | - |
+| 24. mesh-llm Provider | v2.0 | 1/1 | Complete    | 2026-04-10 |
 | 25. Landing Page | v2.0 | 0/TBD | Not started | - |
