@@ -88,7 +88,7 @@ See: .planning/milestones/v1.7-ROADMAP.md for full details.
 - [x] **Phase 22: Vault Fault Tolerance** - Pending settlement persistence and crash recovery (completed 2026-04-09)
 - [x] **Phase 23: Docker Deployment** - Multi-stage Dockerfile and compose full-stack deployment (completed 2026-04-10)
 - [x] **Phase 24: mesh-llm Provider** - mesh-llm as first-class provider with model auto-discovery (completed 2026-04-10)
-- [ ] **Phase 25: Landing Page** - arbstr.com with marketplace positioning and getting started guide
+- [x] **Phase 25: Landing Page** - arbstr.com with marketplace positioning and getting started guide (completed 2026-04-10)
 
 ## Phase Details
 
@@ -155,10 +155,10 @@ Plans:
   1. arbstr.com loads with marketplace positioning (NiceHash for AI inference) and anti-token manifesto
   2. Getting started guide shows how to run arbstr-node with docker compose up
   3. Page links to GitHub repo and explains the Bitcoin-native settlement model
-**Plans:** 1/1 plans
+**Plans:** 1/1 plans complete
 
 Plans:
-- [ ] 25-01-PLAN.md -- Static landing page with hero, how-it-works, manifesto, and getting started sections
+- [x] 25-01-PLAN.md -- Static landing page with hero, how-it-works, manifesto, and getting started sections
 **UI hint**: yes
 
 ## Progress
@@ -172,4 +172,4 @@ Phases execute in numeric order: 21 -> 22 -> 23 -> 24 -> 25
 | 22. Vault Fault Tolerance | v2.0 | 1/1 | Complete    | 2026-04-09 |
 | 23. Docker Deployment | v2.0 | 2/2 | Complete   | 2026-04-10 |
 | 24. mesh-llm Provider | v2.0 | 1/1 | Complete    | 2026-04-10 |
-| 25. Landing Page | v2.0 | 0/TBD | Not started | - |
+| 25. Landing Page | v2.0 | 1/1 | Complete    | 2026-04-10 |
