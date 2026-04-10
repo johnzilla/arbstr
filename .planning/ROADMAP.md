@@ -155,10 +155,10 @@ Plans:
   1. arbstr.com loads with marketplace positioning (NiceHash for AI inference) and anti-token manifesto
   2. Getting started guide shows how to run arbstr-node with docker compose up
   3. Page links to GitHub repo and explains the Bitcoin-native settlement model
-**Plans:** 1 plan
+**Plans:** 1/1 plans
 
 Plans:
-- [ ] 25-01-PLAN.md -- [to be planned]
+- [ ] 25-01-PLAN.md -- Static landing page with hero, how-it-works, manifesto, and getting started sections
 **UI hint**: yes
 
 ## Progress
