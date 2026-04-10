@@ -30,11 +30,12 @@ pub async fn discover_models(providers: &mut [ProviderConfig], client: &Client) 
         let url = format!("{}/models", provider.url.trim_end_matches('/'));
         tracing::info!(provider = %provider.name, url = %url, "Discovering models");
 
-        match client
-            .get(&url)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
+        let mut request = client.get(&url).timeout(Duration::from_secs(5));
+        if let Some(ref api_key) = provider.api_key {
+            request = request.bearer_auth(api_key.expose_secret());
+        }
+
+        match request.send().await
         {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<ModelsResponse>().await {
