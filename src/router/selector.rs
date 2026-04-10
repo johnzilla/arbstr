@@ -268,6 +268,7 @@ mod tests {
                 output_rate: 15,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "expensive".to_string(),
@@ -278,6 +279,7 @@ mod tests {
                 output_rate: 30,
                 base_fee: 1,
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ]
     }
@@ -313,6 +315,7 @@ mod tests {
                 output_rate: 10,
                 base_fee: 8,
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "high-rate-no-fee".to_string(),
@@ -323,6 +326,7 @@ mod tests {
                 output_rate: 15,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ];
 
@@ -408,6 +412,7 @@ mod tests {
                 output_rate: 20,
                 base_fee: 5, // routing cost: 25
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "cheapest".to_string(),
@@ -418,6 +423,7 @@ mod tests {
                 output_rate: 10,
                 base_fee: 0, // routing cost: 10
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "pricey".to_string(),
@@ -428,6 +434,7 @@ mod tests {
                 output_rate: 40,
                 base_fee: 10, // routing cost: 50
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ];
 
@@ -453,6 +460,7 @@ mod tests {
                 output_rate: 30,
                 base_fee: 5, // routing cost: 35
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "alpha".to_string(),
@@ -463,6 +471,7 @@ mod tests {
                 output_rate: 10,
                 base_fee: 0, // routing cost: 10
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "beta".to_string(),
@@ -473,6 +482,7 @@ mod tests {
                 output_rate: 15,
                 base_fee: 2, // routing cost: 17
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ];
 
@@ -512,6 +522,7 @@ mod tests {
                 output_rate: 15,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "no-model".to_string(),
@@ -522,6 +533,7 @@ mod tests {
                 output_rate: 10,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ];
 
@@ -543,6 +555,7 @@ mod tests {
                 output_rate: 5,
                 base_fee: 0,
                 tier: Tier::Local,
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "standard-mid".to_string(),
@@ -553,6 +566,7 @@ mod tests {
                 output_rate: 15,
                 base_fee: 1,
                 tier: Tier::Standard,
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "frontier-expensive".to_string(),
@@ -563,6 +577,7 @@ mod tests {
                 output_rate: 30,
                 base_fee: 2,
                 tier: Tier::Frontier,
+                auto_discover: false,
             },
         ]
     }
@@ -618,6 +633,7 @@ mod tests {
             output_rate: 30,
             base_fee: 2,
             tier: Tier::Frontier,
+                auto_discover: false,
         }];
         let router = Router::new(providers, vec![], "cheapest".to_string());
         let result = router.select_candidates("gpt-4o", None, None, Some(Tier::Local));
@@ -652,6 +668,7 @@ mod tests {
             output_rate: 5,
             base_fee: 0,
             tier: Tier::Local,
+                auto_discover: false,
         }];
         let router = Router::new(providers, vec![], "cheapest".to_string());
         let rates = router.frontier_rates("gpt-4o");

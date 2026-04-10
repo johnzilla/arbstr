@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
+
+use super::discovery;
 use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreakerRegistry;
@@ -160,21 +162,24 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 /// Run the HTTP server.
-pub async fn run_server(config: Config) -> anyhow::Result<()> {
+pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
     let listen_addr = config.server.listen.clone();
 
-    // Create provider router
+    // Create HTTP client with reasonable defaults (needed for discovery before router init)
+    let http_client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .connect_timeout(Duration::from_secs(10))
+        .build()?;
+
+    // Discover models for auto_discover providers
+    discovery::discover_models(&mut config.providers, &http_client).await;
+
+    // Create provider router (after discovery so models are populated)
     let provider_router = ProviderRouter::new(
         config.providers.clone(),
         config.policies.rules.clone(),
         config.policies.default_strategy.clone(),
     );
-
-    // Create HTTP client with reasonable defaults
-    let http_client = Client::builder()
-        .timeout(Duration::from_secs(120))
-        .connect_timeout(Duration::from_secs(10))
-        .build()?;
 
     // Initialize database pool if configured
     let db = {

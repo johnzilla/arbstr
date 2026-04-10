@@ -282,6 +282,11 @@ pub struct ProviderConfig {
     /// Default: standard (backward compatible).
     #[serde(default)]
     pub tier: Tier,
+    /// When true, poll /v1/models on startup to discover available models.
+    /// Discovered models replace the static `models` list.
+    /// If discovery fails, falls back to the static list (or empty).
+    #[serde(default)]
+    pub auto_discover: bool,
 }
 
 /// Policies configuration.
@@ -478,6 +483,8 @@ pub struct RawProviderConfig {
     base_fee: u64,
     #[serde(default)]
     tier: Tier,
+    #[serde(default)]
+    auto_discover: bool,
 }
 
 /// Raw configuration deserialized directly from TOML.
@@ -616,6 +623,7 @@ impl Config {
                 output_rate: rp.output_rate,
                 base_fee: rp.base_fee,
                 tier: rp.tier,
+                auto_discover: rp.auto_discover,
             });
         }
 
@@ -760,6 +768,7 @@ mod tests {
             output_rate: 30,
             base_fee: 1,
             tier: Tier::default(),
+            auto_discover: false,
         };
         let debug_output = format!("{:?}", config);
         assert!(
@@ -947,6 +956,7 @@ mod tests {
                 output_rate: 0,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             }],
             policies: PoliciesConfig::default(),
             logging: LoggingConfig::default(),

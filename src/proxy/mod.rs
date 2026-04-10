@@ -3,6 +3,7 @@
 //! This module provides the OpenAI-compatible HTTP API that accepts
 //! requests and forwards them to selected providers.
 
+pub mod discovery;
 mod handlers;
 pub mod logs;
 pub mod retry;

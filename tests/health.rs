@@ -41,6 +41,7 @@ fn test_provider(name: &str) -> ProviderConfig {
         output_rate: 15,
         base_fee: 0,
         tier: Tier::default(),
+        auto_discover: false,
     }
 }
 

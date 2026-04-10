@@ -265,6 +265,7 @@ fn mock_config() -> Config {
                 output_rate: 15,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "mock-expensive".to_string(),
@@ -275,6 +276,7 @@ fn mock_config() -> Config {
                 output_rate: 30,
                 base_fee: 1,
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ],
         policies: PoliciesConfig {

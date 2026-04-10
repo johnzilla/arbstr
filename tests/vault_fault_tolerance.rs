@@ -506,6 +506,7 @@ fn setup_vault_test_app_with_db(
             output_rate: 30,
             base_fee: 1,
             tier: Tier::Standard,
+            auto_discover: false,
         }],
         policies: PoliciesConfig::default(),
         logging: Default::default(),

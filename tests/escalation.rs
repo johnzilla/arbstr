@@ -80,6 +80,7 @@ async fn tiered_providers() -> Vec<ProviderConfig> {
             output_rate: 5,
             base_fee: 0,
             tier: Tier::Local,
+            auto_discover: false,
         },
         ProviderConfig {
             name: "standard-provider".to_string(),
@@ -90,6 +91,7 @@ async fn tiered_providers() -> Vec<ProviderConfig> {
             output_rate: 15,
             base_fee: 1,
             tier: Tier::Standard,
+            auto_discover: false,
         },
         ProviderConfig {
             name: "frontier-provider".to_string(),
@@ -100,6 +102,7 @@ async fn tiered_providers() -> Vec<ProviderConfig> {
             output_rate: 30,
             base_fee: 2,
             tier: Tier::Frontier,
+            auto_discover: false,
         },
     ]
 }

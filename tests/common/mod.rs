@@ -35,6 +35,7 @@ pub fn test_provider(name: &str) -> ProviderConfig {
         output_rate: 15,
         base_fee: 0,
         tier: Tier::default(),
+        auto_discover: false,
     }
 }
 
@@ -100,6 +101,7 @@ pub fn db_test_config() -> Config {
                 output_rate: 30,
                 base_fee: 1,
                 tier: Tier::default(),
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "beta".to_string(),
@@ -110,6 +112,7 @@ pub fn db_test_config() -> Config {
                 output_rate: 15,
                 base_fee: 0,
                 tier: Tier::default(),
+                auto_discover: false,
             },
         ],
         policies: PoliciesConfig::default(),
@@ -188,6 +191,7 @@ pub fn setup_vault_test_app_with_auth(
                 output_rate: 5,
                 base_fee: 0,
                 tier: Tier::Local,
+                auto_discover: false,
             },
             ProviderConfig {
                 name: "expensive-frontier".to_string(),
@@ -198,6 +202,7 @@ pub fn setup_vault_test_app_with_auth(
                 output_rate: 30,
                 base_fee: 2,
                 tier: Tier::Frontier,
+                auto_discover: false,
             },
         ],
         policies: PoliciesConfig::default(),
@@ -264,6 +269,7 @@ pub fn setup_free_proxy_test_app(provider_url: &str) -> axum::Router {
             output_rate: 5,
             base_fee: 0,
             tier: Tier::Local,
+            auto_discover: false,
         }],
         policies: PoliciesConfig::default(),
         logging: Default::default(),

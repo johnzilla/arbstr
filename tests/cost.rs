@@ -124,6 +124,7 @@ fn provider_with_rates(
         output_rate,
         base_fee,
         tier: Tier::default(),
+        auto_discover: false,
     }
 }
 

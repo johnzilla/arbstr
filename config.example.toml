@@ -44,6 +44,7 @@ output_rate = 30  # sats per 1k output tokens
 base_fee = 1
 # Provider tier: "local", "standard" (default), or "frontier"
 tier = "standard"
+# auto_discover = false
 
 [[providers]]
 name = "example-provider-2"
@@ -55,6 +56,17 @@ input_rate = 8
 output_rate = 35
 base_fee = 0
 # tier = "local"
+# auto_discover = false
+
+# Local inference via mesh-llm or any OpenAI-compatible local server
+# Uncomment when running mesh-llm (https://github.com/michaelneale/mesh-llm)
+# [[providers]]
+# name = "mesh-local"
+# url = "http://localhost:9337/v1"
+# auto_discover = true
+# tier = "local"
+# input_rate = 0
+# output_rate = 0
 
 # Routing policies
 [policies]
