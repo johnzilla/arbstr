@@ -84,10 +84,10 @@ Route inference to the cheapest qualified provider and settle in bitcoin — Nic
 - ✓ Free proxy mode preserved when vault absent — v2.0
 - ✓ Mock vault integration tests (9 tests) — v2.0
 - ✓ Vault fault tolerance — eviction after 10 attempts, 5 fault tolerance tests — v2.0
+- ✓ mesh-llm provider with auto_discover config and startup model polling — v2.0
+- ✓ Docker Compose deployment with full-stack startup and health checks — v2.0
 
 ### Active
-- [ ] mesh-llm provider support — localhost:9337 as a first-class provider type with auto-discovery
-- [ ] arbstr-node Docker Compose deployment — core + vault + LND + Cashu mint in one `docker compose up`
 - [ ] arbstr.com landing page — marketplace positioning, anti-token manifesto, getting started guide
 
 ### Future
