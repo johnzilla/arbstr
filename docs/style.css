@@ -356,3 +356,9 @@ code, pre {
     padding: 3rem 0;
   }
 }
+
+.wip-notice {
+  color: #888;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
