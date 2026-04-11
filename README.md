@@ -2,6 +2,8 @@
 
 **NiceHash for AI inference** — an open marketplace for buying and selling AI compute, settled in Bitcoin.
 
+> **Work in Progress** -- arbstr is under active development. APIs, configuration formats, and behavior may change between releases. It is not yet recommended for production use with real funds. Contributions and feedback are welcome.
+
 arbstr routes AI inference requests to the cheapest qualified provider and settles payment in bitcoin over Lightning. It combines a Rust routing engine with a treasury service into a single deployable stack. Providers include [mesh-llm](https://docs.anarchai.org) nodes, Routstr endpoints, Ollama instances, or any OpenAI-compatible API. No tokens — just sats.
 
 ```mermaid
