@@ -1,8 +1,8 @@
 # arbstr
 
-Intelligent LLM routing and cost arbitrage for the [Routstr](https://routstr.com) decentralized marketplace.
+**NiceHash for AI inference** — an open marketplace for buying and selling AI compute, settled in Bitcoin.
 
-arbstr is a local proxy that sits between your applications and LLM providers on the Routstr marketplace. It automatically selects the cheapest provider for each request while respecting your quality and policy constraints.
+arbstr routes AI inference requests to the cheapest qualified provider and settles payment in bitcoin over Lightning. It combines a Rust routing engine with a treasury service into a single deployable stack. Providers include [mesh-llm](https://docs.anarchai.org) nodes, Routstr endpoints, Ollama instances, or any OpenAI-compatible API. No tokens — just sats.
 
 ```mermaid
 flowchart LR
@@ -24,29 +24,21 @@ flowchart LR
     Apps --> Arbstr --> Routstr
 ```
 
-Routstr is a decentralized LLM marketplace where multiple providers offer the same models at different rates (priced in satoshis). arbstr exploits these price spreads automatically.
+Multiple providers offer the same models at different rates (priced in satoshis). arbstr exploits these price spreads automatically — free when your local GPU handles it, cheapest cloud provider when it can't.
 
 ## Features
 
-- **OpenAI-compatible API** -- drop-in replacement proxy (`/v1/chat/completions`, `/v1/models`); unknown request fields (`tools`, `tool_choice`, `response_format`, `seed`, etc.) are forwarded to providers unchanged
-- **Multimodal support** -- message `content` accepts both plain strings and content-part arrays (images, audio) per the OpenAI spec
-- **Multi-provider routing** -- automatically selects the cheapest available provider
-- **Circuit breakers** -- per-provider circuit breakers (Closed/Open/Half-Open) with automatic recovery probing; `/health` endpoint reflects per-provider state (`ok`, `degraded`, `unhealthy`)
-- **Streaming observability** -- SSE stream interception extracts token counts and cost from streaming responses; trailing SSE event surfaces arbstr metadata (cost, latency) to clients
-- **Intelligent complexity routing** -- heuristic complexity scorer analyzes requests across 5 weighted signals, routes to the cheapest provider tier (local/standard/frontier) that fits the task; `X-Arbstr-Complexity` header for manual override; automatic one-way tier escalation on circuit break
-- **Policy engine** -- constrain routing by allowed models, max cost, and strategy
-- **Keyword heuristics** -- automatic policy matching based on message content
-- **Secret management** -- API keys protected by SecretString with zeroize-on-drop; never exposed in logs, debug output, or API responses
-- **Environment variable expansion** -- use `${VAR}` syntax or omit `api_key` for convention-based `ARBSTR_<NAME>_API_KEY` auto-discovery
-- **Config hygiene warnings** -- file permission checks, plaintext key warnings with actionable suggestions
-- **Cost querying API** -- GET /v1/stats for aggregate cost/performance data with time range presets and model/provider filtering; GET /v1/requests for paginated request log browsing with sorting
-- **Graceful shutdown** -- handles SIGINT/SIGTERM to drain in-flight requests and database writes before exiting
-- **Rate limiting** -- optional global rate limit (`rate_limit_rps` in config) to protect endpoints from excessive load
-- **Bearer token auth** -- optional `auth_token` in config; when set, `/v1/chat/completions` and `/v1/models` require `Authorization: Bearer <token>`
-- **Vault treasury integration** -- optional per-request billing via reserve/settle/release against an arbstr vault instance; reserve before routing, settle on success, release on failure; pending settlement reconciliation for fault tolerance
-- **Docker Compose stack** -- full-stack deployment with arbstr core, vault treasury, Lightning (LND), and Cashu mint services
-- **Bounded DB writer** -- database writes use a bounded channel (capacity 1024) with backpressure instead of unbounded fire-and-forget spawns
-- **Per-request correlation IDs** -- UUID tracing for every request through the system
+- **OpenAI-compatible API** -- drop-in replacement proxy (`/v1/chat/completions`, `/v1/models`); unknown request fields forwarded unchanged
+- **Multi-provider routing** -- selects the cheapest available provider per request
+- **Auto-discovery** -- providers with `auto_discover = true` have their model lists populated from `/v1/models` at startup (mesh-llm, Ollama, any OpenAI-compatible endpoint)
+- **Intelligent complexity routing** -- heuristic scorer routes simple requests to local/free providers, complex ones to frontier; automatic tier escalation on circuit break
+- **Vault billing** -- per-request reserve/settle/release against arbstr vault; Bitcoin settlement via Lightning; fault-tolerant with pending settlement persistence
+- **Circuit breakers** -- per-provider Closed/Open/Half-Open with automatic recovery probing
+- **Streaming observability** -- SSE token extraction, trailing cost events, post-stream DB updates
+- **Policy engine** -- constrain routing by allowed models, max cost, and strategy; keyword heuristics for auto-matching
+- **Secret management** -- SecretString API keys with zeroize-on-drop; env var expansion; convention-based key discovery
+- **Cost querying API** -- aggregate stats, time range filtering, paginated request logs
+- **Docker Compose stack** -- full-stack deployment: core + vault + Lightning (LND) + Cashu mint
 - **Mock mode** -- test locally without real provider API calls
 
 ## Quick Start
@@ -97,6 +89,15 @@ listen = "127.0.0.1:8080"
 # pending_threshold = 100         # max pending settlements before rejecting
 
 # Providers -- rates in satoshis per 1000 tokens
+# mesh-llm local inference (uncomment when mesh-llm is running)
+# [[providers]]
+# name = "mesh-local"
+# url = "http://localhost:9337/v1"
+# auto_discover = true         # polls /v1/models at startup
+# tier = "local"
+# input_rate = 0
+# output_rate = 0
+
 [[providers]]
 name = "provider-alpha"
 url = "https://alpha.routstr.example/v1"
@@ -228,14 +229,15 @@ cargo fmt && cargo clippy -- -D warnings  # Format and lint
 
 | Version | Description | Status |
 |---------|-------------|--------|
-| **v1** | Reliability and observability -- retry with fallback, SQLite logging, response metadata headers, cost calculation | Shipped |
-| **v1.1** | Secrets hardening -- SecretString API keys, env var expansion, convention-based key discovery, output surface hardening | Shipped |
-| **v1.2** | Streaming observability -- SSE token extraction, post-stream DB updates, trailing cost events, stream duration tracking | Shipped |
-| **v1.3** | Cost querying API -- aggregate stats, time range filtering, paginated request log listing with sorting | Shipped |
-| **v1.4** | Resilience and compatibility -- per-provider circuit breakers with health endpoint, graceful shutdown, unknown field passthrough for full OpenAI API compatibility, multimodal message content support | Shipped |
-| **v1.5** | Hardening -- bounded DB writer, database indexes, configurable rate limiting, optional bearer token authentication | Shipped |
-| **v1.6** | Vault treasury integration -- per-request billing via reserve/settle/release, pending settlement reconciliation, Docker Compose full-stack deployment, cost estimation endpoint | Shipped |
-| **v1.7** | Intelligent complexity routing -- provider tier system (local/standard/frontier), heuristic complexity scorer with 5 weighted signals, tier-aware routing with configurable thresholds, header override, circuit-break tier escalation, complexity observability across headers/SSE/DB/stats | Shipped |
+| **v1** | Reliability and observability -- retry with fallback, SQLite logging, response metadata | Shipped |
+| **v1.1** | Secrets hardening -- SecretString API keys, env var expansion, key auto-discovery | Shipped |
+| **v1.2** | Streaming observability -- SSE token extraction, trailing cost events, stream duration | Shipped |
+| **v1.3** | Cost querying API -- aggregate stats, time range filtering, paginated request logs | Shipped |
+| **v1.4** | Resilience -- circuit breakers, graceful shutdown, OpenAI field passthrough, multimodal | Shipped |
+| **v1.5** | Hardening -- bounded DB writer, indexes, rate limiting, bearer token auth | Shipped |
+| **v1.6** | Vault treasury -- reserve/settle/release billing, pending settlement reconciliation | Shipped |
+| **v1.7** | Complexity routing -- tier system, heuristic scorer, tier-aware routing, escalation | Shipped |
+| **v2.0** | Inference marketplace -- vault billing wiring, mesh-llm auto-discovery, Docker Compose deployment, arbstr.com landing page | Shipped |
 
 ## Deployment
 
@@ -248,17 +250,22 @@ cargo build --release
 
 ### Full stack (with billing)
 
-The `docker-compose.yml` runs the complete arbstr node: core routing engine, vault treasury, Lightning (LND), and Cashu mint.
+Use [arbstr-node](https://github.com/johnzilla/arbstr-node) for the complete stack: core routing engine, vault treasury, Lightning (LND), and Cashu mint.
 
 ```bash
+git clone https://github.com/johnzilla/arbstr-node && cd arbstr-node
 cp .env.example .env   # fill in secrets
-docker compose up -d
+docker compose up
 ```
+
+Your inference proxy is live at `http://localhost:8080`. See [arbstr.com](https://arbstr.com) for the full getting started guide.
 
 ## Related Projects
 
+- [arbstr-node](https://github.com/johnzilla/arbstr-node) -- Full-stack deployment (core + vault + LND + Cashu mint)
+- [arbstr-vault](https://github.com/johnzilla/arbstr-vault) -- Treasury service for Bitcoin settlement
+- [mesh-llm](https://docs.anarchai.org) -- Distributed P2P inference network (local provider)
 - [Routstr](https://routstr.com) -- Decentralized LLM marketplace
-- [routstr-core](https://github.com/Routstr/routstr-core) -- Core Routstr implementation
 
 ## Contributing
 

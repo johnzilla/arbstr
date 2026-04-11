@@ -247,6 +247,7 @@ CREATE TABLE pending_settlements (
 - **v1.5** -- Hardening: bounded DB writer (mpsc channel, capacity 1024, backpressure via `try_send`), database indexes on `model`/`provider`/`timestamp`/`correlation_id`, configurable rate limiting (`rate_limit_rps` via `tower::limit::RateLimitLayer` + `BufferLayer`), optional bearer token authentication on proxy endpoints (`auth_token` in `[server]` config)
 - **v1.6** -- Vault treasury integration: per-request billing via reserve/settle/release against arbstr vault, `VaultClient` with retry and exponential backoff, pending settlement persistence (`pending_settlements` table) for fault tolerance, `POST /v1/cost` endpoint for pre-request cost estimation, Docker Compose full-stack deployment (core + vault + LND + Cashu mint), `.env.example` for node secrets
 - **v1.7** -- Intelligent complexity routing: provider `tier` field (local/standard/frontier) with `[routing]` config, heuristic complexity scorer with 5 configurable weighted signals (`src/router/complexity.rs`), tier-aware `select_candidates` with `max_tier` parameter, `X-Arbstr-Complexity` header override (high/medium/low), automatic one-way tier escalation on circuit break, complexity score + tier surfaced in response headers/SSE metadata/request log DB, `group_by=tier` stats endpoint
+- **v2.0** -- Inference Marketplace Foundation: vault billing wiring (reserve/settle/release per inference request with frontier-tier reserve pricing), vault fault tolerance (pending settlement persistence and background reconciliation), Docker Compose full-stack deployment (core + vault + LND + Cashu mint), mesh-llm auto-discovery (`auto_discover` config field, startup `/v1/models` polling, zero-cost local-tier routing), arbstr.com landing page (static HTML/CSS, dark theme, GitHub Pages)
 
 ## Key Files
 
@@ -266,6 +267,7 @@ src/
 │   ├── stats.rs         # /v1/stats handler, time range resolution, StatsQuery/StatsResponse
 │   ├── logs.rs          # /v1/requests handler, pagination, LogsQuery/LogsResponse/LogEntry
 │   ├── vault.rs         # Vault treasury client (reserve/settle/release, pending settlement persistence)
+│   ├── discovery.rs     # Model auto-discovery (startup /v1/models polling for auto_discover providers)
 │   ├── validation.rs    # Shared model/provider filter validation
 │   └── types.rs         # OpenAI-compatible request/response types, MessageContent enum
 ├── router/
@@ -287,9 +289,14 @@ tests/
 ├── health.rs            # Integration tests for /health endpoint (8 tests)
 ├── circuit_integration.rs # Integration tests for circuit breaker routing (9 tests)
 ├── escalation.rs        # Integration tests for tier escalation on circuit break
-└── cost.rs              # Integration tests for /v1/cost endpoint
+├── cost.rs              # Integration tests for /v1/cost endpoint
+└── discovery.rs         # Integration tests for auto-discover model polling (6 tests)
 migrations/
 └── *.sql                # Embedded SQLite schema migrations (including pending_settlements)
+docs/
+├── index.html           # arbstr.com landing page (static, GitHub Pages)
+├── style.css            # Dark theme with Bitcoin orange accent
+└── CNAME                # Custom domain (arbstr.com)
 ```
 
 ## Environment Variables
