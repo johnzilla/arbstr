@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 Phase: 25 of 25 (landing page)
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-10
+Last activity: 2026-04-11 - Completed quick task 260411-a8c: Add WIP disclaimer to README and landing page
 
 Progress: [..........] 0%
 
@@ -67,6 +67,7 @@ None.
 | 4 | Add tracing-based panic hook for production observability | 2026-03-03 | 87e9b95 | [4-add-tracing-based-panic-hook-for-product](./quick/4-add-tracing-based-panic-hook-for-product/) |
 | 5 | Refactor mutex .unwrap() in circuit_breaker.rs | 2026-03-08 | 1ecb789 | [5-refactor-expect-calls-in-stream-retry-to](./quick/5-refactor-expect-calls-in-stream-retry-to/) |
 | 6 | Reorganize developer docs (DEVELOPMENT.md, CONTRIBUTING.md) | 2026-03-08 | b56cdbd | [6-reorganize-developer-docs-development-md](./quick/6-reorganize-developer-docs-development-md/) |
+| 260411-a8c | Add WIP disclaimer to README and landing page | 2026-04-11 | d107fca | [260411-a8c-add-work-in-progress-disclaimer-to-readm](./quick/260411-a8c-add-work-in-progress-disclaimer-to-readm/) |
 
 ## Session Continuity
 
