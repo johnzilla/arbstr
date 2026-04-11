@@ -8,15 +8,11 @@ arbstr is an open-source inference marketplace that routes AI compute requests t
 
 Route inference to the cheapest qualified provider and settle in bitcoin — NiceHash for AI inference.
 
-## Current Milestone: v2.0 Inference Marketplace Foundation
+## Latest Milestone: v2.0 Inference Marketplace Foundation (Shipped 2026-04-10)
 
-**Goal:** Wire arbstr core to arbstr vault for live billing, add mesh-llm as a provider type, ship arbstr-node deployment, and launch arbstr.com.
+**Delivered:** Vault billing, mesh-llm auto-discovery, Docker Compose deployment, arbstr.com landing page.
 
-**Target features:**
-- Live vault billing via reserve/settle/release
-- mesh-llm as a first-class provider
-- arbstr-node Docker Compose full-stack deployment
-- arbstr.com landing page with marketplace positioning
+**Next milestone:** Not yet planned. Run `/gsd-new-milestone` to start.
 
 ## Requirements
 

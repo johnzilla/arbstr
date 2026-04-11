@@ -1,5 +1,27 @@
 # Project Milestones: arbstr
 
+## v2.0 Inference Marketplace Foundation (Shipped: 2026-04-10)
+
+**Delivered:** Wired arbstr core to arbstr vault for live Bitcoin billing, added mesh-llm as a first-class local provider with auto-discovery, shipped Docker Compose full-stack deployment, and launched arbstr.com.
+
+**Phases completed:** 5 phases (21-25), 7 plans
+
+**Key accomplishments:**
+
+- Vault billing wiring — every inference request billed via reserve/settle/release against arbstr vault with frontier-tier reserve pricing
+- Vault fault tolerance — pending settlements persist to SQLite and replay via background reconciliation on restart
+- Docker Compose full-stack deployment — core + vault + LND + Cashu mint from a single `docker compose up` with health check chain
+- mesh-llm auto-discovery — generic `auto_discover` config field, startup `/v1/models` polling, zero-cost local-tier routing
+- arbstr.com landing page — dark theme with Bitcoin orange, marketplace positioning, anti-token manifesto, getting started guide
+
+**Stats:**
+
+- 10,258 lines of Rust + 3 landing page files (HTML/CSS)
+- 268 automated tests, zero clippy warnings
+- 2 days from start to ship (2026-04-09 → 2026-04-10)
+
+---
+
 ## v1.7 Intelligent Complexity Routing (Shipped: 2026-04-09)
 
 **Phases completed:** 5 phases, 7 plans, 13 tasks
