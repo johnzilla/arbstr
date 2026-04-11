@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 Phase: 25 of 25 (landing page)
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-04-11 - Completed quick task 260411-a8c: Add WIP disclaimer to README and landing page
+Last activity: 2026-04-11 - Completed quick task 260411-afb: Fix landing page GitHub docs link
 
 Progress: [..........] 0%
 
@@ -68,6 +68,7 @@ None.
 | 5 | Refactor mutex .unwrap() in circuit_breaker.rs | 2026-03-08 | 1ecb789 | [5-refactor-expect-calls-in-stream-retry-to](./quick/5-refactor-expect-calls-in-stream-retry-to/) |
 | 6 | Reorganize developer docs (DEVELOPMENT.md, CONTRIBUTING.md) | 2026-03-08 | b56cdbd | [6-reorganize-developer-docs-development-md](./quick/6-reorganize-developer-docs-development-md/) |
 | 260411-a8c | Add WIP disclaimer to README and landing page | 2026-04-11 | d107fca | [260411-a8c-add-work-in-progress-disclaimer-to-readm](./quick/260411-a8c-add-work-in-progress-disclaimer-to-readm/) |
+| 260411-afb | Fix landing page GitHub docs link | 2026-04-11 | 95fb6e0 | [260411-afb-fix-landing-page-github-docs-link-pointi](./quick/260411-afb-fix-landing-page-github-docs-link-pointi/) |
 
 ## Session Continuity
 
