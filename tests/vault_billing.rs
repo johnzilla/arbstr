@@ -57,9 +57,7 @@ fn valid_completion_response() -> serde_json::Value {
 ///
 /// The `error_override` parameter allows specific endpoints to return error codes
 /// for testing vault error mapping. Format: Some((status_code,)) applies to /internal/reserve.
-async fn start_mock_vault(
-    error_override: Option<u16>,
-) -> (String, CallLog) {
+async fn start_mock_vault(error_override: Option<u16>) -> (String, CallLog) {
     let log: CallLog = Arc::new(Mutex::new(Vec::new()));
 
     let reserve_log = log.clone();
@@ -122,9 +120,7 @@ async fn start_mock_vault(
                         ));
                         (
                             axum::http::StatusCode::OK,
-                            axum::Json(
-                                serde_json::json!({"settled": true, "refunded_msats": 0}),
-                            ),
+                            axum::Json(serde_json::json!({"settled": true, "refunded_msats": 0})),
                         )
                     }
                 }

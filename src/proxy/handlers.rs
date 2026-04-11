@@ -312,9 +312,17 @@ async fn resolve_candidates(
                 }
                 // At Frontier, can't escalate -- return error
                 let latency_ms = ctx.start.elapsed().as_millis() as i64;
-                let message =
-                    format!("No providers match any tier for model '{}'", ctx.model);
-                log_error_to_db(state, ctx, latency_ms, None, 400, message, complexity_score, Some(current_tier.to_string()));
+                let message = format!("No providers match any tier for model '{}'", ctx.model);
+                log_error_to_db(
+                    state,
+                    ctx,
+                    latency_ms,
+                    None,
+                    400,
+                    message,
+                    complexity_score,
+                    Some(current_tier.to_string()),
+                );
                 let err = Error::NoTierMatch {
                     tier: current_tier,
                     model: ctx.model.clone(),
@@ -335,7 +343,16 @@ async fn resolve_candidates(
                 let latency_ms = ctx.start.elapsed().as_millis() as i64;
                 let status_code = routing_error_status(&e);
                 let message = e.to_string();
-                log_error_to_db(state, ctx, latency_ms, None, status_code, message, None, None);
+                log_error_to_db(
+                    state,
+                    ctx,
+                    latency_ms,
+                    None,
+                    status_code,
+                    message,
+                    None,
+                    None,
+                );
                 let mut response = e.into_response();
                 attach_arbstr_headers(
                     &mut response,
@@ -385,9 +402,17 @@ async fn resolve_candidates(
             }
             // At Frontier with all circuits open -- return 503
             let latency_ms = ctx.start.elapsed().as_millis() as i64;
-            let message =
-                format!("All providers have open circuits for model '{}'", ctx.model);
-            log_error_to_db(state, ctx, latency_ms, None, 503, message, complexity_score, Some(current_tier.to_string()));
+            let message = format!("All providers have open circuits for model '{}'", ctx.model);
+            log_error_to_db(
+                state,
+                ctx,
+                latency_ms,
+                None,
+                503,
+                message,
+                complexity_score,
+                Some(current_tier.to_string()),
+            );
             let circuit_error = Error::CircuitOpen {
                 model: ctx.model.clone(),
             };
@@ -423,7 +448,10 @@ fn spawn_vault_settle(
     db: Option<sqlx::SqlitePool>,
 ) {
     tokio::spawn(async move {
-        match vault.settle(&reservation_id, actual_msats, metadata.clone()).await {
+        match vault
+            .settle(&reservation_id, actual_msats, metadata.clone())
+            .await
+        {
             Ok(resp) => {
                 tracing::info!(
                     reservation_id = %reservation_id,
@@ -445,7 +473,9 @@ fn spawn_vault_settle(
                         amount_msats: Some(actual_msats),
                         metadata: serde_json::to_string(&metadata).unwrap_or_default(),
                     };
-                    if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                    if let Err(db_err) =
+                        super::vault::insert_pending_settlement(pool, &pending).await
+                    {
                         tracing::error!(
                             reservation_id = %reservation_id,
                             error = %db_err,
@@ -488,7 +518,9 @@ fn spawn_vault_release(
                         amount_msats: None,
                         metadata: reason.clone(),
                     };
-                    if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                    if let Err(db_err) =
+                        super::vault::insert_pending_settlement(pool, &pending).await
+                    {
                         tracing::error!(
                             reservation_id = %reservation_id,
                             error = %db_err,
@@ -547,7 +579,15 @@ pub async fn chat_completions(
             _ => None, // D-12: invalid -> fall through to scorer
         });
 
-    let resolved = match resolve_candidates(&state, &ctx, user_prompt, &request.messages, complexity_override).await {
+    let resolved = match resolve_candidates(
+        &state,
+        &ctx,
+        user_prompt,
+        &request.messages,
+        complexity_override,
+    )
+    .await
+    {
         Ok(r) => r,
         Err(response) => return Ok(response),
     };
@@ -571,13 +611,16 @@ pub async fn chat_completions(
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::to_vec(&serde_json::json!({
-                    "error": {
-                        "message": "Payment service temporarily unavailable",
-                        "type": "server_error",
-                        "code": "vault_backpressure"
-                    }
-                })).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "error": {
+                            "message": "Payment service temporarily unavailable",
+                            "type": "server_error",
+                            "code": "vault_backpressure"
+                        }
+                    }))
+                    .unwrap(),
+                ))
                 .unwrap());
         }
 
@@ -604,13 +647,16 @@ pub async fn chat_completions(
                 return Ok(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&serde_json::json!({
-                        "error": {
-                            "message": "Authorization: Bearer <token> required",
-                            "type": "authentication_error",
-                            "code": "invalid_api_key"
-                        }
-                    })).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "error": {
+                                "message": "Authorization: Bearer <token> required",
+                                "type": "authentication_error",
+                                "code": "invalid_api_key"
+                            }
+                        }))
+                        .unwrap(),
+                    ))
                     .unwrap());
             }
         };
@@ -624,10 +670,8 @@ pub async fn chat_completions(
         // This handles tier escalation safely -- if a local request escalates
         // to frontier on circuit break, the reservation already covers it.
         let (est_input, est_output) = request.estimate_tokens(vault.default_reserve_tokens);
-        let (reserve_input_rate, reserve_output_rate, reserve_base_fee) = state
-            .router
-            .frontier_rates(&ctx.model)
-            .unwrap_or_else(|| {
+        let (reserve_input_rate, reserve_output_rate, reserve_base_fee) =
+            state.router.frontier_rates(&ctx.model).unwrap_or_else(|| {
                 // Fallback to cheapest candidate if frontier_rates returns None
                 // (should not happen since we already resolved candidates)
                 let c = &resolved.candidates[0];
@@ -663,17 +707,32 @@ pub async fn chat_completions(
                     status = status_code,
                     "Vault reserve failed"
                 );
-                log_error_to_db(&state, &ctx, latency_ms, None, status_code, message.clone(), resolved.complexity_score, Some(resolved.tier.to_string()));
+                log_error_to_db(
+                    &state,
+                    &ctx,
+                    latency_ms,
+                    None,
+                    status_code,
+                    message.clone(),
+                    resolved.complexity_score,
+                    Some(resolved.tier.to_string()),
+                );
                 return Ok(Response::builder()
-                    .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+                    .status(
+                        StatusCode::from_u16(status_code)
+                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    )
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&serde_json::json!({
-                        "error": {
-                            "message": message,
-                            "type": "billing_error",
-                            "code": format!("vault_{}", status_code)
-                        }
-                    })).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "error": {
+                                "message": message,
+                                "type": "billing_error",
+                                "code": format!("vault_{}", status_code)
+                            }
+                        }))
+                        .unwrap(),
+                    ))
                     .unwrap());
             }
         }
@@ -707,7 +766,17 @@ async fn handle_streaming_path(
         .as_ref()
         .map(|name| ProbeGuard::new(&state.circuit_breakers, name.clone()));
 
-    let result = send_to_provider(&state, &request, provider, &ctx.correlation_id, true, ctx.reservation_id.clone(), resolved.complexity_score, Some(resolved.tier.to_string())).await;
+    let result = send_to_provider(
+        &state,
+        &request,
+        provider,
+        &ctx.correlation_id,
+        true,
+        ctx.reservation_id.clone(),
+        resolved.complexity_score,
+        Some(resolved.tier.to_string()),
+    )
+    .await;
 
     // Record circuit breaker outcome
     match &result {
@@ -751,7 +820,14 @@ async fn handle_streaming_path(
                 provider = %outcome.provider_name,
                 "Request routed"
             );
-            log_success_to_db(&state, &ctx, latency_ms, &outcome, resolved.complexity_score, Some(resolved.tier.to_string()));
+            log_success_to_db(
+                &state,
+                &ctx,
+                latency_ms,
+                &outcome,
+                resolved.complexity_score,
+                Some(resolved.tier.to_string()),
+            );
             let mut response = outcome.response;
             attach_arbstr_headers(
                 &mut response,
@@ -765,16 +841,16 @@ async fn handle_streaming_path(
             if let Some(score) = resolved.complexity_score {
                 let score_str = format!("{:.3}", score);
                 if let Ok(val) = HeaderValue::from_str(&score_str) {
-                    response.headers_mut().insert(
-                        HeaderName::from_static(ARBSTR_COMPLEXITY_SCORE_HEADER), val
-                    );
+                    response
+                        .headers_mut()
+                        .insert(HeaderName::from_static(ARBSTR_COMPLEXITY_SCORE_HEADER), val);
                 }
             }
             let tier_str = resolved.tier.to_string();
             if let Ok(val) = HeaderValue::from_str(&tier_str) {
-                response.headers_mut().insert(
-                    HeaderName::from_static(ARBSTR_TIER_HEADER), val
-                );
+                response
+                    .headers_mut()
+                    .insert(HeaderName::from_static(ARBSTR_TIER_HEADER), val);
             }
             Ok(response)
         }
@@ -939,7 +1015,12 @@ async fn handle_non_streaming_path(
 
             // Vault: release on timeout
             if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
-                spawn_vault_release(vault.clone(), rid.clone(), "timeout".to_string(), state.db.clone());
+                spawn_vault_release(
+                    vault.clone(),
+                    rid.clone(),
+                    "timeout".to_string(),
+                    state.db.clone(),
+                );
             }
 
             let timeout_error = Error::Provider(
@@ -966,14 +1047,18 @@ async fn handle_non_streaming_path(
                     provider = %outcome.provider_name,
                     "Request routed"
                 );
-                log_success_to_db(&state, &ctx, latency_ms, &outcome, resolved.complexity_score, Some(resolved.tier.to_string()));
+                log_success_to_db(
+                    &state,
+                    &ctx,
+                    latency_ms,
+                    &outcome,
+                    resolved.complexity_score,
+                    Some(resolved.tier.to_string()),
+                );
 
                 // Vault: async settle on success
                 if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
-                    let actual_msats = outcome
-                        .cost_sats
-                        .map(|c| (c * 1000.0) as u64)
-                        .unwrap_or(0);
+                    let actual_msats = outcome.cost_sats.map(|c| (c * 1000.0) as u64).unwrap_or(0);
                     spawn_vault_settle(
                         vault.clone(),
                         rid.clone(),
@@ -1001,16 +1086,16 @@ async fn handle_non_streaming_path(
                 if let Some(score) = resolved.complexity_score {
                     let score_str = format!("{:.3}", score);
                     if let Ok(val) = HeaderValue::from_str(&score_str) {
-                        response.headers_mut().insert(
-                            HeaderName::from_static(ARBSTR_COMPLEXITY_SCORE_HEADER), val
-                        );
+                        response
+                            .headers_mut()
+                            .insert(HeaderName::from_static(ARBSTR_COMPLEXITY_SCORE_HEADER), val);
                     }
                 }
                 let tier_str = resolved.tier.to_string();
                 if let Ok(val) = HeaderValue::from_str(&tier_str) {
-                    response.headers_mut().insert(
-                        HeaderName::from_static(ARBSTR_TIER_HEADER), val
-                    );
+                    response
+                        .headers_mut()
+                        .insert(HeaderName::from_static(ARBSTR_TIER_HEADER), val);
                 }
                 attach_retries_header(&mut response, &retries_header);
                 Ok(response)
@@ -1351,7 +1436,12 @@ async fn handle_streaming_response(
 
         // Emit trailing SSE event if client is still connected
         if client_connected {
-            let trailing = build_trailing_sse_event(cost_sats, stream_duration_ms, complexity_score, tier.clone());
+            let trailing = build_trailing_sse_event(
+                cost_sats,
+                stream_duration_ms,
+                complexity_score,
+                tier.clone(),
+            );
             let _ = tx.send(Ok(bytes::Bytes::from(trailing))).await;
         }
         // tx is dropped here, closing the channel and signaling end-of-body
@@ -1416,7 +1506,9 @@ async fn handle_streaming_response(
                                 amount_msats: Some(actual_msats),
                                 metadata: serde_json::to_string(&meta).unwrap_or_default(),
                             };
-                            if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                            if let Err(db_err) =
+                                super::vault::insert_pending_settlement(pool, &pending).await
+                            {
                                 tracing::error!(
                                     reservation_id = %rid,
                                     error = %db_err,
@@ -1448,7 +1540,9 @@ async fn handle_streaming_response(
                                 amount_msats: None,
                                 metadata: "stream_incomplete_no_usage".to_string(),
                             };
-                            if let Err(db_err) = super::vault::insert_pending_settlement(pool, &pending).await {
+                            if let Err(db_err) =
+                                super::vault::insert_pending_settlement(pool, &pending).await
+                            {
                                 tracing::error!(
                                     reservation_id = %rid,
                                     error = %db_err,
@@ -1493,7 +1587,12 @@ async fn handle_streaming_response(
 /// Format: `data: {"arbstr":{"cost_sats":<value_or_null>,"latency_ms":<i64>,"complexity_score":<value_or_null>,"tier":<string_or_null>}}\n\ndata: [DONE]\n\n`
 ///
 /// If cost_sats is None or NaN, the JSON value is null.
-fn build_trailing_sse_event(cost_sats: Option<f64>, latency_ms: i64, complexity_score: Option<f64>, tier: Option<String>) -> Vec<u8> {
+fn build_trailing_sse_event(
+    cost_sats: Option<f64>,
+    latency_ms: i64,
+    complexity_score: Option<f64>,
+    tier: Option<String>,
+) -> Vec<u8> {
     let cost_value = cost_sats
         .and_then(|c| serde_json::Number::from_f64(c).map(serde_json::Value::Number))
         .unwrap_or(serde_json::Value::Null);
@@ -1632,10 +1731,12 @@ pub async fn cost_estimate(
     let prompt = request.user_prompt().map(|s| s.to_string());
 
     // Select cheapest provider via router (no upstream call)
-    let provider =
-        state
-            .router
-            .select(&request.model, policy_name.as_deref(), prompt.as_deref(), None)?;
+    let provider = state.router.select(
+        &request.model,
+        policy_name.as_deref(),
+        prompt.as_deref(),
+        None,
+    )?;
 
     // Estimate tokens using shared estimation logic (256 default for display)
     let (estimated_input_tokens, estimated_output_tokens) = request.estimate_tokens(256);

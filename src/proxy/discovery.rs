@@ -35,30 +35,27 @@ pub async fn discover_models(providers: &mut [ProviderConfig], client: &Client) 
             request = request.bearer_auth(api_key.expose_secret());
         }
 
-        match request.send().await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<ModelsResponse>().await {
-                    Ok(models_resp) => {
-                        let model_ids: Vec<String> =
-                            models_resp.data.into_iter().map(|m| m.id).collect();
-                        tracing::info!(
-                            provider = %provider.name,
-                            models = ?model_ids,
-                            count = model_ids.len(),
-                            "Discovered models"
-                        );
-                        provider.models = model_ids;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            provider = %provider.name,
-                            error = %e,
-                            "Failed to parse /v1/models response, keeping static models"
-                        );
-                    }
+        match request.send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json::<ModelsResponse>().await {
+                Ok(models_resp) => {
+                    let model_ids: Vec<String> =
+                        models_resp.data.into_iter().map(|m| m.id).collect();
+                    tracing::info!(
+                        provider = %provider.name,
+                        models = ?model_ids,
+                        count = model_ids.len(),
+                        "Discovered models"
+                    );
+                    provider.models = model_ids;
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %provider.name,
+                        error = %e,
+                        "Failed to parse /v1/models response, keeping static models"
+                    );
+                }
+            },
             Ok(resp) => {
                 tracing::warn!(
                     provider = %provider.name,

@@ -8,8 +8,8 @@ use sqlx::SqlitePool;
 use arbstr::config::{
     Config, PoliciesConfig, ProviderConfig, RoutingConfig, ServerConfig, Tier, VaultConfig,
 };
-use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
 use arbstr::proxy::vault::VaultClient;
+use arbstr::proxy::{create_router, AppState, CircuitBreakerRegistry};
 use arbstr::router::Router as ProviderRouter;
 
 /// Parse an axum response body as JSON.

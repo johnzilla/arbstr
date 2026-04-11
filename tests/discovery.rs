@@ -6,7 +6,12 @@ use reqwest::Client;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn test_provider(name: &str, url: &str, auto_discover: bool, models: Vec<String>) -> ProviderConfig {
+fn test_provider(
+    name: &str,
+    url: &str,
+    auto_discover: bool,
+    models: Vec<String>,
+) -> ProviderConfig {
     ProviderConfig {
         name: name.to_string(),
         url: url.to_string(),

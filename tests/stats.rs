@@ -430,7 +430,10 @@ async fn test_stats_group_by_tier_with_data() {
     let recent = (now - chrono::Duration::hours(1)).to_rfc3339();
 
     // Insert rows with different tier values using direct SQL
-    let corr1 = format!("test-tier-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let corr1 = format!(
+        "test-tier-{}",
+        CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     sqlx::query(
         "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
          input_tokens, output_tokens, cost_sats, latency_ms, success, complexity_score, tier) \
@@ -442,7 +445,10 @@ async fn test_stats_group_by_tier_with_data() {
     .await
     .unwrap();
 
-    let corr2 = format!("test-tier-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let corr2 = format!(
+        "test-tier-{}",
+        CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     sqlx::query(
         "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
          input_tokens, output_tokens, cost_sats, latency_ms, success, complexity_score, tier) \
@@ -454,7 +460,10 @@ async fn test_stats_group_by_tier_with_data() {
     .await
     .unwrap();
 
-    let corr3 = format!("test-tier-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let corr3 = format!(
+        "test-tier-{}",
+        CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     sqlx::query(
         "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
          input_tokens, output_tokens, cost_sats, latency_ms, success, complexity_score, tier) \
@@ -492,7 +501,10 @@ async fn test_stats_group_by_tier_null_tier() {
     let recent = (now - chrono::Duration::hours(1)).to_rfc3339();
 
     // Insert row without tier (NULL)
-    let corr1 = format!("test-tier-null-{}", CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let corr1 = format!(
+        "test-tier-null-{}",
+        CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     sqlx::query(
         "INSERT INTO requests (correlation_id, timestamp, model, provider, streaming, \
          input_tokens, output_tokens, cost_sats, latency_ms, success) \

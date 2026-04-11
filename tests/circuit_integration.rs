@@ -368,8 +368,8 @@ async fn test_circuit_records_failure_on_5xx() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
-            tier: arbstr::config::Tier::default(),
-            auto_discover: false,
+        tier: arbstr::config::Tier::default(),
+        auto_discover: false,
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -413,8 +413,8 @@ async fn test_circuit_stays_closed_on_4xx() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
-            tier: arbstr::config::Tier::default(),
-            auto_discover: false,
+        tier: arbstr::config::Tier::default(),
+        auto_discover: false,
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -457,8 +457,8 @@ async fn test_non_streaming_records_success() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
-            tier: arbstr::config::Tier::default(),
-            auto_discover: false,
+        tier: arbstr::config::Tier::default(),
+        auto_discover: false,
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -506,8 +506,8 @@ async fn test_streaming_records_failure_on_5xx() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
-            tier: arbstr::config::Tier::default(),
-            auto_discover: false,
+        tier: arbstr::config::Tier::default(),
+        auto_discover: false,
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);
@@ -544,8 +544,8 @@ async fn test_503_has_request_id_header() {
         input_rate: 5,
         output_rate: 15,
         base_fee: 0,
-            tier: arbstr::config::Tier::default(),
-            auto_discover: false,
+        tier: arbstr::config::Tier::default(),
+        auto_discover: false,
     }];
 
     let (app, registry) = common::setup_circuit_test_app(providers);

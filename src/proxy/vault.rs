@@ -161,9 +161,10 @@ impl VaultClient {
         let status = response.status().as_u16();
         match status {
             200..=299 => {
-                let resp: serde_json::Value = response.json().await.map_err(|e| {
-                    VaultError::Other(format!("Invalid reserve response: {}", e))
-                })?;
+                let resp: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| VaultError::Other(format!("Invalid reserve response: {}", e)))?;
                 let id = resp
                     .get("reservation_id")
                     .and_then(|v| v.as_str())
@@ -184,7 +185,10 @@ impl VaultClient {
             429 => Err(VaultError::RateLimited),
             500..=599 => {
                 let body = response.text().await.unwrap_or_default();
-                Err(VaultError::Unavailable(format!("HTTP {}: {}", status, body)))
+                Err(VaultError::Unavailable(format!(
+                    "HTTP {}: {}",
+                    status, body
+                )))
             }
             _ => {
                 let body = response.text().await.unwrap_or_default();
@@ -220,11 +224,7 @@ impl VaultClient {
     /// Release a reservation (refund buyer) after failed inference.
     ///
     /// Retries up to MAX_RETRIES times with exponential backoff.
-    pub async fn release(
-        &self,
-        reservation_id: &str,
-        reason: &str,
-    ) -> Result<(), VaultError> {
+    pub async fn release(&self, reservation_id: &str, reason: &str) -> Result<(), VaultError> {
         let url = format!("{}/internal/release", self.base_url);
 
         let body = serde_json::json!({
@@ -268,8 +268,7 @@ impl VaultClient {
                         }
                         500..=599 => {
                             let msg = response.text().await.unwrap_or_default();
-                            last_err =
-                                VaultError::Unavailable(format!("HTTP {}: {}", status, msg));
+                            last_err = VaultError::Unavailable(format!("HTTP {}: {}", status, msg));
                             tracing::warn!(
                                 attempt = attempt + 1,
                                 url,
@@ -316,10 +315,8 @@ pub fn estimate_reserve_msats(
     base_fee: u64,
 ) -> u64 {
     // Rates are in sats per 1000 tokens. Convert to msats.
-    let input_cost_msats =
-        (estimated_input_tokens as u64 * input_rate * 1000) / 1000;
-    let output_cost_msats =
-        (estimated_output_tokens as u64 * output_rate * 1000) / 1000;
+    let input_cost_msats = (estimated_input_tokens as u64 * input_rate * 1000) / 1000;
+    let output_cost_msats = (estimated_output_tokens as u64 * output_rate * 1000) / 1000;
     let base_fee_msats = base_fee * 1000;
     input_cost_msats + output_cost_msats + base_fee_msats
 }
@@ -365,10 +362,9 @@ pub async fn insert_pending_settlement(
 
 /// Count pending settlements.
 pub async fn count_pending(pool: &sqlx::SqlitePool) -> Result<i64, sqlx::Error> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM pending_settlements")
-            .fetch_one(pool)
-            .await?;
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pending_settlements")
+        .fetch_one(pool)
+        .await?;
     Ok(count)
 }
 
@@ -420,10 +416,7 @@ async fn increment_attempts(pool: &sqlx::SqlitePool, id: i64) -> Result<(), sqlx
 }
 
 /// Replay a single pending settlement against vault.
-async fn replay_one(
-    vault: &VaultClient,
-    settlement: &PendingSettlement,
-) -> Result<(), VaultError> {
+async fn replay_one(vault: &VaultClient, settlement: &PendingSettlement) -> Result<(), VaultError> {
     match settlement.settlement_type.as_str() {
         "settle" => {
             let metadata: SettleMetadata =
@@ -504,7 +497,9 @@ pub async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) -> (u3
     match count_pending(pool).await {
         Ok(count) => {
             let over_threshold = count >= vault.pending_threshold as i64;
-            let was_backpressured = vault.backpressure.load(std::sync::atomic::Ordering::Relaxed);
+            let was_backpressured = vault
+                .backpressure
+                .load(std::sync::atomic::Ordering::Relaxed);
             vault
                 .backpressure
                 .store(over_threshold, std::sync::atomic::Ordering::Relaxed);
@@ -581,7 +576,12 @@ pub async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) -> (u3
     }
 
     if replayed > 0 || failed > 0 || evicted > 0 {
-        tracing::info!(replayed = replayed, failed = failed, evicted = evicted, "Reconciliation pass complete");
+        tracing::info!(
+            replayed = replayed,
+            failed = failed,
+            evicted = evicted,
+            "Reconciliation pass complete"
+        );
     }
 
     (replayed, failed, evicted)

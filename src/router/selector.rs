@@ -439,7 +439,9 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, None)
+            .unwrap();
 
         assert_eq!(candidates.len(), 3);
         assert_eq!(candidates[0].name, "cheapest");
@@ -487,7 +489,9 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, None)
+            .unwrap();
 
         // alpha appears twice in config but should only appear once in results
         assert_eq!(candidates.len(), 2);
@@ -502,7 +506,9 @@ mod tests {
         let router = Router::new(test_providers(), vec![], "cheapest".to_string());
 
         let selected = router.select("gpt-4o", None, None, None).unwrap();
-        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, None)
+            .unwrap();
 
         assert_eq!(selected.name, candidates[0].name);
         assert_eq!(selected.url, candidates[0].url);
@@ -538,7 +544,9 @@ mod tests {
         ];
 
         let router = Router::new(providers, vec![], "cheapest".to_string());
-        let candidates = router.select_candidates("gpt-4o", None, None, None).unwrap();
+        let candidates = router
+            .select_candidates("gpt-4o", None, None, None)
+            .unwrap();
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "has-model");
@@ -633,7 +641,7 @@ mod tests {
             output_rate: 30,
             base_fee: 2,
             tier: Tier::Frontier,
-                auto_discover: false,
+            auto_discover: false,
         }];
         let router = Router::new(providers, vec![], "cheapest".to_string());
         let result = router.select_candidates("gpt-4o", None, None, Some(Tier::Local));
@@ -668,7 +676,7 @@ mod tests {
             output_rate: 5,
             base_fee: 0,
             tier: Tier::Local,
-                auto_discover: false,
+            auto_discover: false,
         }];
         let router = Router::new(providers, vec![], "cheapest".to_string());
         let rates = router.frontier_rates("gpt-4o");

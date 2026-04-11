@@ -195,7 +195,11 @@ async fn test_reconcile_replays_pending_settlements() {
     assert_eq!(replayed, 3, "all 3 should be replayed");
     assert_eq!(failed, 0, "none should fail");
     assert_eq!(evicted, 0, "none should be evicted");
-    assert_eq!(count_pending(&pool).await.unwrap(), 0, "all should be deleted");
+    assert_eq!(
+        count_pending(&pool).await.unwrap(),
+        0,
+        "all should be deleted"
+    );
 
     // Verify vault received the calls
     let calls = vault_log.lock().unwrap();
@@ -235,7 +239,11 @@ async fn test_reconcile_increments_attempts_on_failure() {
     assert_eq!(evicted, 0, "none should be evicted");
 
     // Row should still exist with attempts incremented
-    assert_eq!(count_pending(&pool).await.unwrap(), 1, "row should still exist");
+    assert_eq!(
+        count_pending(&pool).await.unwrap(),
+        1,
+        "row should still exist"
+    );
 
     let pending = fetch_pending(&pool).await.unwrap();
     assert_eq!(pending.len(), 1);
@@ -278,7 +286,11 @@ async fn test_reconcile_evicts_after_max_attempts() {
     assert_eq!(replayed, 0, "none should be replayed");
     assert_eq!(failed, 0, "none should fail");
     assert_eq!(evicted, 1, "1 should be evicted");
-    assert_eq!(count_pending(&pool).await.unwrap(), 0, "evicted row should be deleted");
+    assert_eq!(
+        count_pending(&pool).await.unwrap(),
+        0,
+        "evicted row should be deleted"
+    );
 
     // Verify NO HTTP calls were made to vault (eviction skips replay)
     let calls = vault_log.lock().unwrap();
@@ -336,14 +348,21 @@ async fn test_reconcile_mixed_eviction_and_replay() {
     assert_eq!(replayed, 1, "1 should be replayed (attempts=9)");
     assert_eq!(failed, 0, "none should fail");
     assert_eq!(evicted, 1, "1 should be evicted (attempts=10)");
-    assert_eq!(count_pending(&pool).await.unwrap(), 0, "both should be removed");
+    assert_eq!(
+        count_pending(&pool).await.unwrap(),
+        0,
+        "both should be removed"
+    );
 
     // Verify only one settle call (for the replayed one), no release call
     let calls = vault_log.lock().unwrap();
     let settle_count = calls.iter().filter(|(op, _, _)| op == "settle").count();
     let release_count = calls.iter().filter(|(op, _, _)| op == "release").count();
     assert_eq!(settle_count, 1, "1 settle call for replayed settlement");
-    assert_eq!(release_count, 0, "no release call (evicted one was release type)");
+    assert_eq!(
+        release_count, 0,
+        "no release call (evicted one was release type)"
+    );
 }
 
 // ============================================================================
@@ -375,7 +394,11 @@ async fn test_full_cycle_settle_failure_and_reconciliation() {
 
     let response = tower::ServiceExt::oneshot(app, request).await.unwrap();
     let status = response.status();
-    assert_eq!(status, http::StatusCode::OK, "response should succeed (settle failure is async)");
+    assert_eq!(
+        status,
+        http::StatusCode::OK,
+        "response should succeed (settle failure is async)"
+    );
 
     // Wait for the async settle task to fail and insert a pending row
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;

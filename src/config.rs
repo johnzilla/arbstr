@@ -1250,9 +1250,7 @@ mod tests {
         assert!((config.routing.complexity_weights.context_length - 2.0).abs() < f64::EPSILON);
         assert!((config.routing.complexity_weights.code_blocks - 0.5).abs() < f64::EPSILON);
         // Unset weights should default to 1.0
-        assert!(
-            (config.routing.complexity_weights.multi_file - 1.0).abs() < f64::EPSILON
-        );
+        assert!((config.routing.complexity_weights.multi_file - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

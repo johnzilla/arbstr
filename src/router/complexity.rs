@@ -78,7 +78,11 @@ pub fn score_complexity(messages: &[Message], weights: &ComplexityWeightsConfig)
     }
 
     // Concatenate all message text
-    let text: String = messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+    let text: String = messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     if text.len() < MIN_TEXT_LEN {
         return 1.0;
@@ -225,12 +229,10 @@ mod tests {
     #[test]
     fn test_code_blocks_increase_score() {
         let without = msg("Please help me with this function that processes data");
-        let with = msg(
-            "Please help me with this function that processes data\n\
+        let with = msg("Please help me with this function that processes data\n\
              ```rust\nfn process() {}\n```\n\
              ```rust\nfn transform() {}\n```\n\
-             ```rust\nfn validate() {}\n```",
-        );
+             ```rust\nfn validate() {}\n```");
         let score_without = score_complexity(&[without], &default_weights());
         let score_with = score_complexity(&[with], &default_weights());
         assert!(
@@ -278,12 +280,10 @@ mod tests {
 
     #[test]
     fn test_zero_weight_eliminates_signal() {
-        let with_code = msg(
-            "Hello there friend!\n\
+        let with_code = msg("Hello there friend!\n\
              ```rust\nfn a() {}\n```\n\
              ```rust\nfn b() {}\n```\n\
-             ```rust\nfn c() {}\n```",
-        );
+             ```rust\nfn c() {}\n```");
         let weights_normal = default_weights();
         let score_normal = score_complexity(&[with_code.clone()], &weights_normal);
 

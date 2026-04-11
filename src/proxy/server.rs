@@ -239,23 +239,22 @@ pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
     };
 
     // Spawn reconciliation task if vault is configured and DB is available
-    let reconciliation_cancel = if let (Some(vault_client), Some(db_pool)) =
-        (&state.vault, &state.db)
-    {
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-        let vault_clone = vault_client.clone();
-        let pool_clone = db_pool.clone();
-        tokio::spawn(super::vault::reconciliation_loop(
-            vault_clone,
-            pool_clone,
-            Duration::from_secs(60),
-            cancel_rx,
-        ));
-        tracing::info!("Vault reconciliation task started (60s interval)");
-        Some(cancel_tx)
-    } else {
-        None
-    };
+    let reconciliation_cancel =
+        if let (Some(vault_client), Some(db_pool)) = (&state.vault, &state.db) {
+            let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+            let vault_clone = vault_client.clone();
+            let pool_clone = db_pool.clone();
+            tokio::spawn(super::vault::reconciliation_loop(
+                vault_clone,
+                pool_clone,
+                Duration::from_secs(60),
+                cancel_rx,
+            ));
+            tracing::info!("Vault reconciliation task started (60s interval)");
+            Some(cancel_tx)
+        } else {
+            None
+        };
 
     let app = create_router(state);
 

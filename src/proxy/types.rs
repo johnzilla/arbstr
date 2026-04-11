@@ -178,11 +178,7 @@ impl ChatCompletionRequest {
     ///
     /// Returns `(estimated_input_tokens, estimated_output_tokens)`.
     pub fn estimate_tokens(&self, default_output: u32) -> (u32, u32) {
-        let total_chars: usize = self
-            .messages
-            .iter()
-            .map(|m| m.content.char_len())
-            .sum();
+        let total_chars: usize = self.messages.iter().map(|m| m.content.char_len()).sum();
         let input = (total_chars / 4).max(1) as u32;
         let output = self.max_tokens.unwrap_or(default_output);
         (input, output)
