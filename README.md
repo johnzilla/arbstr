@@ -45,6 +45,8 @@ Multiple providers offer the same models at different rates (priced in satoshis)
 
 ## Quick Start
 
+> **Fastest path:** if you just want the full stack running (core + vault + Lightning + Cashu mint) without building from source, use [arbstr-node](https://github.com/johnzilla/arbstr-node) — one `docker compose up`, pre-built images. The instructions below are for working on the core routing engine itself.
+
 ```bash
 # Clone and build
 git clone https://github.com/johnzilla/arbstr.git
