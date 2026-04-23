@@ -43,6 +43,10 @@ Multiple providers offer the same models at different rates (priced in satoshis)
 - **Docker Compose stack** -- full-stack deployment: core + vault + Lightning (LND) + Cashu mint
 - **Mock mode** -- test locally without real provider API calls
 
+## FAQ
+
+[FAQ](FAQ.md) 
+
 ## Quick Start
 
 > **Fastest path:** if you just want the full stack running (core + vault + Lightning + Cashu mint) without building from source, use [arbstr-node](https://github.com/johnzilla/arbstr-node) — one `docker compose up`, pre-built images. The instructions below are for working on the core routing engine itself.
