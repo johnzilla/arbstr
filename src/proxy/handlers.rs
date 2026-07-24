@@ -1664,18 +1664,18 @@ pub struct ProviderHealth {
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let snapshots = state.circuit_breakers.all_states();
 
-    let tier_map: std::collections::HashMap<&str, String> = state
+    let tier_map: std::collections::HashMap<String, String> = state
         .router
         .providers()
         .iter()
-        .map(|p| (p.name.as_str(), p.tier.to_string()))
+        .map(|p| (p.name.clone(), p.tier.to_string()))
         .collect();
 
     let providers: std::collections::HashMap<String, ProviderHealth> = snapshots
         .iter()
         .map(|snap| {
             let tier = tier_map
-                .get(snap.name.as_str())
+                .get(&snap.name)
                 .cloned()
                 .unwrap_or_else(|| "standard".to_string());
             (
@@ -1757,14 +1757,18 @@ pub async fn cost_estimate(
         "estimated_output_tokens": estimated_output_tokens,
         "estimated_cost_sats": estimated_cost_sats,
         "rates": {
-            "input_rate_sats_per_1k": provider.input_rate,
-            "output_rate_sats_per_1k": provider.output_rate,
+            "input_rate_sats_per_1m": provider.input_rate,
+            "output_rate_sats_per_1m": provider.output_rate,
             "base_fee_sats": provider.base_fee,
-        }
+        },
+        "rate_unit": "sats_per_1m_tokens",
     })))
 }
 
-/// Handle GET /providers - arbstr extension to list providers
+/// Handle GET /providers - list routable providers + market feed status.
+///
+/// The `market` object explains why expected sources may be missing
+/// (missing API keys, low reliability, stale quotes, feed errors).
 pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse {
     let providers: Vec<serde_json::Value> = state
         .router
@@ -1773,11 +1777,17 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
         .map(|p| {
             serde_json::json!({
                 "name": p.name,
+                "url": p.url,
                 "models": p.models,
-                "input_rate_sats_per_1k": p.input_rate,
-                "output_rate_sats_per_1k": p.output_rate,
+                "input_rate_sats_per_1m": p.input_rate,
+                "output_rate_sats_per_1m": p.output_rate,
                 "base_fee_sats": p.base_fee,
+                "model_rate_count": p.model_rates.len(),
                 "tier": p.tier.to_string(),
+                "source": p.source,
+                "provider_id": p.provider_id,
+                "routable": true,
+                "has_api_key": p.api_key.is_some(),
                 "api_key": match &p.api_key {
                     Some(key) => serde_json::Value::String(key.masked_prefix()),
                     None => serde_json::Value::Null,
@@ -1786,8 +1796,12 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
         })
         .collect();
 
+    let market = state.market.snapshot();
+
     Json(serde_json::json!({
-        "providers": providers
+        "providers": providers,
+        "market": market,
+        "rate_unit": "sats_per_1m_tokens",
     }))
 }
 

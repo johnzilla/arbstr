@@ -96,7 +96,15 @@ listen = "127.0.0.1:8080"
 # default_reserve_tokens = 4096   # max output tokens for reserve ceiling
 # pending_threshold = 100         # max pending settlements before rejecting
 
-# Providers -- rates in satoshis per 1000 tokens
+# tokenstats market feed (optional) — live quotes from all sources
+# [tokenstats]
+# url = "https://tokenstats.ai"
+# poll_interval_secs = 60
+# [tokenstats.keys]
+# openrouter = "${OPENROUTER_API_KEY}"
+# # "routstr-provider-id" = "${CASHU_TOKEN}"
+
+# Providers -- rates in satoshis per **1M** tokens (RIP-05 / tokenstats)
 # mesh-llm local inference (uncomment when mesh-llm is running)
 # [[providers]]
 # name = "mesh-local"
@@ -112,8 +120,8 @@ url = "https://alpha.routstr.example/v1"
 api_key = "${ALPHA_KEY}"       # env var reference (recommended)
 models = ["gpt-4o", "claude-3.5-sonnet"]
 tier = "frontier"              # local | standard | frontier
-input_rate = 10                # sats per 1k input tokens
-output_rate = 30               # sats per 1k output tokens
+input_rate = 10000             # sats per 1M input tokens
+output_rate = 30000            # sats per 1M output tokens
 base_fee = 1                   # per-request base fee in sats
 
 [[providers]]
@@ -122,8 +130,8 @@ url = "https://beta.routstr.example/v1"
 # api_key omitted -- arbstr auto-checks ARBSTR_PROVIDER_BETA_API_KEY
 models = ["gpt-4o", "gpt-4o-mini"]
 tier = "standard"
-input_rate = 8
-output_rate = 35
+input_rate = 8000
+output_rate = 35000
 
 # Complexity routing (optional — controls tier selection thresholds)
 # [routing]
@@ -138,11 +146,27 @@ default_strategy = "cheapest"
 name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
 strategy = "lowest_cost"
-max_sats_per_1k_output = 50
+max_sats_per_1m_output = 50000
 keywords = ["code", "function", "implement", "debug"]
 ```
 
 See [`config.example.toml`](./config.example.toml) for a full annotated example.
+
+### tokenstats market feed
+
+When `[tokenstats]` is configured, arbstr polls [tokenstats](https://tokenstats.ai) for live multi-source quotes (OpenRouter, Routstr, …), applies **per-model** rates in sats/1M, and only routes to market providers that have a resolved API key.
+
+```toml
+[tokenstats]
+url = "https://tokenstats.ai"
+poll_interval_secs = 60
+
+[tokenstats.keys]
+openrouter = "${OPENROUTER_API_KEY}"          # shared for all openrouter quotes
+# "a4b35f561ea0" = "${CASHU_FOR_THAT_NODE}"   # by provider_id
+```
+
+`GET /providers` includes a `market` object explaining skipped sources (`missing_api_key`, `low_reliability`, `stale_quotes`) so you can see why expected providers are not routable.
 
 ### API Key Management
 

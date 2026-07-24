@@ -220,10 +220,10 @@ async fn main() -> anyhow::Result<()> {
                         println!("    Models: {}", provider.models.join(", "));
                     }
                     println!(
-                        "    Rates: {} sats/1k input, {} sats/1k output",
+                        "    Rates: {} sats/1M input, {} sats/1M output",
                         provider.input_rate, provider.output_rate
                     );
-                    if provider.base_fee > 0 {
+                    if provider.base_fee > 0.0 {
                         println!("    Base fee: {} sats", provider.base_fee);
                     }
                     if let Some(ref api_key) = provider.api_key {
@@ -251,6 +251,7 @@ fn mock_config() -> Config {
             path: ":memory:".to_string(),
         }),
         vault: None,
+        tokenstats: None,
         providers: vec![
             ProviderConfig {
                 name: "mock-cheap".to_string(),
@@ -261,22 +262,28 @@ fn mock_config() -> Config {
                     "gpt-4o-mini".to_string(),
                     "claude-3.5-sonnet".to_string(),
                 ],
-                input_rate: 5,
-                output_rate: 15,
-                base_fee: 0,
+                input_rate: 5000.0,
+                output_rate: 15000.0,
+                base_fee: 0.0,
                 tier: Tier::default(),
                 auto_discover: false,
+                model_rates: Default::default(),
+                source: None,
+                provider_id: None,
             },
             ProviderConfig {
                 name: "mock-expensive".to_string(),
                 url: "http://localhost:9998/v1".to_string(),
                 api_key: Some(ApiKey::from("mock-test-key-expensive")),
                 models: vec!["gpt-4o".to_string(), "claude-3.5-sonnet".to_string()],
-                input_rate: 10,
-                output_rate: 30,
-                base_fee: 1,
+                input_rate: 10000.0,
+                output_rate: 30000.0,
+                base_fee: 1.0,
                 tier: Tier::default(),
                 auto_discover: false,
+                model_rates: Default::default(),
+                source: None,
+                provider_id: None,
             },
         ],
         policies: PoliciesConfig {
@@ -285,7 +292,7 @@ fn mock_config() -> Config {
                 name: "code".to_string(),
                 allowed_models: vec!["gpt-4o".to_string(), "claude-3.5-sonnet".to_string()],
                 strategy: "lowest_cost".to_string(),
-                max_sats_per_1k_output: Some(50),
+                max_sats_per_1m_output: Some(50_000.0),
                 keywords: vec![
                     "code".to_string(),
                     "function".to_string(),

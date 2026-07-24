@@ -37,11 +37,14 @@ fn test_provider(name: &str) -> ProviderConfig {
         url: "https://fake.test/v1".to_string(),
         api_key: None,
         models: vec!["gpt-4o".to_string()],
-        input_rate: 5,
-        output_rate: 15,
-        base_fee: 0,
+        input_rate: 5000.0,
+        output_rate: 15000.0,
+        base_fee: 0.0,
         tier: Tier::default(),
         auto_discover: false,
+        model_rates: Default::default(),
+        source: None,
+        provider_id: None,
     }
 }
 

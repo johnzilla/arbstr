@@ -17,11 +17,14 @@ fn test_provider(
         url: url.to_string(),
         api_key: None,
         models,
-        input_rate: 0,
-        output_rate: 0,
-        base_fee: 0,
+        input_rate: 0.0,
+        output_rate: 0.0,
+        base_fee: 0.0,
+        model_rates: Default::default(),
         tier: Tier::Local,
         auto_discover,
+        source: None,
+        provider_id: None,
     }
 }
 

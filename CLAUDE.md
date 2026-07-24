@@ -104,9 +104,10 @@ sequenceDiagram
 
 - **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback, SSE stream interception for usage extraction, graceful shutdown on SIGINT/SIGTERM
 - **Circuit Breaker** (`src/proxy/circuit_breaker.rs`): Per-provider Closed/Open/Half-Open state machine with DashMap registry, watch-based probe signaling, and RAII ProbeGuard
+- **tokenstats client** (`src/proxy/tokenstats.rs`): Optional market feed — polls `/api/quotes` + `/api/nodes`, per-model rates (sats/1M), auth-gated routable providers, `GET /providers` market.skipped visibility
 - **Complexity Scorer** (`src/router/complexity.rs`): Heuristic complexity analysis with 5 configurable weighted signals, maps requests to provider tiers (local/standard/frontier)
-- **Router** (`src/router/`): Provider selection logic, cost optimization, tier-aware candidate filtering
-- **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
+- **Router** (`src/router/`): Provider selection with hot-swappable list, blended cost ranking, per-model rates, tier-aware filtering
+- **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management, optional `[tokenstats]`
 - **Storage** (`src/storage/`): SQLite request logging via bounded channel writer (capacity 1024), read-only analytics pool for stats/logs queries
 - **Vault Client** (`src/proxy/vault.rs`): Reserve/settle/release pattern against arbstr vault; retry with exponential backoff; pending settlement persistence for fault tolerance
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
@@ -156,14 +157,20 @@ path = "./arbstr.db"
 # default_reserve_tokens = 4096
 # pending_threshold = 100
 
-# Provider configuration (rates in sats per 1000 tokens)
+# tokenstats market feed (optional)
+# [tokenstats]
+# url = "https://tokenstats.ai"
+# [tokenstats.keys]
+# openrouter = "${OPENROUTER_API_KEY}"
+
+# Provider configuration (rates in sats per 1M tokens — RIP-05 / tokenstats)
 [[providers]]
 name = "provider-alpha"
 url = "https://api.routstr.com/v1"
 api_key = "${ALPHA_KEY}"  # env var reference (recommended)
 models = ["gpt-4o", "claude-3.5-sonnet"]
-input_rate = 10
-output_rate = 30
+input_rate = 10000
+output_rate = 30000
 base_fee = 1
 
 [[providers]]
@@ -171,8 +178,8 @@ name = "provider-beta"
 url = "https://other-provider.com/v1"
 # api_key omitted -- arbstr auto-checks ARBSTR_PROVIDER_BETA_API_KEY
 models = ["gpt-4o", "gpt-4o-mini"]
-input_rate = 8
-output_rate = 35
+input_rate = 8000
+output_rate = 35000
 
 [policies]
 default_strategy = "cheapest"
@@ -181,7 +188,7 @@ default_strategy = "cheapest"
 name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
 strategy = "lowest_cost"
-max_sats_per_1k_output = 50
+max_sats_per_1m_output = 50000
 keywords = ["code", "function", "implement"]
 ```
 
@@ -268,6 +275,7 @@ src/
 │   ├── logs.rs          # /v1/requests handler, pagination, LogsQuery/LogsResponse/LogEntry
 │   ├── vault.rs         # Vault treasury client (reserve/settle/release, pending settlement persistence)
 │   ├── discovery.rs     # Model auto-discovery (startup /v1/models polling for auto_discover providers)
+│   ├── tokenstats.rs    # Market feed client (quotes/nodes poll, merge, MarketState)
 │   ├── validation.rs    # Shared model/provider filter validation
 │   └── types.rs         # OpenAI-compatible request/response types, MessageContent enum
 ├── router/

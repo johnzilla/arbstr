@@ -10,6 +10,9 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: Option<DatabaseConfig>,
     pub vault: Option<VaultConfig>,
+    /// Optional tokenstats market feed (live quotes → dynamic providers).
+    #[serde(default)]
+    pub tokenstats: Option<TokenstatsConfig>,
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -257,6 +260,75 @@ impl Default for ComplexityWeightsConfig {
     }
 }
 
+/// Per-model rates in sats per 1M tokens (RIP-05 / tokenstats units).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelRates {
+    /// Sats per 1M input tokens
+    pub input_rate: f64,
+    /// Sats per 1M output tokens
+    pub output_rate: f64,
+    /// Base fee per request in sats
+    #[serde(default)]
+    pub base_fee: f64,
+}
+
+impl ModelRates {
+    pub fn new(input_rate: f64, output_rate: f64, base_fee: f64) -> Self {
+        Self {
+            input_rate,
+            output_rate,
+            base_fee,
+        }
+    }
+
+    /// Blended rate for workload ratio r (output:input), default r=3.
+    pub fn blended(&self, ratio: f64) -> f64 {
+        let r = if ratio > 0.0 { ratio } else { 3.0 };
+        (self.input_rate + r * self.output_rate) / (1.0 + r)
+    }
+}
+
+/// tokenstats market feed configuration.
+///
+/// When present, arbstr polls tokenstats for live quotes and merges
+/// routable providers (those with resolved API keys) into the router.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TokenstatsConfig {
+    /// Base URL for tokenstats (e.g. "https://tokenstats.ai" or "http://127.0.0.1:8080")
+    pub url: String,
+    /// Poll interval in seconds (default 60)
+    #[serde(default = "default_tokenstats_poll")]
+    pub poll_interval_secs: u64,
+    /// Minimum node reliability [0.0, 1.0] to accept Routstr quotes (default 0.5)
+    #[serde(default = "default_min_reliability")]
+    pub min_reliability: f64,
+    /// Drop quotes older than this many seconds (default 600)
+    #[serde(default = "default_stale_after")]
+    pub stale_after_secs: u64,
+    /// Workload ratio for blended sort (default 3.0 → 1:3 in:out)
+    #[serde(default = "default_blend_ratio")]
+    pub blend_ratio: f64,
+    /// Optional source filter (e.g. "routstr"). Empty/absent = all sources.
+    pub source: Option<String>,
+    /// API keys keyed by source name ("openrouter") or provider_id.
+    /// Values may use ${ENV} expansion.
+    #[serde(default)]
+    pub keys: std::collections::HashMap<String, String>,
+}
+
+fn default_tokenstats_poll() -> u64 {
+    60
+}
+fn default_min_reliability() -> f64 {
+    0.5
+}
+fn default_stale_after() -> u64 {
+    600
+}
+fn default_blend_ratio() -> f64 {
+    3.0
+}
+
 /// Provider configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
@@ -269,15 +341,18 @@ pub struct ProviderConfig {
     /// Models supported by this provider
     #[serde(default)]
     pub models: Vec<String>,
-    /// Input token rate in sats per 1000 tokens
+    /// Default input rate in sats per **1M** tokens (used when model not in model_rates)
     #[serde(default)]
-    pub input_rate: u64,
-    /// Output token rate in sats per 1000 tokens
+    pub input_rate: f64,
+    /// Default output rate in sats per **1M** tokens
     #[serde(default)]
-    pub output_rate: u64,
-    /// Base fee per request in sats
+    pub output_rate: f64,
+    /// Default base fee per request in sats
     #[serde(default)]
-    pub base_fee: u64,
+    pub base_fee: f64,
+    /// Per-model rate overrides (sats per 1M). Populated by tokenstats feed.
+    #[serde(default, skip_serializing)]
+    pub model_rates: std::collections::HashMap<String, ModelRates>,
     /// Provider tier for complexity-based routing (local/standard/frontier).
     /// Default: standard (backward compatible).
     #[serde(default)]
@@ -287,6 +362,22 @@ pub struct ProviderConfig {
     /// If discovery fails, falls back to the static list (or empty).
     #[serde(default)]
     pub auto_discover: bool,
+    /// Market source when from tokenstats: "openrouter", "routstr", etc. None = static config.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Stable provider id from tokenstats (or static name).
+    #[serde(default)]
+    pub provider_id: Option<String>,
+}
+
+impl ProviderConfig {
+    /// Resolve rates for a specific model (model_rates override defaults).
+    pub fn rates_for(&self, model: &str) -> ModelRates {
+        self.model_rates
+            .get(model)
+            .cloned()
+            .unwrap_or_else(|| ModelRates::new(self.input_rate, self.output_rate, self.base_fee))
+    }
 }
 
 /// Policies configuration.
@@ -315,8 +406,8 @@ pub struct PolicyRule {
     /// Routing strategy: "lowest_cost", "lowest_latency", "round_robin"
     #[serde(default = "default_strategy")]
     pub strategy: String,
-    /// Maximum cost in sats per 1000 output tokens
-    pub max_sats_per_1k_output: Option<u64>,
+    /// Maximum cost in sats per 1M output tokens
+    pub max_sats_per_1m_output: Option<f64>,
     /// Keywords for heuristic matching
     #[serde(default)]
     pub keywords: Vec<String>,
@@ -476,11 +567,11 @@ pub struct RawProviderConfig {
     #[serde(default)]
     models: Vec<String>,
     #[serde(default)]
-    input_rate: u64,
+    input_rate: f64,
     #[serde(default)]
-    output_rate: u64,
+    output_rate: f64,
     #[serde(default)]
-    base_fee: u64,
+    base_fee: f64,
     #[serde(default)]
     tier: Tier,
     #[serde(default)]
@@ -494,6 +585,8 @@ pub struct RawConfig {
     server: ServerConfig,
     database: Option<DatabaseConfig>,
     vault: Option<VaultConfig>,
+    #[serde(default)]
+    tokenstats: Option<TokenstatsConfig>,
     #[serde(default)]
     providers: Vec<RawProviderConfig>,
     #[serde(default)]
@@ -622,15 +715,39 @@ impl Config {
                 input_rate: rp.input_rate,
                 output_rate: rp.output_rate,
                 base_fee: rp.base_fee,
+                model_rates: std::collections::HashMap::new(),
                 tier: rp.tier,
                 auto_discover: rp.auto_discover,
+                source: None,
+                provider_id: None,
             });
         }
+
+        // Expand ${VAR} in tokenstats keys map
+        let tokenstats = if let Some(mut ts) = raw.tokenstats {
+            let mut expanded_keys = std::collections::HashMap::new();
+            for (k, v) in ts.keys {
+                let expanded = if v.contains("${") {
+                    expand_env_vars_with(&v, "tokenstats.keys", &env_lookup)?
+                } else {
+                    v
+                };
+                // Skip empty values (unset optional keys)
+                if !expanded.is_empty() {
+                    expanded_keys.insert(k, expanded);
+                }
+            }
+            ts.keys = expanded_keys;
+            Some(ts)
+        } else {
+            None
+        };
 
         let config = Config {
             server: raw.server,
             database: raw.database,
             vault: raw.vault,
+            tokenstats,
             providers,
             policies: raw.policies,
             logging: raw.logging,
@@ -705,7 +822,7 @@ mod tests {
             name = "code"
             allowed_models = ["gpt-4o"]
             strategy = "lowest_cost"
-            max_sats_per_1k_output = 50
+            max_sats_per_1m_output = 50000
             keywords = ["code", "function"]
 
             [logging]
@@ -716,7 +833,7 @@ mod tests {
         let config = Config::parse_str(toml).unwrap();
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].name, "test-provider");
-        assert_eq!(config.providers[0].input_rate, 10);
+        assert_eq!(config.providers[0].input_rate, 10.0);
         assert_eq!(config.policies.rules.len(), 1);
         assert_eq!(config.policies.rules[0].name, "code");
     }
@@ -764,11 +881,14 @@ mod tests {
             url: "https://example.com/v1".to_string(),
             api_key: Some(ApiKey::from("cashuABCD1234secret")),
             models: vec![],
-            input_rate: 10,
-            output_rate: 30,
-            base_fee: 1,
+            input_rate: 10000.0,
+            output_rate: 30000.0,
+            base_fee: 1.0,
             tier: Tier::default(),
             auto_discover: false,
+            model_rates: Default::default(),
+            source: None,
+            provider_id: None,
         };
         let debug_output = format!("{:?}", config);
         assert!(
@@ -947,14 +1067,15 @@ mod tests {
             },
             database: None,
             vault: None,
+            tokenstats: None,
             providers: vec![RawProviderConfig {
                 name: provider_name.to_string(),
                 url: "https://example.com/v1".to_string(),
                 api_key,
                 models: vec![],
-                input_rate: 0,
-                output_rate: 0,
-                base_fee: 0,
+                input_rate: 0.0,
+                output_rate: 0.0,
+                base_fee: 0.0,
                 tier: Tier::default(),
                 auto_discover: false,
             }],

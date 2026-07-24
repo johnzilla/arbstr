@@ -304,21 +304,22 @@ impl VaultClient {
 
 /// Estimate the reserve amount in millisatoshis for a request.
 ///
-/// Uses the cheapest candidate's rates and the request's token estimate.
-/// If `max_tokens` is set, uses that as the output ceiling.
-/// Otherwise uses `default_reserve_tokens` from vault config.
+/// Rates are in **sats per 1M tokens** (RIP-05 / tokenstats).
+/// `cost_sats = tokens * rate / 1_000_000`, then `msats = cost_sats * 1000`
+/// ⇒ `msats = tokens * rate / 1000` (ceil for safety).
 pub fn estimate_reserve_msats(
     estimated_input_tokens: u32,
     estimated_output_tokens: u32,
-    input_rate: u64,
-    output_rate: u64,
-    base_fee: u64,
+    input_rate: f64,
+    output_rate: f64,
+    base_fee: f64,
 ) -> u64 {
-    // Rates are in sats per 1000 tokens. Convert to msats.
-    let input_cost_msats = (estimated_input_tokens as u64 * input_rate * 1000) / 1000;
-    let output_cost_msats = (estimated_output_tokens as u64 * output_rate * 1000) / 1000;
-    let base_fee_msats = base_fee * 1000;
-    input_cost_msats + output_cost_msats + base_fee_msats
+    let input_msats =
+        ((estimated_input_tokens as f64 * input_rate) / 1000.0).ceil() as u64;
+    let output_msats =
+        ((estimated_output_tokens as f64 * output_rate) / 1000.0).ceil() as u64;
+    let base_fee_msats = (base_fee * 1000.0).ceil() as u64;
+    input_msats + output_msats + base_fee_msats
 }
 
 /// A pending settlement record for when vault is unreachable.
@@ -593,38 +594,31 @@ mod tests {
 
     #[test]
     fn test_estimate_reserve_msats() {
-        // 100 input tokens * 10 sats/1k = 1 sat = 1000 msats
-        // 200 output tokens * 30 sats/1k = 6 sats = 6000 msats
-        // base_fee 1 sat = 1000 msats
-        // total = 8000 msats
-        let result = estimate_reserve_msats(100, 200, 10, 30, 1);
+        // Rates per 1M: 10_000 / 30_000 (= legacy 10 / 30 per 1k)
+        // 100 * 10000 / 1000 = 1000 msats
+        // 200 * 30000 / 1000 = 6000 msats
+        // base 1 sat = 1000 msats → total 8000
+        let result = estimate_reserve_msats(100, 200, 10_000.0, 30_000.0, 1.0);
         assert_eq!(result, 8000);
     }
 
     #[test]
     fn test_estimate_reserve_zero_tokens() {
-        // base_fee only
-        let result = estimate_reserve_msats(0, 0, 10, 30, 5);
+        let result = estimate_reserve_msats(0, 0, 10_000.0, 30_000.0, 5.0);
         assert_eq!(result, 5000);
     }
 
     #[test]
     fn test_estimate_reserve_large_request() {
-        // 1000 input * 10/1k = 10 sats = 10000 msats
-        // 4096 output * 30/1k = 122.88 sats → 122880 msats (integer truncation)
-        // base_fee 0
-        let result = estimate_reserve_msats(1000, 4096, 10, 30, 0);
+        // 1000 * 10000 / 1000 = 10000 msats
+        // 4096 * 30000 / 1000 = 122880 msats (ceil)
+        let result = estimate_reserve_msats(1000, 4096, 10_000.0, 30_000.0, 0.0);
         assert_eq!(result, 10000 + 122880);
     }
 
     #[test]
     fn test_estimate_reserve_frontier_rates() {
-        // Frontier rates: input=10, output=30, base=2
-        // 100 input * 10/1k = 1 sat = 1000 msats
-        // 4096 output * 30/1k = 122.88 sats = 122880 msats
-        // base_fee 2 sats = 2000 msats
-        // total = 125880 msats
-        let result = estimate_reserve_msats(100, 4096, 10, 30, 2);
+        let result = estimate_reserve_msats(100, 4096, 10_000.0, 30_000.0, 2.0);
         assert_eq!(result, 125880);
     }
 

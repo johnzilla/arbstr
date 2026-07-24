@@ -151,14 +151,14 @@ listen = "127.0.0.1:8080"
 [database]
 path = "./arbstr.db"
 
-# Provider configuration (rates in sats per 1000 tokens)
+# Provider configuration (rates in sats per 1M tokens — RIP-05 / tokenstats)
 [[providers]]
 name = "provider-alpha"
 url = "https://api.routstr.com/v1"
 api_key = "${ALPHA_KEY}"  # env var reference (recommended)
 models = ["gpt-4o", "claude-3.5-sonnet"]
-input_rate = 10
-output_rate = 30
+input_rate = 10000
+output_rate = 30000
 base_fee = 1
 
 [[providers]]
@@ -166,8 +166,8 @@ name = "provider-beta"
 url = "https://other-provider.com/v1"
 # api_key omitted -- arbstr auto-checks ARBSTR_PROVIDER_BETA_API_KEY
 models = ["gpt-4o", "gpt-4o-mini"]
-input_rate = 8
-output_rate = 35
+input_rate = 8000
+output_rate = 35000
 
 [policies]
 default_strategy = "cheapest"
@@ -176,7 +176,7 @@ default_strategy = "cheapest"
 name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
 strategy = "lowest_cost"
-max_sats_per_1k_output = 50
+max_sats_per_1m_output = 50000
 keywords = ["code", "function", "implement"]
 ```
 

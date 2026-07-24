@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreakerRegistry;
 use super::handlers;
+use super::tokenstats::{self, MarketState};
 use super::vault::VaultClient;
 use crate::config::Config;
 use crate::router::Router as ProviderRouter;
@@ -41,6 +42,8 @@ pub struct AppState {
     /// Vault treasury client. When Some, requests require vault billing.
     /// When None, arbstr runs in free proxy mode.
     pub vault: Option<VaultClient>,
+    /// tokenstats market feed status (skipped sources, last poll, etc.).
+    pub market: MarketState,
 }
 
 /// Middleware that verifies the `Authorization: Bearer <token>` header.
@@ -175,10 +178,16 @@ pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
     discovery::discover_models(&mut config.providers, &http_client).await;
 
     // Create provider router (after discovery so models are populated)
-    let provider_router = ProviderRouter::new(
+    let blend_ratio = config
+        .tokenstats
+        .as_ref()
+        .map(|t| t.blend_ratio)
+        .unwrap_or(3.0);
+    let provider_router = ProviderRouter::with_blend_ratio(
         config.providers.clone(),
         config.policies.rules.clone(),
         config.policies.default_strategy.clone(),
+        blend_ratio,
     );
 
     // Initialize database pool if configured
@@ -227,15 +236,20 @@ pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
         VaultClient::new(http_client.clone(), vault_config)
     });
 
+    let market = MarketState::new();
+    let static_providers = config.providers.clone();
+    let tokenstats_cfg = config.tokenstats.clone();
+
     let state = AppState {
         router: Arc::new(provider_router),
-        http_client,
+        http_client: http_client.clone(),
         config: Arc::new(config),
         db,
         read_db,
         db_writer,
         circuit_breakers,
         vault,
+        market: market.clone(),
     };
 
     // Spawn reconciliation task if vault is configured and DB is available
@@ -256,6 +270,26 @@ pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
             None
         };
 
+    // Spawn tokenstats market poller when configured
+    let tokenstats_cancel = if let Some(ts_cfg) = tokenstats_cfg {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let router_clone = (*state.router).clone();
+        let client_clone = http_client;
+        let market_clone = market;
+        tracing::info!(url = %ts_cfg.url, interval = ts_cfg.poll_interval_secs, "tokenstats market feed enabled");
+        tokio::spawn(tokenstats::poll_loop(
+            client_clone,
+            ts_cfg,
+            static_providers,
+            router_clone,
+            market_clone,
+            cancel_rx,
+        ));
+        Some(cancel_tx)
+    } else {
+        None
+    };
+
     let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
@@ -265,7 +299,10 @@ pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // Signal reconciliation task to stop and do a final pass
+    // Signal background tasks to stop
+    if let Some(cancel_tx) = tokenstats_cancel {
+        let _ = cancel_tx.send(true);
+    }
     if let Some(cancel_tx) = reconciliation_cancel {
         let _ = cancel_tx.send(true);
         // Give it a moment to complete the final reconciliation pass

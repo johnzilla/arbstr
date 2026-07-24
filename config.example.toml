@@ -28,9 +28,25 @@ path = "./arbstr.db"
 # # Max pending settlements before rejecting new paid requests (default: 100)
 # pending_threshold = 100
 
+# tokenstats market feed (optional)
+# Polls live quotes (all sources: openrouter, routstr, …) and merges routable
+# providers. Rates are sats per 1M tokens (RIP-05). Market sources without a key
+# appear under GET /providers → market.skipped with hints.
+# [tokenstats]
+# url = "https://tokenstats.ai"
+# # url = "http://127.0.0.1:8081"  # local tokenstats (use different port than arbstr)
+# poll_interval_secs = 60
+# min_reliability = 0.5
+# stale_after_secs = 600
+# blend_ratio = 3.0
+# # source = "routstr"   # optional filter; omit = all sources
+# [tokenstats.keys]
+# openrouter = "${OPENROUTER_API_KEY}"
+# # "node-provider-id" = "${CASHU_TOKEN_FOR_NODE}"
+
 # Provider configuration
-# Add your Routstr providers here
-# Rates are in satoshis per 1000 tokens
+# Rates are in satoshis per **1 million** tokens (RIP-05 / tokenstats units).
+# Legacy "per 1k" configs: multiply by 1000 (e.g. 10 sats/1k → 10000 sats/1M).
 
 [[providers]]
 name = "example-provider-1"
@@ -38,8 +54,8 @@ url = "https://provider1.example.com/v1"
 # API key: use ${VAR} to reference an environment variable (recommended)
 api_key = "${PROVIDER1_API_KEY}"
 models = ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet"]
-input_rate = 10   # sats per 1k input tokens
-output_rate = 30  # sats per 1k output tokens
+input_rate = 10000   # sats per 1M input tokens
+output_rate = 30000  # sats per 1M output tokens
 # Optional: base fee per request
 base_fee = 1
 # Provider tier: "local", "standard" (default), or "frontier"
@@ -52,8 +68,8 @@ url = "https://provider2.example.com/v1"
 # API key: omit api_key to use convention-based auto-discovery
 # arbstr will check ARBSTR_EXAMPLE_PROVIDER_2_API_KEY automatically
 models = ["gpt-4o", "claude-3.5-sonnet", "claude-3-haiku"]
-input_rate = 8
-output_rate = 35
+input_rate = 8000
+output_rate = 35000
 base_fee = 0
 # tier = "local"
 # auto_discover = false
@@ -81,8 +97,8 @@ name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o", "deepseek-coder"]
 # Routing strategy for this policy
 strategy = "lowest_cost"
-# Maximum cost constraint (optional)
-max_sats_per_1k_output = 50
+# Maximum cost constraint (optional) — sats per 1M output tokens
+max_sats_per_1m_output = 50000
 # Heuristic keywords for automatic classification (optional)
 keywords = ["code", "function", "implement", "debug", "fix bug"]
 

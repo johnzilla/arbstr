@@ -10,6 +10,7 @@ pub mod retry;
 mod server;
 pub mod stats;
 pub mod stream;
+pub mod tokenstats;
 pub mod types;
 pub(crate) mod validation;
 pub mod vault;

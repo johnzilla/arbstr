@@ -40,6 +40,7 @@ fn setup_cost_test_app(
         },
         database: None,
         vault: None,
+        tokenstats: None,
         providers: providers.clone(),
         policies: PoliciesConfig {
             default_strategy: "cheapest".to_string(),
@@ -64,6 +65,7 @@ fn setup_cost_test_app(
         db_writer: None,
         circuit_breakers: registry,
         vault: None,
+        market: Default::default(),
     };
 
     create_router(state)
@@ -82,6 +84,7 @@ fn setup_cost_test_app_with_auth(providers: Vec<ProviderConfig>, auth_token: &st
         },
         database: None,
         vault: None,
+        tokenstats: None,
         providers: providers.clone(),
         policies: PoliciesConfig::default(),
         logging: Default::default(),
@@ -103,6 +106,7 @@ fn setup_cost_test_app_with_auth(providers: Vec<ProviderConfig>, auth_token: &st
         db_writer: None,
         circuit_breakers: registry,
         vault: None,
+        market: Default::default(),
     };
 
     create_router(state)
@@ -111,9 +115,9 @@ fn setup_cost_test_app_with_auth(providers: Vec<ProviderConfig>, auth_token: &st
 /// Standard provider config with controllable rates.
 fn provider_with_rates(
     name: &str,
-    input_rate: u64,
-    output_rate: u64,
-    base_fee: u64,
+    input_rate: f64,
+    output_rate: f64,
+    base_fee: f64,
 ) -> ProviderConfig {
     ProviderConfig {
         name: name.to_string(),
@@ -125,6 +129,9 @@ fn provider_with_rates(
         base_fee,
         tier: Tier::default(),
         auto_discover: false,
+        model_rates: Default::default(),
+        source: None,
+        provider_id: None,
     }
 }
 
@@ -153,7 +160,7 @@ fn cost_request_body(model: &str, message: &str, max_tokens: Option<u32>) -> Str
 
 #[tokio::test]
 async fn test_cost_basic() {
-    let providers = vec![provider_with_rates("alpha", 10, 30, 1)];
+    let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 1.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
     let body = cost_request_body("gpt-4o", "Hello, world!", None);
@@ -181,9 +188,9 @@ async fn test_cost_basic() {
         "expected estimated_cost_sats to be a number"
     );
     assert!(json["rates"].is_object(), "expected rates to be an object");
-    assert_eq!(json["rates"]["input_rate_sats_per_1k"], 10);
-    assert_eq!(json["rates"]["output_rate_sats_per_1k"], 30);
-    assert_eq!(json["rates"]["base_fee_sats"], 1);
+    assert_eq!(json["rates"]["input_rate_sats_per_1m"], 10000.0);
+    assert_eq!(json["rates"]["output_rate_sats_per_1m"], 30000.0);
+    assert_eq!(json["rates"]["base_fee_sats"], 1.0);
 }
 
 // ============================================================================
@@ -192,7 +199,7 @@ async fn test_cost_basic() {
 
 #[tokio::test]
 async fn test_cost_unknown_model() {
-    let providers = vec![provider_with_rates("alpha", 10, 30, 1)];
+    let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 1.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
     let body = cost_request_body("nonexistent-model", "hello", None);
@@ -214,8 +221,8 @@ async fn test_cost_unknown_model() {
 #[tokio::test]
 async fn test_cost_picks_cheapest() {
     let providers = vec![
-        provider_with_rates("expensive", 15, 40, 5),
-        provider_with_rates("cheap", 3, 10, 0),
+        provider_with_rates("expensive", 15000.0, 40000.0, 5.0),
+        provider_with_rates("cheap", 3000.0, 10000.0, 0.0),
     ];
     let app = setup_cost_test_app(providers, vec![]);
 
@@ -241,7 +248,7 @@ async fn test_cost_picks_cheapest() {
 
 #[tokio::test]
 async fn test_cost_max_tokens_used() {
-    let providers = vec![provider_with_rates("alpha", 10, 30, 0)];
+    let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 0.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
     let body = cost_request_body("gpt-4o", "hello", Some(100));
@@ -263,7 +270,7 @@ async fn test_cost_max_tokens_used() {
 
 #[tokio::test]
 async fn test_cost_default_output_tokens() {
-    let providers = vec![provider_with_rates("alpha", 10, 30, 0)];
+    let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 0.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
     let body = cost_request_body("gpt-4o", "hello", None);
@@ -285,18 +292,18 @@ async fn test_cost_default_output_tokens() {
 
 #[tokio::test]
 async fn test_cost_with_policy_header() {
-    // "expensive" has output_rate=40 (above max_sats_per_1k_output=20)
-    // "budget" has output_rate=10 (below max_sats_per_1k_output=20)
+    // "expensive" has output_rate=40 (above max_sats_per_1m_output = 20000)
+    // "budget" has output_rate=10 (below max_sats_per_1m_output = 20000)
     let providers = vec![
-        provider_with_rates("expensive", 15, 40, 0),
-        provider_with_rates("budget", 3, 10, 0),
+        provider_with_rates("expensive", 15000.0, 40000.0, 0.0),
+        provider_with_rates("budget", 3000.0, 10000.0, 0.0),
     ];
 
     let policy = PolicyRule {
         name: "strict_budget".to_string(),
         allowed_models: vec!["gpt-4o".to_string()],
         strategy: "lowest_cost".to_string(),
-        max_sats_per_1k_output: Some(20),
+        max_sats_per_1m_output: Some(20000.0),
         keywords: vec![],
     };
 
@@ -325,7 +332,7 @@ async fn test_cost_with_policy_header() {
 
 #[tokio::test]
 async fn test_cost_input_estimation() {
-    let providers = vec![provider_with_rates("alpha", 10, 30, 0)];
+    let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 0.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
     // 400 characters of content -> ~100 estimated tokens (400/4)
@@ -350,7 +357,7 @@ async fn test_cost_input_estimation() {
 
 #[tokio::test]
 async fn test_cost_rates_in_response() {
-    let providers = vec![provider_with_rates("alpha", 7, 22, 3)];
+    let providers = vec![provider_with_rates("alpha", 7000.0, 22000.0, 3.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
     let body = cost_request_body("gpt-4o", "hello", None);
@@ -363,9 +370,9 @@ async fn test_cost_rates_in_response() {
     let (status, json) = common::parse_body(response).await;
 
     assert_eq!(status, http::StatusCode::OK);
-    assert_eq!(json["rates"]["input_rate_sats_per_1k"], 7);
-    assert_eq!(json["rates"]["output_rate_sats_per_1k"], 22);
-    assert_eq!(json["rates"]["base_fee_sats"], 3);
+    assert_eq!(json["rates"]["input_rate_sats_per_1m"], 7000.0);
+    assert_eq!(json["rates"]["output_rate_sats_per_1m"], 22000.0);
+    assert_eq!(json["rates"]["base_fee_sats"], 3.0);
 }
 
 // ============================================================================
@@ -374,7 +381,7 @@ async fn test_cost_rates_in_response() {
 
 #[tokio::test]
 async fn test_cost_requires_auth() {
-    let providers = vec![provider_with_rates("alpha", 10, 30, 0)];
+    let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 0.0)];
     let app = setup_cost_test_app_with_auth(providers, "secret-token-123");
 
     let body = cost_request_body("gpt-4o", "hello", None);

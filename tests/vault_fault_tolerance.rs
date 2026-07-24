@@ -520,16 +520,20 @@ fn setup_vault_test_app_with_db(
             default_reserve_tokens: 4096,
             pending_threshold: 100,
         }),
+        tokenstats: None,
         providers: vec![ProviderConfig {
             name: "test-provider".to_string(),
             url: format!("{}/v1", provider_url),
             api_key: None,
             models: vec!["gpt-4o".to_string()],
-            input_rate: 10,
-            output_rate: 30,
-            base_fee: 1,
+            input_rate: 10000.0,
+            output_rate: 30000.0,
+            base_fee: 1.0,
             tier: Tier::Standard,
             auto_discover: false,
+            model_rates: Default::default(),
+            source: None,
+            provider_id: None,
         }],
         policies: PoliciesConfig::default(),
         logging: Default::default(),
@@ -557,6 +561,7 @@ fn setup_vault_test_app_with_db(
         db_writer: None,
         circuit_breakers: registry,
         vault: Some(vault),
+        market: Default::default(),
     };
 
     create_router(state)
