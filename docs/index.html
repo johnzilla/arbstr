@@ -43,7 +43,7 @@
           <div class="step">
             <span class="step-number">2</span>
             <h3>arbstr routes</h3>
-            <p>Scores complexity, matches policy, picks cheapest provider</p>
+            <p>Scores complexity, reads live market rates, matches policy, picks the cheapest qualified provider</p>
           </div>
           <div class="step">
             <span class="step-number">3</span>
@@ -54,6 +54,51 @@
             <span class="step-number">4</span>
             <h3>Bitcoin settles</h3>
             <p>Actual cost settled in sats via Lightning/Cashu — no tokens, no subscriptions</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <div class="container">
+        <h2>Features</h2>
+        <p class="section-lead">A production-minded routing engine, not a demo. Every request is scored, priced, and settled.</p>
+        <div class="feature-grid">
+          <div class="feature">
+            <h3>OpenAI-compatible proxy</h3>
+            <p>Drop-in replacement for <code>/v1/chat/completions</code> and <code>/v1/models</code>. Point any OpenAI client at it — unknown fields like <code>tools</code> and <code>response_format</code> pass through unchanged.</p>
+          </div>
+          <div class="feature">
+            <h3>Multi-provider cost routing</h3>
+            <p>Same models, different prices. arbstr ranks every qualified provider by blended cost and routes to the cheapest — free when your local GPU can handle it.</p>
+          </div>
+          <div class="feature">
+            <h3>Live market feed</h3>
+            <p>Optional tokenstats integration polls live multi-source quotes — OpenRouter, Routstr, and more — applying per-model sats/1M rates so routing always tracks the real market.</p>
+          </div>
+          <div class="feature">
+            <h3>Complexity-aware tiering</h3>
+            <p>A heuristic scorer sends simple prompts to local/free nodes and hard ones to frontier providers, with automatic tier escalation when a provider trips.</p>
+          </div>
+          <div class="feature">
+            <h3>Bitcoin settlement</h3>
+            <p>Optional vault treasury reserves, settles, and releases sats per request over Lightning and Cashu — fault-tolerant with pending-settlement reconciliation.</p>
+          </div>
+          <div class="feature">
+            <h3>Circuit breakers</h3>
+            <p>Per-provider Closed / Open / Half-Open breakers with automatic recovery probing route around failing providers before they hurt you.</p>
+          </div>
+          <div class="feature">
+            <h3>Streaming observability</h3>
+            <p>SSE token extraction, trailing cost events, and post-stream database updates give you real cost and latency on every streamed response.</p>
+          </div>
+          <div class="feature">
+            <h3>Cost &amp; analytics API</h3>
+            <p>Query aggregate stats by model, provider, or tier and page through the full request log — with time-range filtering built in.</p>
+          </div>
+          <div class="feature">
+            <h3>Bring any provider</h3>
+            <p>mesh-llm, Ollama, Routstr, OpenRouter, or any OpenAI-compatible endpoint. Set <code>auto_discover</code> and models populate themselves at startup.</p>
           </div>
         </div>
       </div>
@@ -103,6 +148,8 @@ docker compose up</code></pre>
       <p>arbstr is an open-source inference marketplace routing AI compute to the cheapest provider with Bitcoin settlement.</p>
       <p class="footer-links">
         <a href="https://github.com/johnzilla/arbstr">GitHub</a>
+        <span class="separator">&middot;</span>
+        <a href="https://github.com/johnzilla/arbstr/blob/main/FAQ.md">FAQ</a>
         <span class="separator">&middot;</span>
         <a href="https://github.com/johnzilla/arbstr/blob/main/LICENSE">MIT License</a>
       </p>

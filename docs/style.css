@@ -187,6 +187,56 @@ code, pre {
   line-height: 1.5;
 }
 
+/* Features */
+.features {
+  padding: 4rem 0;
+  border-top: 1px solid #222;
+}
+
+.section-lead {
+  color: #b0b0b0;
+  max-width: 640px;
+  margin-top: -0.5rem;
+  margin-bottom: 2.5rem;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+.feature {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid #222;
+  border-radius: 8px;
+  padding: 1.5rem;
+  transition: border-color 0.2s ease;
+}
+
+.feature:hover {
+  border-color: rgba(247, 147, 26, 0.4);
+}
+
+.feature h3 {
+  color: #f7931a;
+  margin-bottom: 0.6rem;
+}
+
+.feature p {
+  font-size: 0.95rem;
+  color: #b0b0b0;
+  line-height: 1.6;
+}
+
+.feature code {
+  color: #e5e5e5;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
 /* Manifesto */
 .manifesto {
   padding: 4rem 0;
@@ -317,6 +367,11 @@ code, pre {
     margin-right: auto;
   }
 
+  .feature-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
   .step:not(:last-child)::after {
     content: none;
   }
@@ -351,6 +406,7 @@ code, pre {
   }
 
   .how-it-works,
+  .features,
   .manifesto,
   .getting-started {
     padding: 3rem 0;
