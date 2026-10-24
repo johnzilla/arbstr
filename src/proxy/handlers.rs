@@ -459,6 +459,15 @@ fn spawn_vault_settle(
                     refunded_msats = ?resp.refunded_msats,
                     "Vault settle successful"
                 );
+                if let Some(shortfall_msats) = resp.shortfall_msats(actual_msats) {
+                    tracing::warn!(
+                        reservation_id = %reservation_id,
+                        requested_msats = actual_msats,
+                        charged_msats = ?resp.actual_msats,
+                        shortfall_msats = shortfall_msats,
+                        "Vault capped settle at the reservation; request under-reserved"
+                    );
+                }
             }
             Err(e) => {
                 tracing::error!(
