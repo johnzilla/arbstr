@@ -183,17 +183,22 @@ impl VaultClient {
                 })
             }
             401 => {
-                // Vault returns 401 both for an unknown agent token (client's fault)
-                // and for a wrong X-Internal-Token (operator misconfiguration).
-                // Only the former should reach the client as 401.
+                // Vault returns 401 both for an unknown agent token (client's fault,
+                // code `invalid_agent_token`) and for a wrong X-Internal-Token
+                // (operator misconfiguration, code `invalid_internal_token`).
+                // Only the former reaches the client as 401; any other 401 is
+                // treated as a vault-side configuration error.
                 let body = response.text().await.unwrap_or_default();
-                if body.contains("internal token") {
-                    Err(VaultError::Other(format!(
+                match error_code(&body).as_deref() {
+                    Some("invalid_agent_token") => Err(VaultError::Unauthorized),
+                    Some("invalid_internal_token") => Err(VaultError::Other(format!(
                         "Vault rejected internal token (check VAULT_INTERNAL_TOKEN): {}",
                         body
-                    )))
-                } else {
-                    Err(VaultError::Unauthorized)
+                    ))),
+                    _ => Err(VaultError::Other(format!(
+                        "Unexpected 401 from vault reserve: {}",
+                        body
+                    ))),
                 }
             }
             402 => Err(VaultError::InsufficientBalance),
@@ -605,6 +610,16 @@ pub async fn reconcile_once(vault: &VaultClient, pool: &sqlx::SqlitePool) -> (u3
     (replayed, failed, evicted)
 }
 
+/// Extract `error.code` from a vault error body (`{"error": {"code": ..., "message": ...}}`).
+fn error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("error")?
+        .get("code")?
+        .as_str()
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,6 +652,17 @@ mod tests {
     fn test_estimate_reserve_frontier_rates() {
         let result = estimate_reserve_msats(100, 4096, 10_000.0, 30_000.0, 2.0);
         assert_eq!(result, 125880);
+    }
+
+    #[test]
+    fn test_error_code_parsing() {
+        assert_eq!(
+            error_code(r#"{"error":{"code":"invalid_agent_token","message":"x"}}"#).as_deref(),
+            Some("invalid_agent_token")
+        );
+        assert_eq!(error_code(r#"{"error":"flat string"}"#), None);
+        assert_eq!(error_code("not json"), None);
+        assert_eq!(error_code(""), None);
     }
 
     #[test]

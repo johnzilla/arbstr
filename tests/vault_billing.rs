@@ -3,7 +3,7 @@
 //! Uses a mock HTTP vault server and a mock provider server to verify:
 //! - Bearer token required when vault is configured (401 without)
 //! - Vault error codes (402, 403, 429) mapped to OpenAI-compatible format
-//! - Vault 401 split: invalid agent token -> 401, invalid internal token -> 500
+//! - Vault 401 split by error code: invalid_agent_token -> 401, anything else -> 500
 //! - Frontier rates used for reserve amount estimation (BILL-05)
 //! - Reserve happens BEFORE provider contact (BILL-02 ordering)
 //! - Full reserve -> route -> settle path (BILL-03)
@@ -336,7 +336,7 @@ async fn test_vault_reserve_invalid_agent_token_returns_401() {
     // Body arbstr-vault sends from /internal/reserve for an unknown agent token
     let vault_url = start_mock_vault_reserve_response(
         401,
-        serde_json::json!({"error": {"code": "unauthorized", "message": "Invalid agent token"}}),
+        serde_json::json!({"error": {"code": "invalid_agent_token", "message": "Invalid agent token"}}),
     )
     .await;
     let (provider_url, provider_log) = start_mock_provider(false).await;
@@ -369,7 +369,7 @@ async fn test_vault_reserve_invalid_internal_token_returns_500() {
     // Body arbstr-vault's internalAuth middleware sends for a wrong X-Internal-Token
     let vault_url = start_mock_vault_reserve_response(
         401,
-        serde_json::json!({"error": {"code": "unauthorized", "message": "Invalid internal token"}}),
+        serde_json::json!({"error": {"code": "invalid_internal_token", "message": "Invalid internal token"}}),
     )
     .await;
     let (provider_url, _provider_log) = start_mock_provider(false).await;
@@ -390,6 +390,38 @@ async fn test_vault_reserve_invalid_internal_token_returns_500() {
         message.contains("VAULT_INTERNAL_TOKEN"),
         "operator error should point at VAULT_INTERNAL_TOKEN: {}",
         message
+    );
+}
+
+// ============================================================================
+// Test d4: 401 without a recognised code -> 500, regardless of message text
+// ============================================================================
+
+#[tokio::test]
+async fn test_vault_reserve_401_without_known_code_returns_500() {
+    // Pre-code vault body: the message says "agent token", but core keys on the
+    // code, so an unrecognised code must not be surfaced as a client 401.
+    let vault_url = start_mock_vault_reserve_response(
+        401,
+        serde_json::json!({"error": {"code": "unauthorized", "message": "Invalid agent token"}}),
+    )
+    .await;
+    let (provider_url, provider_log) = start_mock_provider(false).await;
+    let app = common::setup_vault_test_app(&vault_url, &provider_url);
+
+    let request = Request::post("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer agent-token-abc")
+        .body(axum::body::Body::from(chat_request_body()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let (status, _json) = common::parse_body(response).await;
+
+    assert_eq!(status.as_u16(), 500);
+    assert!(
+        provider_log.lock().unwrap().is_empty(),
+        "provider must not be contacted when reserve is rejected"
     );
 }
 
