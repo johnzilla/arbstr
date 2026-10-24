@@ -743,10 +743,25 @@ impl Config {
             None
         };
 
+        // Expand ${VAR} in vault url and internal_token (arbstr-node's config.toml
+        // uses internal_token = "${VAULT_INTERNAL_TOKEN}")
+        let vault = match raw.vault {
+            Some(mut v) => {
+                v.url = expand_env_vars_with(&v.url, "vault", &env_lookup)?;
+                let token = v.internal_token.expose_secret();
+                if token.contains("${") {
+                    v.internal_token =
+                        ApiKey::from(expand_env_vars_with(token, "vault", &env_lookup)?);
+                }
+                Some(v)
+            }
+            None => None,
+        };
+
         let config = Config {
             server: raw.server,
             database: raw.database,
-            vault: raw.vault,
+            vault,
             tokenstats,
             providers,
             policies: raw.policies,
@@ -1179,6 +1194,63 @@ mod tests {
             "Error should name the provider: {}",
             err
         );
+    }
+
+    fn make_raw_config_with_vault(url: &str, internal_token: &str) -> RawConfig {
+        let mut raw = make_raw_config("vault-test-provider", Some("literal".to_string()));
+        raw.vault = Some(VaultConfig {
+            url: url.to_string(),
+            internal_token: ApiKey::from(internal_token),
+            default_reserve_tokens: 4096,
+            pending_threshold: 100,
+        });
+        raw
+    }
+
+    #[test]
+    fn test_from_raw_vault_token_env_expanded() {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "VAULT_INTERNAL_TOKEN".to_string(),
+            "expanded-internal-token-0123456789abcdef".to_string(),
+        );
+
+        let raw = make_raw_config_with_vault("http://vault:3000", "${VAULT_INTERNAL_TOKEN}");
+        let (config, _) = Config::from_raw_with_lookup(raw, |name| env.get(name).cloned()).unwrap();
+
+        let vault = config.vault.unwrap();
+        assert_eq!(
+            vault.internal_token.expose_secret(),
+            "expanded-internal-token-0123456789abcdef"
+        );
+        assert_eq!(vault.url, "http://vault:3000");
+    }
+
+    #[test]
+    fn test_from_raw_vault_url_env_expanded() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("VAULT_HOST".to_string(), "vault.internal".to_string());
+
+        let raw = make_raw_config_with_vault("http://${VAULT_HOST}:3000", "literal-token");
+        let (config, _) = Config::from_raw_with_lookup(raw, |name| env.get(name).cloned()).unwrap();
+
+        let vault = config.vault.unwrap();
+        assert_eq!(vault.url, "http://vault.internal:3000");
+        assert_eq!(vault.internal_token.expose_secret(), "literal-token");
+    }
+
+    #[test]
+    fn test_from_raw_vault_token_missing_env_var_fails() {
+        let raw = make_raw_config_with_vault("http://vault:3000", "${VAULT_INTERNAL_TOKEN}");
+        let result = Config::from_raw_with_lookup(raw, |_| None);
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("VAULT_INTERNAL_TOKEN"),
+            "Error should name the variable: {}",
+            err
+        );
+        assert!(err.contains("vault"), "Error should name vault: {}", err);
     }
 
     // ── Masked prefix tests ──

@@ -3,6 +3,7 @@
 //! Uses a mock HTTP vault server and a mock provider server to verify:
 //! - Bearer token required when vault is configured (401 without)
 //! - Vault error codes (402, 403, 429) mapped to OpenAI-compatible format
+//! - Vault 401 split: invalid agent token -> 401, invalid internal token -> 500
 //! - Frontier rates used for reserve amount estimation (BILL-05)
 //! - Reserve happens BEFORE provider contact (BILL-02 ordering)
 //! - Full reserve -> route -> settle path (BILL-03)
@@ -299,6 +300,97 @@ async fn test_vault_reserve_rate_limited() {
 
     assert_eq!(status.as_u16(), 429);
     assert_eq!(json["error"]["type"], "billing_error");
+}
+
+/// Start a mock vault whose /internal/reserve always returns `status` with `body`.
+///
+/// Used to replay arbstr-vault's real error bodies verbatim.
+async fn start_mock_vault_reserve_response(status: u16, body: serde_json::Value) -> String {
+    let app = Router::new().route(
+        "/internal/reserve",
+        post(move || {
+            let body = body.clone();
+            async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    axum::Json(body),
+                )
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{}", addr)
+}
+
+// ============================================================================
+// Test d2: Vault 401 for unknown agent token -> client 401
+// ============================================================================
+
+#[tokio::test]
+async fn test_vault_reserve_invalid_agent_token_returns_401() {
+    // Body arbstr-vault sends from /internal/reserve for an unknown agent token
+    let vault_url = start_mock_vault_reserve_response(
+        401,
+        serde_json::json!({"error": {"code": "unauthorized", "message": "Invalid agent token"}}),
+    )
+    .await;
+    let (provider_url, provider_log) = start_mock_provider(false).await;
+    let app = common::setup_vault_test_app(&vault_url, &provider_url);
+
+    let request = Request::post("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer vtk_unknown")
+        .body(axum::body::Body::from(chat_request_body()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let (status, json) = common::parse_body(response).await;
+
+    assert_eq!(status.as_u16(), 401);
+    assert_eq!(json["error"]["type"], "billing_error");
+    assert_eq!(json["error"]["code"], "vault_401");
+    assert!(
+        provider_log.lock().unwrap().is_empty(),
+        "provider must not be contacted when reserve is rejected"
+    );
+}
+
+// ============================================================================
+// Test d3: Vault 401 for wrong internal token -> 500 (operator misconfiguration)
+// ============================================================================
+
+#[tokio::test]
+async fn test_vault_reserve_invalid_internal_token_returns_500() {
+    // Body arbstr-vault's internalAuth middleware sends for a wrong X-Internal-Token
+    let vault_url = start_mock_vault_reserve_response(
+        401,
+        serde_json::json!({"error": {"code": "unauthorized", "message": "Invalid internal token"}}),
+    )
+    .await;
+    let (provider_url, _provider_log) = start_mock_provider(false).await;
+    let app = common::setup_vault_test_app(&vault_url, &provider_url);
+
+    let request = Request::post("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer agent-token-abc")
+        .body(axum::body::Body::from(chat_request_body()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let (status, json) = common::parse_body(response).await;
+
+    assert_eq!(status.as_u16(), 500);
+    let message = json["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("VAULT_INTERNAL_TOKEN"),
+        "operator error should point at VAULT_INTERNAL_TOKEN: {}",
+        message
+    );
 }
 
 // ============================================================================
