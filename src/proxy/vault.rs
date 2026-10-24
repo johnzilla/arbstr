@@ -53,6 +53,10 @@ pub struct SettleResponse {
 /// Errors from vault API calls.
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
+    /// Vault did not recognize the client's agent token (HTTP 401).
+    #[error("Invalid agent token")]
+    Unauthorized,
+
     /// Agent has insufficient balance (HTTP 402).
     #[error("Insufficient balance")]
     InsufficientBalance,
@@ -78,6 +82,7 @@ impl VaultError {
     /// Map a vault error to an HTTP status code for the client.
     pub fn status_code(&self) -> u16 {
         match self {
+            VaultError::Unauthorized => 401,
             VaultError::InsufficientBalance => 402,
             VaultError::PolicyDenied(_) => 403,
             VaultError::RateLimited => 429,
@@ -176,6 +181,20 @@ impl VaultClient {
                     id,
                     reserved_msats: amount_msats,
                 })
+            }
+            401 => {
+                // Vault returns 401 both for an unknown agent token (client's fault)
+                // and for a wrong X-Internal-Token (operator misconfiguration).
+                // Only the former should reach the client as 401.
+                let body = response.text().await.unwrap_or_default();
+                if body.contains("internal token") {
+                    Err(VaultError::Other(format!(
+                        "Vault rejected internal token (check VAULT_INTERNAL_TOKEN): {}",
+                        body
+                    )))
+                } else {
+                    Err(VaultError::Unauthorized)
+                }
             }
             402 => Err(VaultError::InsufficientBalance),
             403 => {
@@ -314,10 +333,8 @@ pub fn estimate_reserve_msats(
     output_rate: f64,
     base_fee: f64,
 ) -> u64 {
-    let input_msats =
-        ((estimated_input_tokens as f64 * input_rate) / 1000.0).ceil() as u64;
-    let output_msats =
-        ((estimated_output_tokens as f64 * output_rate) / 1000.0).ceil() as u64;
+    let input_msats = ((estimated_input_tokens as f64 * input_rate) / 1000.0).ceil() as u64;
+    let output_msats = ((estimated_output_tokens as f64 * output_rate) / 1000.0).ceil() as u64;
     let base_fee_msats = (base_fee * 1000.0).ceil() as u64;
     input_msats + output_msats + base_fee_msats
 }
@@ -624,6 +641,7 @@ mod tests {
 
     #[test]
     fn test_vault_error_status_codes() {
+        assert_eq!(VaultError::Unauthorized.status_code(), 401);
         assert_eq!(VaultError::InsufficientBalance.status_code(), 402);
         assert_eq!(VaultError::PolicyDenied("x".into()).status_code(), 403);
         assert_eq!(VaultError::RateLimited.status_code(), 429);
