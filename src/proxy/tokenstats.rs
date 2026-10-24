@@ -80,10 +80,7 @@ impl MarketState {
     }
 
     pub fn snapshot(&self) -> MarketStatus {
-        self.inner
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn set(&self, status: MarketStatus) {
@@ -683,8 +680,7 @@ mod tests {
             provider_id: None,
         }];
         let cfg = cfg_with_keys(HashMap::new());
-        let (providers, _, _) =
-            merge_quotes_into_providers(&static_p, &[], &[], &cfg, Utc::now());
+        let (providers, _, _) = merge_quotes_into_providers(&static_p, &[], &[], &cfg, Utc::now());
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].name, "local");
     }

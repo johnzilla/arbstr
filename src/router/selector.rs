@@ -69,7 +69,12 @@ impl Router {
         policy_rules: Vec<PolicyRule>,
         default_strategy: String,
     ) -> Self {
-        Self::with_blend_ratio(providers, policy_rules, default_strategy, DEFAULT_BLEND_RATIO)
+        Self::with_blend_ratio(
+            providers,
+            policy_rules,
+            default_strategy,
+            DEFAULT_BLEND_RATIO,
+        )
     }
 
     /// Create a router with an explicit blend ratio for cost ranking.
@@ -400,17 +405,29 @@ mod tests {
         // rates per 1M: 10_000 and 30_000 (= legacy 10 and 30 per 1k)
         // (100*10000 + 200*30000)/1e6 + 1 = 7 + 1 = 8
         let cost1 = actual_cost_sats(100, 200, 10_000.0, 30_000.0, 1.0);
-        assert!((cost1 - 8.0).abs() < 1e-9, "Case 1: expected 8.0, got {cost1}");
+        assert!(
+            (cost1 - 8.0).abs() < 1e-9,
+            "Case 1: expected 8.0, got {cost1}"
+        );
 
         // (10*5000 + 5*15000)/1e6 = 0.125
         let cost2 = actual_cost_sats(10, 5, 5_000.0, 15_000.0, 0.0);
-        assert!((cost2 - 0.125).abs() < 1e-9, "Case 2: expected 0.125, got {cost2}");
+        assert!(
+            (cost2 - 0.125).abs() < 1e-9,
+            "Case 2: expected 0.125, got {cost2}"
+        );
 
         let cost3 = actual_cost_sats(0, 0, 10_000.0, 30_000.0, 5.0);
-        assert!((cost3 - 5.0).abs() < 1e-9, "Case 3: expected 5.0, got {cost3}");
+        assert!(
+            (cost3 - 5.0).abs() < 1e-9,
+            "Case 3: expected 5.0, got {cost3}"
+        );
 
         let cost4 = actual_cost_sats(1000, 1000, 10_000.0, 30_000.0, 0.0);
-        assert!((cost4 - 40.0).abs() < 1e-9, "Case 4: expected 40.0, got {cost4}");
+        assert!(
+            (cost4 - 40.0).abs() < 1e-9,
+            "Case 4: expected 40.0, got {cost4}"
+        );
     }
 
     #[test]
@@ -675,7 +692,10 @@ mod tests {
         );
         p.tier = Tier::Local;
         let router = Router::new(vec![p], vec![], "cheapest".to_string());
-        assert_eq!(router.frontier_rates("gpt-4o"), Some((1_000.0, 5_000.0, 0.0)));
+        assert_eq!(
+            router.frontier_rates("gpt-4o"),
+            Some((1_000.0, 5_000.0, 0.0))
+        );
     }
 
     #[test]
