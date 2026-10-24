@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep workflow actions current (e.g. Node runtime deprecations).
+  # All action bumps arrive as one weekly PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    ignore:
+      # The tag is the pinned Rust toolchain, not an action version. Bump it
+      # by hand together with any fixes the newer clippy requires.
+      - dependency-name: dtolnay/rust-toolchain
