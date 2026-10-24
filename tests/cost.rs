@@ -335,7 +335,8 @@ async fn test_cost_input_estimation() {
     let providers = vec![provider_with_rates("alpha", 10000.0, 30000.0, 0.0)];
     let app = setup_cost_test_app(providers, vec![]);
 
-    // 400 characters of content -> ~100 estimated tokens (400/4)
+    // 400 characters of content -> 100 content tokens (400/4), plus framing:
+    // 8 per request + 4 per message = 112
     let long_message = "a".repeat(400);
     let body = cost_request_body("gpt-4o", &long_message, None);
     let request = Request::post("/v1/cost")
@@ -348,7 +349,10 @@ async fn test_cost_input_estimation() {
 
     assert_eq!(status, http::StatusCode::OK);
     let input_tokens = json["estimated_input_tokens"].as_u64().unwrap();
-    assert_eq!(input_tokens, 100, "400 chars / 4 = 100 estimated tokens");
+    assert_eq!(
+        input_tokens, 112,
+        "400 chars / 4 = 100 content tokens + 12 framing tokens"
+    );
 }
 
 // ============================================================================

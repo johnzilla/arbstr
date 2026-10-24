@@ -48,6 +48,18 @@ pub struct SettleMetadata {
 pub struct SettleResponse {
     pub settled: bool,
     pub refunded_msats: Option<u64>,
+    /// Amount vault actually charged. Vault caps a settle at the reserved
+    /// amount, so this can be lower than what core asked to settle.
+    pub actual_msats: Option<u64>,
+}
+
+impl SettleResponse {
+    /// How far vault's charge fell short of `requested_msats`, if it capped the settle.
+    pub fn shortfall_msats(&self, requested_msats: u64) -> Option<u64> {
+        self.actual_msats
+            .filter(|&charged| charged < requested_msats)
+            .map(|charged| requested_msats - charged)
+    }
 }
 
 /// Errors from vault API calls.
@@ -652,6 +664,27 @@ mod tests {
     fn test_estimate_reserve_frontier_rates() {
         let result = estimate_reserve_msats(100, 4096, 10_000.0, 30_000.0, 2.0);
         assert_eq!(result, 125880);
+    }
+
+    #[test]
+    fn test_settle_shortfall() {
+        let resp = |actual| SettleResponse {
+            settled: true,
+            refunded_msats: Some(0),
+            actual_msats: actual,
+        };
+        // Vault capped 2450 at the 2330 reservation
+        assert_eq!(resp(Some(2330)).shortfall_msats(2450), Some(120));
+        assert_eq!(resp(Some(2450)).shortfall_msats(2450), None);
+        // Older vault without actual_msats: nothing to compare
+        assert_eq!(resp(None).shortfall_msats(2450), None);
+    }
+
+    #[test]
+    fn test_settle_response_without_actual_msats() {
+        let resp: SettleResponse =
+            serde_json::from_str(r#"{"settled":true,"refunded_msats":10}"#).unwrap();
+        assert_eq!(resp.actual_msats, None);
     }
 
     #[test]

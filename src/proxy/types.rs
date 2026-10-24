@@ -160,6 +160,13 @@ pub struct Delta {
     pub content: Option<String>,
 }
 
+/// Tokens a provider adds to every request beyond message content
+/// (chat template, assistant priming).
+pub const REQUEST_OVERHEAD_TOKENS: u32 = 8;
+
+/// Tokens a provider adds per message (role markers and separators).
+pub const PER_MESSAGE_OVERHEAD_TOKENS: u32 = 4;
+
 impl ChatCompletionRequest {
     /// Extract the user's prompt from messages (last user message).
     pub fn user_prompt(&self) -> Option<&str> {
@@ -172,14 +179,22 @@ impl ChatCompletionRequest {
 
     /// Estimate input and output token counts for cost estimation.
     ///
-    /// Input tokens: sum all message content character lengths / 4 (rough heuristic).
+    /// Input tokens: message content character lengths / 4 (rough heuristic, rounded
+    /// up), plus the framing tokens providers bill on top of the content: a fixed
+    /// per-request overhead and a per-message overhead for role markers. Without
+    /// these, short prompts are underestimated by roughly half (a 52-char prompt
+    /// estimated at 13 tokens was billed by Anthropic as 25), the vault reservation
+    /// comes in below the real cost, and vault caps the settle at the reservation.
     /// For multimodal `Parts` content, uses the serialized JSON length as fallback.
     /// Output tokens: `max_tokens` if set, otherwise `default_output` parameter.
     ///
     /// Returns `(estimated_input_tokens, estimated_output_tokens)`.
     pub fn estimate_tokens(&self, default_output: u32) -> (u32, u32) {
         let total_chars: usize = self.messages.iter().map(|m| m.content.char_len()).sum();
-        let input = (total_chars / 4).max(1) as u32;
+        let content = total_chars.div_ceil(4) as u32;
+        let framing =
+            REQUEST_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * self.messages.len() as u32;
+        let input = (content + framing).max(1);
         let output = self.max_tokens.unwrap_or(default_output);
         (input, output)
     }
@@ -226,6 +241,33 @@ pub fn ensure_stream_options(request: &mut ChatCompletionRequest) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_estimate_tokens_includes_framing_overhead() {
+        let mut req = minimal_request();
+        // Prompt from a live Anthropic request that billed 25 input tokens.
+        req.messages[0].content =
+            MessageContent::Text("In one short sentence, what is the Lightning Network?".into());
+        let (input, _) = req.estimate_tokens(256);
+        // 53 chars -> 14 content tokens (rounded up) + 8 request + 4 message
+        assert_eq!(input, 26);
+        assert!(input >= 25, "estimate must cover the billed 25 tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_scales_overhead_per_message() {
+        let mut req = minimal_request();
+        // 8 chars: divides evenly by 4, so each copy adds exactly 2 content tokens
+        req.messages[0].content = MessageContent::Text("abcdefgh".into());
+        let one = req.estimate_tokens(256).0;
+        req.messages.push(req.messages[0].clone());
+        let two = req.estimate_tokens(256).0;
+        assert_eq!(
+            one,
+            2 + REQUEST_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS
+        );
+        assert_eq!(two - one, 2 + PER_MESSAGE_OVERHEAD_TOKENS);
+    }
 
     /// Helper to build a minimal ChatCompletionRequest for testing.
     fn minimal_request() -> ChatCompletionRequest {
