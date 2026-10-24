@@ -277,6 +277,8 @@ async fn test_vault_reserve_policy_denied() {
 
     assert_eq!(status.as_u16(), 403);
     assert_eq!(json["error"]["type"], "billing_error");
+    // Mock body has no `reason`: falls back to the generic code
+    assert_eq!(json["error"]["reason"], "policy_denied");
 }
 
 // ============================================================================
@@ -325,6 +327,53 @@ async fn start_mock_vault_reserve_response(status: u16, body: serde_json::Value)
         axum::serve(listener, app).await.unwrap();
     });
     format!("http://{}", addr)
+}
+
+// ============================================================================
+// Test c2: Vault 403 policy denial -> clean message plus reason, no raw body
+// ============================================================================
+
+#[tokio::test]
+async fn test_vault_reserve_policy_denied_surfaces_reason() {
+    // Body arbstr-vault sends from /internal/reserve when the agent's policy denies
+    let vault_url = start_mock_vault_reserve_response(
+        403,
+        serde_json::json!({
+            "error": {
+                "code": "policy_denied",
+                "message": "Reservation denied by agent policy: exceeds_max_transaction"
+            },
+            "reason": "exceeds_max_transaction"
+        }),
+    )
+    .await;
+    let (provider_url, provider_log) = start_mock_provider(false).await;
+    let app = common::setup_vault_test_app(&vault_url, &provider_url);
+
+    let request = Request::post("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer agent-token-abc")
+        .body(axum::body::Body::from(chat_request_body()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let (status, json) = common::parse_body(response).await;
+
+    assert_eq!(status.as_u16(), 403);
+    assert_eq!(json["error"]["type"], "billing_error");
+    assert_eq!(json["error"]["code"], "vault_403");
+    assert_eq!(json["error"]["reason"], "exceeds_max_transaction");
+    let message = json["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("max_tokens"), "message: {}", message);
+    assert!(
+        !message.contains('{') && !message.contains("policy_denied"),
+        "raw vault body must not leak into the message: {}",
+        message
+    );
+    assert!(
+        provider_log.lock().unwrap().is_empty(),
+        "provider must not be contacted when reserve is denied"
+    );
 }
 
 // ============================================================================
