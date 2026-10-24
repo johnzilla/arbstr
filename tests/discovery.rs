@@ -76,7 +76,7 @@ async fn discovery_unreachable() {
 }
 
 /// Test 3: Provider with auto_discover=true, unreachable endpoint, and empty
-/// models stays empty (won't match requests). Per D-02.
+/// models stays empty (won't match requests).
 #[tokio::test]
 async fn discovery_unreachable_empty() {
     let mut providers = vec![test_provider(
@@ -124,7 +124,7 @@ async fn discovery_skipped() {
 }
 
 /// Test 5: A TOML config without auto_discover field deserializes successfully
-/// with auto_discover=false. Per D-05.
+/// with auto_discover=false.
 #[test]
 fn config_backward_compat() {
     let toml_str = r#"
@@ -149,7 +149,7 @@ default_strategy = "cheapest"
     assert!(!config.providers[0].auto_discover);
 }
 
-/// Test 6: Discovered models fully replace static list (not merge/append). Per D-03.
+/// Test 6: Discovered models fully replace static list (not merge/append).
 #[tokio::test]
 async fn discovery_replaces_static() {
     let mock_server = MockServer::start().await;

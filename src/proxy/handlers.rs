@@ -273,7 +273,7 @@ async fn resolve_candidates(
 ) -> Result<ResolvedCandidates, Response> {
     let routing = &state.config.routing;
 
-    // Determine max_tier: header override skips scorer (D-13, D-14)
+    // Determine max_tier: header override skips scorer
     let (complexity_score, max_tier) = if let Some(tier) = complexity_override {
         (None, tier)
     } else {
@@ -298,7 +298,7 @@ async fn resolve_candidates(
         ) {
             Ok(c) => c,
             Err(Error::NoTierMatch { .. }) => {
-                // No providers configured at this tier -- escalate (D-05)
+                // No providers configured at this tier -- escalate
                 if let Some(next) = current_tier.escalate() {
                     tracing::warn!(
                         from_tier = %current_tier,
@@ -577,7 +577,7 @@ pub async fn chat_completions(
         reservation_id: None,
     };
 
-    // Parse complexity header override (D-10 through D-14)
+    // Parse complexity header override
     let complexity_override: Option<Tier> = headers
         .get(ARBSTR_COMPLEXITY_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -585,7 +585,7 @@ pub async fn chat_completions(
             "high" => Some(Tier::Frontier),
             "medium" => Some(Tier::Standard),
             "low" => Some(Tier::Local),
-            _ => None, // D-12: invalid -> fall through to scorer
+            _ => None, // invalid -> fall through to scorer
         });
 
     let resolved = match resolve_candidates(
@@ -675,7 +675,7 @@ pub async fn chat_completions(
             request.max_tokens = Some(vault.default_reserve_tokens);
         }
 
-        // Reserve at frontier (worst-case) rates per D-03/D-04.
+        // Reserve at frontier (worst-case) rates.
         // This handles tier escalation safely -- if a local request escalates
         // to frontier on circuit break, the reservation already covers it.
         let (est_input, est_output) = request.estimate_tokens(vault.default_reserve_tokens);

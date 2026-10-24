@@ -216,7 +216,7 @@ async fn get(app: axum::Router, uri: &str) -> (http::StatusCode, serde_json::Val
 }
 
 // ──────────────────────────────────────────────────
-// PAGINATION TESTS (LOG-01)
+// PAGINATION TESTS
 // ──────────────────────────────────────────────────
 
 /// Test 1: Default pagination (no params, default last_7d)
@@ -293,7 +293,7 @@ async fn test_logs_per_page_clamped_to_100() {
 }
 
 // ──────────────────────────────────────────────────
-// FILTERING TESTS (LOG-02)
+// FILTERING TESTS
 // ──────────────────────────────────────────────────
 
 /// Test 6: Filter by model (includes old record with last_30d)
@@ -414,7 +414,7 @@ async fn test_logs_time_range_last_30d() {
 }
 
 // ──────────────────────────────────────────────────
-// SORTING TESTS (LOG-03)
+// SORTING TESTS
 // ──────────────────────────────────────────────────
 
 /// Test 14: Sort by cost ascending

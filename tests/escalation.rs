@@ -1,13 +1,13 @@
 //! Integration tests for complexity header override and tier escalation.
 //!
 //! Verifies:
-//! - X-Arbstr-Complexity: high routes to frontier-tier provider (SCORE-03)
-//! - X-Arbstr-Complexity: low routes to local-tier provider (SCORE-03)
-//! - X-Arbstr-Complexity: medium routes to standard-or-lower tier (SCORE-03)
-//! - Invalid X-Arbstr-Complexity header falls through to scorer (SCORE-03)
-//! - Missing header uses scorer (SCORE-03)
-//! - Escalation when local-tier provider is circuit-broken (ROUTE-04)
-//! - Escalation is one-way (ROUTE-05)
+//! - X-Arbstr-Complexity: high routes to frontier-tier provider
+//! - X-Arbstr-Complexity: low routes to local-tier provider
+//! - X-Arbstr-Complexity: medium routes to standard-or-lower tier
+//! - Invalid X-Arbstr-Complexity header falls through to scorer
+//! - Missing header uses scorer
+//! - Escalation when local-tier provider is circuit-broken
+//! - Escalation is one-way
 
 mod common;
 
@@ -141,7 +141,7 @@ fn complex_chat_request_body() -> String {
 }
 
 // ============================================================================
-// Test 1: X-Arbstr-Complexity: high routes to frontier (SCORE-03)
+// Test 1: X-Arbstr-Complexity: high routes to frontier
 // ============================================================================
 
 #[tokio::test]
@@ -181,7 +181,7 @@ async fn test_complexity_header_high_routes_to_frontier() {
 }
 
 // ============================================================================
-// Test 2: X-Arbstr-Complexity: low routes to local (SCORE-03)
+// Test 2: X-Arbstr-Complexity: low routes to local
 // ============================================================================
 
 #[tokio::test]
@@ -218,7 +218,7 @@ async fn test_complexity_header_low_routes_to_local() {
 }
 
 // ============================================================================
-// Test 3: X-Arbstr-Complexity: medium routes to standard or lower (SCORE-03)
+// Test 3: X-Arbstr-Complexity: medium routes to standard or lower
 // ============================================================================
 
 #[tokio::test]
@@ -256,7 +256,7 @@ async fn test_complexity_header_medium_routes_to_standard() {
 }
 
 // ============================================================================
-// Test 4: Invalid X-Arbstr-Complexity header falls through to scorer (SCORE-03)
+// Test 4: Invalid X-Arbstr-Complexity header falls through to scorer
 // ============================================================================
 
 #[tokio::test]
@@ -277,7 +277,7 @@ async fn test_complexity_header_invalid_uses_scorer() {
         .await
         .unwrap();
 
-    // Should succeed -- invalid header value falls through to scorer (D-12)
+    // Should succeed -- invalid header value falls through to scorer
     assert_eq!(
         response.status(),
         http::StatusCode::OK,
@@ -286,7 +286,7 @@ async fn test_complexity_header_invalid_uses_scorer() {
 }
 
 // ============================================================================
-// Test 5: No complexity header uses scorer (SCORE-03)
+// Test 5: No complexity header uses scorer
 // ============================================================================
 
 #[tokio::test]
@@ -325,7 +325,7 @@ async fn test_no_complexity_header_uses_scorer() {
 }
 
 // ============================================================================
-// Test 6: Escalation when local-tier provider is circuit-broken (ROUTE-04)
+// Test 6: Escalation when local-tier provider is circuit-broken
 // ============================================================================
 
 #[tokio::test]
@@ -368,7 +368,7 @@ async fn test_escalation_when_local_circuit_broken() {
 }
 
 // ============================================================================
-// Test 7: Escalation is one-way -- never de-escalates (ROUTE-05)
+// Test 7: Escalation is one-way -- never de-escalates
 // ============================================================================
 
 #[tokio::test]

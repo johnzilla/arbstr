@@ -11,9 +11,9 @@ use std::time::Duration;
 
 /// Fixed exponential backoff: 1s, 2s, 4s.
 ///
-/// Matches the locked decision from CONTEXT.md. With `MAX_RETRIES=2`, only the
-/// first two slots (1s, 2s) are used at runtime. The 4s entry documents the full
-/// sequence and would be used if `MAX_RETRIES` were increased.
+/// With `MAX_RETRIES=2`, only the first two slots (1s, 2s) are used at
+/// runtime. The 4s entry documents the full sequence and would be used if
+/// `MAX_RETRIES` were increased.
 const BACKOFF_DURATIONS: [Duration; 3] = [
     Duration::from_secs(1),
     Duration::from_secs(2),

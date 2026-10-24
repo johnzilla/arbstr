@@ -79,8 +79,8 @@ pub fn spawn_log_write(pool: &SqlitePool, log: RequestLog) {
 /// Writes input_tokens, output_tokens, and cost_sats to the row matching
 /// the given correlation_id. Returns the number of rows affected.
 ///
-/// Per user decision: only updates token/cost columns. Latency stays as
-/// TTFB from INSERT (Phase 10 handles full-stream latency).
+/// Only updates token/cost columns. Latency stays as TTFB from INSERT;
+/// full-stream latency is recorded separately.
 pub async fn update_usage(
     pool: &SqlitePool,
     correlation_id: &str,
