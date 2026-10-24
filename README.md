@@ -89,6 +89,7 @@ Copy `config.example.toml` to `config.toml` and customize:
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional global rate limit (requests/sec)
 # auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models, /v1/cost (ignored when [vault] is set)
+# operator_token = "${ARBSTR_OPERATOR_TOKEN}"  # bearer token for /v1/stats and /v1/requests (required with [vault])
 
 # Vault treasury integration (optional)
 # When configured, requests require vault billing via reserve/settle/release.
@@ -227,7 +228,7 @@ Each request gets a complexity score that picks a tier (`local`, `standard`, `fr
 
 ## Vault billing
 
-When `[vault]` is configured, arbstr bills every request to an agent account in [arbstr-vault](https://github.com/johnzilla/arbstr-vault). Clients send the agent's vault token as `Authorization: Bearer <token>`; `auth_token` is not used in this mode. Errors use the OpenAI error shape with `"type": "billing_error"` and `"code": "vault_<status>"`:
+When `[vault]` is configured, arbstr bills every request to an agent account in [arbstr-vault](https://github.com/johnzilla/arbstr-vault). Clients send the agent's vault token as `Authorization: Bearer <token>`; `auth_token` is not used in this mode. `/v1/models` and `/v1/cost` check the token with vault without reserving anything (needs arbstr-vault with `/internal/agents/verify`). Errors use the OpenAI error shape with `"type": "billing_error"` and `"code": "vault_<status>"`:
 
 | Status | Meaning |
 |--------|---------|
@@ -268,17 +269,21 @@ arbstr providers [OPTIONS]      List configured providers
 
 ## API Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /v1/chat/completions` | OpenAI-compatible chat completions (streaming and non-streaming) |
-| `GET /v1/models` | List available models across all providers |
-| `GET /v1/stats` | Aggregate cost/performance stats with time range and model/provider filtering |
-| `GET /v1/stats?group_by=model` | Per-model stats breakdown |
-| `GET /v1/stats?group_by=tier` | Per-tier (local/standard/frontier) stats breakdown |
-| `GET /v1/requests` | Paginated request log listing with filtering and sorting |
-| `POST /v1/cost` | Estimate request cost before sending (input/output token counts and sats) |
-| `GET /health` | Health check |
-| `GET /providers` | List configured providers with rates |
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `POST /v1/chat/completions` | client | OpenAI-compatible chat completions (streaming and non-streaming) |
+| `GET /v1/models` | client | List available models across all providers |
+| `POST /v1/cost` | client | Estimate request cost before sending (input/output token counts and sats) |
+| `GET /v1/stats` | operator | Aggregate cost/performance stats with time range and model/provider filtering |
+| `GET /v1/stats?group_by=model` | operator | Per-model stats breakdown |
+| `GET /v1/stats?group_by=tier` | operator | Per-tier (local/standard/frontier) stats breakdown |
+| `GET /v1/requests` | operator | Paginated request log listing with filtering and sorting |
+| `GET /health` | none | Health check |
+| `GET /providers` | none | List configured providers with rates |
+
+**client**: in free proxy mode, `auth_token` when it is set (open otherwise). With `[vault]`, the agent's vault token.
+
+**operator**: `operator_token`. In free proxy mode, `auth_token` is used when `operator_token` is unset, and the endpoints are open if neither is set. With `[vault]`, they refuse every request (`401 operator_token_not_configured`) until `operator_token` is set, because the request log covers every agent's traffic. `operator_token` accepts `${VAR}`, and an empty value counts as unset.
 
 ## Development
 

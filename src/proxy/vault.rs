@@ -235,6 +235,65 @@ impl VaultClient {
         }
     }
 
+    /// Check that an agent token belongs to a vault agent, without reserving.
+    ///
+    /// Used for endpoints that cost nothing (/v1/models, /v1/cost). Single
+    /// attempt: the client can simply retry a failed listing or estimate.
+    pub async fn verify_agent(&self, agent_token: &str) -> Result<(), VaultError> {
+        let url = format!("{}/internal/agents/verify", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("X-Internal-Token", &self.token)
+            .timeout(VAULT_TIMEOUT)
+            .json(&serde_json::json!({ "agent_token": agent_token }))
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() || e.is_connect() {
+                    VaultError::Unavailable(format!("Connection failed: {}", e))
+                } else {
+                    VaultError::Other(e.to_string())
+                }
+            })?;
+
+        let status = response.status().as_u16();
+        match status {
+            200..=299 => Ok(()),
+            401 => {
+                // Same split as reserve: only invalid_agent_token is the client's fault
+                let body = response.text().await.unwrap_or_default();
+                match error_code(&body).as_deref() {
+                    Some("invalid_agent_token") => Err(VaultError::Unauthorized),
+                    Some("invalid_internal_token") => Err(VaultError::Other(format!(
+                        "Vault rejected internal token (check VAULT_INTERNAL_TOKEN): {}",
+                        body
+                    ))),
+                    _ => Err(VaultError::Other(format!(
+                        "Unexpected 401 from vault verify: {}",
+                        body
+                    ))),
+                }
+            }
+            404 => Err(VaultError::Other(
+                "Vault has no /internal/agents/verify endpoint; upgrade arbstr-vault".to_string(),
+            )),
+            429 => Err(VaultError::RateLimited),
+            500..=599 => {
+                let body = response.text().await.unwrap_or_default();
+                Err(VaultError::Unavailable(format!(
+                    "HTTP {}: {}",
+                    status, body
+                )))
+            }
+            _ => {
+                let body = response.text().await.unwrap_or_default();
+                Err(VaultError::Other(format!("HTTP {}: {}", status, body)))
+            }
+        }
+    }
+
     /// Settle a reservation after successful inference.
     ///
     /// Retries up to MAX_RETRIES times with exponential backoff.

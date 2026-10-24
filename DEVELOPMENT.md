@@ -151,6 +151,7 @@ Config file: `config.toml` (see `config.example.toml` for full example)
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional (requests/sec, 0 or absent = unlimited)
 # auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models, /v1/cost (ignored when [vault] is set — vault validates agent tokens)
+# operator_token = "${ARBSTR_OPERATOR_TOKEN}"  # /v1/stats, /v1/requests; required with [vault] (empty = unset)
 
 [database]
 path = "./arbstr.db"
