@@ -4,7 +4,7 @@ This document covers arbstr's architecture, internals, and development workflow.
 
 ## Project Overview
 
-arbstr is an intelligent LLM routing and cost optimization layer for the Routstr decentralized marketplace. It acts as a local proxy between your applications and Routstr providers, selecting the optimal provider based on cost, policies, and constraints.
+arbstr is an intelligent LLM routing and cost optimization layer. It acts as an OpenAI-compatible proxy between your applications and any OpenAI-compatible providers (Routstr, OpenRouter, Anthropic, mesh-llm, Ollama, ...), selecting the cheapest qualified provider based on cost, tier, policies, and constraints. With `[vault]` configured, every request is billed to an agent account in arbstr-vault.
 
 ## Quick Reference
 
@@ -15,7 +15,8 @@ cargo build --release
 # Run tests
 cargo test
 
-# Run with mock providers (no real API calls)
+# Run with the built-in mock config (fake providers at localhost:9999/9998;
+# nothing serves them, so chat requests fail — useful for CLI/endpoint checks)
 cargo run -- serve --mock
 
 # Run with config file
@@ -37,6 +38,8 @@ cargo fmt
 cargo clippy -- -D warnings
 ```
 
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on Rust 1.95.0 for every PR, and publishes `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` (amd64 + arm64) on merge to main. Run all three locally before pushing. Newer clippy releases flag `result_large_err` on `RequestError`; fix that before bumping the pinned toolchain.
+
 ## Architecture
 
 ```mermaid
@@ -47,21 +50,19 @@ flowchart LR
 
     subgraph Arbstr["arbstr"]
         Proxy["Proxy Server"]
-        Vault["Vault Client"]
         Policy["Policy Engine"]
         Router["Router"]
         DB[(SQLite)]
     end
 
-    subgraph Providers["Routstr Marketplace"]
+    subgraph Providers["OpenAI-compatible providers"]
         P1["Provider A"]
         P2["Provider B"]
         P3["Provider C"]
     end
 
     App --> Proxy
-    Proxy --> Vault
-    Vault --> Policy
+    Proxy --> Policy
     Policy --> Router
     Router --> P1
     Router --> P2
@@ -100,16 +101,18 @@ sequenceDiagram
         Proxy->>Vault: Settle(actual_cost) or Release()
     end
     Proxy-->>App: Stream response
-
-    Note over DB: Learn token ratios<br/>over time
 ```
+
+Vault reserve uses frontier rates and the request's `max_tokens` (or `default_reserve_tokens`, which is then injected upstream). Vault errors map to client responses in `src/proxy/vault.rs` (`VaultError`): only `error.code = invalid_agent_token` becomes a client 401; a 403 carries vault's policy `reason` into `error.reason`; settle failures go to `pending_settlements` and a reconciliation task retries them.
 
 ### Key Components
 
 - **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback, SSE stream interception for usage extraction, graceful shutdown on SIGINT/SIGTERM
 - **Circuit Breaker** (`src/proxy/circuit_breaker.rs`): Per-provider Closed/Open/Half-Open state machine with DashMap registry, watch-based probe signaling, and RAII ProbeGuard
-- **Router** (`src/router/`): Provider selection logic, cost optimization
-- **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management
+- **tokenstats client** (`src/proxy/tokenstats.rs`): Optional market feed — polls `/api/quotes` + `/api/nodes`, per-model rates (sats/1M), auth-gated routable providers, `GET /providers` market.skipped visibility
+- **Complexity Scorer** (`src/router/complexity.rs`): Heuristic complexity analysis with 5 configurable weighted signals, maps requests to provider tiers (local/standard/frontier)
+- **Router** (`src/router/`): Provider selection with hot-swappable list, blended cost ranking, per-model rates, tier-aware filtering
+- **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management, optional `[tokenstats]`
 - **Storage** (`src/storage/`): SQLite request logging via bounded channel writer (capacity 1024), read-only analytics pool for stats/logs queries
 - **Vault Client** (`src/proxy/vault.rs`): Reserve/settle/release pattern against arbstr vault; retry with exponential backoff; pending settlement persistence for fault tolerance
 - **Error** (`src/error.rs`): Error types with OpenAI-compatible responses
@@ -129,6 +132,7 @@ sequenceDiagram
 - **Secrets**: secrecy (SecretString with zeroize-on-drop)
 - **Logging**: tracing + tracing-subscriber
 - **Streaming**: tokio-stream (ReceiverStream for channel-based bodies), bytes
+- **Deployment**: Docker Compose (core + vault + LND + Cashu mint)
 
 ## Code Conventions
 
@@ -146,10 +150,23 @@ Config file: `config.toml` (see `config.example.toml` for full example)
 [server]
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional (requests/sec, 0 or absent = unlimited)
-# auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models
+# auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models, /v1/cost (ignored when [vault] is set — vault validates agent tokens)
 
 [database]
 path = "./arbstr.db"
+
+# Vault treasury integration (optional — omit for free proxy mode)
+# [vault]
+# url = "http://localhost:3000"
+# internal_token = "${VAULT_INTERNAL_TOKEN}"
+# default_reserve_tokens = 4096
+# pending_threshold = 100
+
+# tokenstats market feed (optional)
+# [tokenstats]
+# url = "https://tokenstats.ai"
+# [tokenstats.keys]
+# openrouter = "${OPENROUTER_API_KEY}"
 
 # Provider configuration (rates in sats per 1M tokens — RIP-05 / tokenstats)
 [[providers]]
@@ -170,12 +187,11 @@ input_rate = 8000
 output_rate = 35000
 
 [policies]
-default_strategy = "cheapest"
+default_strategy = "cheapest"   # parsed, but only cheapest selection is implemented
 
 [[policies.rules]]
 name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
-strategy = "lowest_cost"
 max_sats_per_1m_output = 50000
 keywords = ["code", "function", "implement"]
 ```
@@ -210,7 +226,9 @@ CREATE TABLE requests (
     stream_duration_ms INTEGER,        -- full stream duration (NULL for non-streaming)
     success BOOLEAN NOT NULL,
     error_status INTEGER,
-    error_message TEXT
+    error_message TEXT,
+    complexity_score REAL,             -- NULL for rows predating the scorer
+    tier TEXT
 );
 
 -- Pending settlements for vault billing reconciliation
@@ -228,9 +246,8 @@ CREATE TABLE pending_settlements (
 ## Testing Strategy
 
 - **Unit tests**: Mock providers, test routing logic in isolation
-- **Integration tests**: Spin up test server, make real HTTP calls
-- **Mock mode**: `--mock` flag to use fake providers with configurable delays/costs
-- **Future**: Bitcoin testnet/signet for payment testing
+- **Integration tests**: Spin up test server with mock provider and mock vault axum servers on random ports, make real HTTP calls
+- **Vault contract**: `tests/vault_billing.rs` replays arbstr-vault's real response bodies; keep them in sync with vault's `tests/contract/core-billing.test.ts`
 
 ## Shipped Versions
 
@@ -242,6 +259,7 @@ CREATE TABLE pending_settlements (
 - **v1.5** -- Hardening: bounded DB writer (mpsc channel, capacity 1024, backpressure via `try_send`), database indexes on `model`/`provider`/`timestamp`/`correlation_id`, configurable rate limiting (`rate_limit_rps` via `tower::limit::RateLimitLayer` + `BufferLayer`), optional bearer token authentication on proxy endpoints (`auth_token` in `[server]` config)
 - **v1.6** -- Vault treasury integration: per-request billing via reserve/settle/release against arbstr vault, `VaultClient` with retry and exponential backoff, pending settlement persistence (`pending_settlements` table) for fault tolerance, `POST /v1/cost` endpoint for pre-request cost estimation, Docker Compose full-stack deployment (core + vault + LND + Cashu mint), `.env.example` for node secrets
 - **v1.7** -- Intelligent complexity routing: provider `tier` field (local/standard/frontier) with `[routing]` config, heuristic complexity scorer with 5 configurable weighted signals (`src/router/complexity.rs`), tier-aware `select_candidates` with `max_tier` parameter, `X-Arbstr-Complexity` header override (high/medium/low), automatic one-way tier escalation on circuit break, complexity score + tier surfaced in response headers/SSE metadata/request log DB, `group_by=tier` stats endpoint
+- **v2.0** -- Inference Marketplace Foundation: vault billing wiring (reserve/settle/release per inference request with frontier-tier reserve pricing), vault fault tolerance (pending settlement persistence and background reconciliation), Docker Compose full-stack deployment (core + vault + LND + Cashu mint), mesh-llm auto-discovery (`auto_discover` config field, startup `/v1/models` polling, zero-cost local-tier routing), arbstr.com landing page (static HTML/CSS, dark theme, GitHub Pages)
 
 ## Key Files
 
@@ -261,6 +279,8 @@ src/
 │   ├── stats.rs         # /v1/stats handler, time range resolution, StatsQuery/StatsResponse
 │   ├── logs.rs          # /v1/requests handler, pagination, LogsQuery/LogsResponse/LogEntry
 │   ├── vault.rs         # Vault treasury client (reserve/settle/release, pending settlement persistence)
+│   ├── discovery.rs     # Model auto-discovery (startup /v1/models polling for auto_discover providers)
+│   ├── tokenstats.rs    # Market feed client (quotes/nodes poll, merge, MarketState)
 │   ├── validation.rs    # Shared model/provider filter validation
 │   └── types.rs         # OpenAI-compatible request/response types, MessageContent enum
 ├── router/
@@ -277,20 +297,27 @@ tests/
 ├── common/mod.rs        # Shared test utilities
 ├── env_expansion.rs     # Integration tests for env var expansion and key discovery
 ├── stream_options.rs    # Integration tests for stream_options injection
-├── stats.rs             # Integration tests for /v1/stats endpoint (14 tests)
-├── logs.rs              # Integration tests for /v1/requests endpoint (20 tests)
-├── health.rs            # Integration tests for /health endpoint (8 tests)
-├── circuit_integration.rs # Integration tests for circuit breaker routing (9 tests)
+├── stats.rs             # Integration tests for /v1/stats endpoint
+├── logs.rs              # Integration tests for /v1/requests endpoint
+├── health.rs            # Integration tests for /health endpoint
+├── circuit_integration.rs # Integration tests for circuit breaker routing
 ├── escalation.rs        # Integration tests for tier escalation on circuit break
-└── cost.rs              # Integration tests for /v1/cost endpoint
+├── cost.rs              # Integration tests for /v1/cost endpoint
+├── discovery.rs         # Integration tests for auto-discover model polling
+├── vault_billing.rs     # Vault reserve/settle/release flow and error mapping (mock vault)
+└── vault_fault_tolerance.rs # Pending settlements and reconciliation replay/eviction
 migrations/
 └── *.sql                # Embedded SQLite schema migrations (including pending_settlements)
+docs/
+├── index.html           # arbstr.com landing page (static, GitHub Pages)
+├── style.css            # Dark theme with Bitcoin orange accent
+└── CNAME                # Custom domain (arbstr.com)
 ```
 
 ## Environment Variables
 
 - `RUST_LOG`: Log level (e.g., `arbstr=debug,tower_http=trace`)
-- `ARBSTR_CONFIG`: Path to config file (default: `./config.toml`)
-- `DATABASE_URL`: SQLite path (default: `./arbstr.db`)
 - `ARBSTR_<UPPER_SNAKE_NAME>_API_KEY`: Convention-based API key per provider (e.g., `ARBSTR_PROVIDER_ALPHA_API_KEY`)
 - `VAULT_INTERNAL_TOKEN`: Shared secret for vault internal API authentication (required when vault is configured)
+
+Config path comes from `-c` (default `config.toml`) and the database path from `[database].path`; no env vars override them.

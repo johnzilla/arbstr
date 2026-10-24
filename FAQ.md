@@ -3,9 +3,9 @@
 <details>
 <summary>What is Arbstr?</summary>
 
-Arbstr is an intelligent local proxy and cost arbitrage engine for AI inference. It acts as a drop-in OpenAI-compatible router that automatically selects the cheapest qualified provider for each request (local, standard, or frontier) and settles payment in Bitcoin sats via Lightning.
+Arbstr is an intelligent local proxy and cost arbitrage engine for AI inference. It acts as a drop-in OpenAI-compatible router that automatically selects the cheapest qualified provider for each request (local, standard, or frontier) and, with vault enabled, bills each request in Bitcoin sats against an agent's balance.
 
-Think of it as "NiceHash for LLM inference" — part of the Routstr decentralized marketplace.
+Think of it as "NiceHash for LLM inference": it routes across Routstr, OpenRouter, Anthropic, local models, or any OpenAI-compatible endpoint.
 
 </details>
 
@@ -28,7 +28,7 @@ It supports local models (Ollama, mesh-llm), Routstr providers, and any OpenAI-c
 **No — it's optional.**
 
 - Without a vault configured → runs as a **free proxy**.
-- With vault + Lightning → enables real sats-based arbitrage and billing.
+- With vault → every request is billed to an agent account. Vault runs in simulated mode by default (balances only, no real funds); switch its wallet backend to Lightning or Cashu for real sats.
 
 You can start in free mode and enable payments later.
 
@@ -38,8 +38,8 @@ You can start in free mode and enable payments later.
 <summary>What providers can I use?</summary>
 
 - Local: Ollama, mesh-llm, or any local OpenAI-compatible server
-- Cloud: Routstr marketplace providers
-- Any custom OpenAI-compatible APIs
+- Cloud: Routstr providers, OpenRouter, Anthropic (`https://api.anthropic.com/v1`), and other OpenAI-compatible APIs
+- Live market quotes via the optional `[tokenstats]` feed
 
 Providers with `auto_discover = true` automatically pull available models at startup.
 
@@ -48,20 +48,20 @@ Providers with `auto_discover = true` automatically pull available models at sta
 <details>
 <summary>What is the vault / billing system?</summary>
 
-The optional vault integrates with Lightning (LND) and Cashu. For each request it:
+[arbstr-vault](https://github.com/johnzilla/arbstr-vault) holds a balance and a spending policy for each agent. For each request arbstr:
 
-- Reserves an estimated amount upfront
+- Reserves an estimated amount upfront (vault refuses it if it breaks the agent's per-request or daily limit)
 - Settles the actual cost after the response
-- Releases any unused reservation on failure
+- Releases the reservation if the request fails
 
-All settled in Bitcoin sats. Full stack available via [arbstr-node](https://github.com/johnzilla/arbstr-node).
+Vault also releases reservations that are never settled, after 15 minutes. Full stack available via [arbstr-node](https://github.com/johnzilla/arbstr-node).
 
 </details>
 
 <details>
 <summary>Is Arbstr production-ready?</summary>
 
-It is stable and feature-rich (v2.0 shipped), with good observability, circuit breakers, and streaming support. However, it is still labeled early-stage — configuration and APIs may evolve. Suitable for personal use and experimentation; audit before high-volume or critical deployments.
+It is feature-rich, with good observability, circuit breakers, streaming support and CI on every change. However, it is still early-stage — configuration and APIs may evolve. Suitable for personal use and experimentation; audit before high-volume or critical deployments.
 
 </details>
 
@@ -71,7 +71,12 @@ It is stable and feature-rich (v2.0 shipped), with good observability, circuit b
 The easiest way is using **arbstr-node**:
 
 ```bash
-git clone https://github.com/johnzilla/arbstr-node
+git clone --recurse-submodules https://github.com/johnzilla/arbstr-node
 cd arbstr-node
-cp .env.example .env
-docker compose up
+cp .env.example .env   # fill in secrets
+docker compose up -d
+```
+
+Then create an agent, fund it and set its spending policy — the [arbstr-node README](https://github.com/johnzilla/arbstr-node#create-an-agent) walks through it.
+
+</details>

@@ -4,7 +4,7 @@
 
 > **Early-stage software** — under active development. APIs and configuration may change.
 
-arbstr routes AI inference requests to the cheapest qualified provider and settles payment in bitcoin over Lightning. It combines a Rust routing engine with a treasury service into a single deployable stack. Providers include [mesh-llm](https://docs.anarchai.org) nodes, Routstr endpoints, Ollama instances, or any OpenAI-compatible API. No tokens — just sats.
+arbstr routes AI inference requests to the cheapest qualified provider and meters each request in sats against an agent's balance in [arbstr-vault](https://github.com/johnzilla/arbstr-vault). It combines a Rust routing engine with a treasury service into a single deployable stack. Providers include [mesh-llm](https://docs.anarchai.org) nodes, Routstr endpoints, Ollama instances, Anthropic, or any OpenAI-compatible API. No tokens — just sats.
 
 ```mermaid
 flowchart LR
@@ -18,12 +18,12 @@ flowchart LR
         B1["Vault → Policy → Router → Best<br>(cheapest)"]
     end
 
-    subgraph Routstr["Routstr Marketplace"]
+    subgraph Providers["Providers"]
         direction TB
         C1["Provider A  8 sat<br>Provider B 12 sat<br>Provider C 10 sat"]
     end
 
-    Apps --> Arbstr --> Routstr
+    Apps --> Arbstr --> Providers
 ```
 
 Multiple providers offer the same models at different rates (priced in satoshis). arbstr exploits these price spreads automatically — free when your local GPU handles it, cheapest cloud provider when it can't.
@@ -34,14 +34,14 @@ Multiple providers offer the same models at different rates (priced in satoshis)
 - **Multi-provider routing** -- selects the cheapest available provider per request
 - **Auto-discovery** -- providers with `auto_discover = true` have their model lists populated from `/v1/models` at startup (mesh-llm, Ollama, any OpenAI-compatible endpoint)
 - **Intelligent complexity routing** -- heuristic scorer routes simple requests to local/free providers, complex ones to frontier; automatic tier escalation on circuit break
-- **Vault billing** -- per-request reserve/settle/release against arbstr vault; Bitcoin settlement via Lightning; fault-tolerant with pending settlement persistence
+- **Vault billing** -- per-request reserve/settle/release against arbstr vault, which enforces each agent's spending policy; fault-tolerant with pending settlement persistence
 - **Circuit breakers** -- per-provider Closed/Open/Half-Open with automatic recovery probing
 - **Streaming observability** -- SSE token extraction, trailing cost events, post-stream DB updates
-- **Policy engine** -- constrain routing by allowed models, max cost, and strategy; keyword heuristics for auto-matching
+- **Policy engine** -- constrain routing by allowed models and max cost; keyword heuristics for auto-matching
 - **Secret management** -- SecretString API keys with zeroize-on-drop; env var expansion; convention-based key discovery
 - **Cost querying API** -- aggregate stats, time range filtering, paginated request logs
-- **Docker Compose stack** -- full-stack deployment: core + vault + Lightning (LND) + Cashu mint
-- **Mock mode** -- test locally without real provider API calls
+- **Docker image** -- multi-arch (amd64 + arm64) `ghcr.io/johnzilla/arbstr`, published by CI on every merge to main
+- **Mock config** -- `--mock` starts with a built-in config of two fake providers, for trying the CLI and endpoints without API keys
 
 ## FAQ
 
@@ -57,12 +57,13 @@ git clone https://github.com/johnzilla/arbstr.git
 cd arbstr
 cargo build --release
 
-# Quick test with mock providers (no real API calls)
+# Try the CLI and endpoints with a built-in mock config. The mock providers point
+# at localhost:9999 and :9998, so chat requests fail unless something serves them.
 ./target/release/arbstr serve --mock
 
-# Or configure real providers
+# Configure real providers
 cp config.example.toml config.toml
-# Edit config.toml with your Routstr providers
+# Edit config.toml with your providers
 ./target/release/arbstr serve
 ```
 
@@ -77,6 +78,8 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+With `[vault]` configured, every request also needs the agent's vault token: add `-H "Authorization: Bearer <agent token>"`. See [Vault billing](#vault-billing).
+
 ## Configuration
 
 Copy `config.example.toml` to `config.toml` and customize:
@@ -85,7 +88,7 @@ Copy `config.example.toml` to `config.toml` and customize:
 [server]
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional global rate limit (requests/sec)
-# auth_token = "my-secret"   # optional bearer token for proxy endpoints
+# auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models, /v1/cost (ignored when [vault] is set)
 
 # Vault treasury integration (optional)
 # When configured, requests require vault billing via reserve/settle/release.
@@ -134,18 +137,18 @@ input_rate = 8000
 output_rate = 35000
 
 # Complexity routing (optional — controls tier selection thresholds)
+# Scores below low route to the local tier, above high to frontier, otherwise standard
 # [routing]
-# standard_threshold = 0.4    # score >= this → standard tier
-# frontier_threshold = 0.7    # score >= this → frontier tier
+# complexity_threshold_low = 0.4
+# complexity_threshold_high = 0.7
 
 # Routing policies
 [policies]
-default_strategy = "cheapest"
+default_strategy = "cheapest"   # only "cheapest" is implemented
 
 [[policies.rules]]
 name = "code_generation"
 allowed_models = ["claude-3.5-sonnet", "gpt-4o"]
-strategy = "lowest_cost"
 max_sats_per_1m_output = 50000
 keywords = ["code", "function", "implement", "debug"]
 ```
@@ -208,15 +211,45 @@ Policies are matched in two ways:
    ```
 2. **Heuristic** -- arbstr scans message content for keywords defined in each policy rule and picks the first match.
 
+### Complexity routing
+
+Each request gets a complexity score that picks a tier (`local`, `standard`, `frontier`); if every provider in a tier has an open circuit, arbstr escalates to the next tier. Set `X-Arbstr-Complexity: low | medium | high` to skip the scorer and pick the tier yourself.
+
 ## How Routing Works
 
 1. **Request arrives** at the arbstr proxy
-2. **Vault reserve** (if configured) -- reserves estimated cost from buyer's balance
+2. **Vault reserve** (if configured) -- reserves the estimated cost from the agent's balance. The estimate uses frontier rates and the request's `max_tokens` (or `default_reserve_tokens` when it has none, which arbstr then also sends upstream as `max_tokens`)
 3. **Policy matched** via `X-Arbstr-Policy` header or keyword heuristics
-4. **Providers filtered** by policy constraints (allowed models, max cost)
-5. **Cheapest selected** from remaining providers (considering output rate + base fee)
+4. **Providers filtered** by tier and policy constraints (allowed models, max cost)
+5. **Cheapest selected** from remaining providers by blended cost: input and output rates weighted 1:3 (`[tokenstats].blend_ratio`), plus the base fee
 6. **Request forwarded** and response streamed back to the client
 7. **Vault settle/release** -- settles actual cost on success, releases reservation on failure
+
+## Vault billing
+
+When `[vault]` is configured, arbstr bills every request to an agent account in [arbstr-vault](https://github.com/johnzilla/arbstr-vault). Clients send the agent's vault token as `Authorization: Bearer <token>`; `auth_token` is not used in this mode. Errors use the OpenAI error shape with `"type": "billing_error"` and `"code": "vault_<status>"`:
+
+| Status | Meaning |
+|--------|---------|
+| `401` | Unknown agent token |
+| `402` | Agent balance too low for the reservation |
+| `403` | Agent's spending policy refused the request. `error.reason` gives the cause: `exceeds_max_transaction` (set or lower `max_tokens`), `exceeds_daily_limit`, `no_policy_configured` or `deny_all_policy` |
+| `429` | Vault rate limited the request |
+| `503` | Vault unreachable, or too many settlements are waiting to be retried (`pending_threshold`) |
+
+A misconfigured `internal_token` returns `500`, since that's an operator error, not the client's.
+
+## Response headers
+
+| Header | Value |
+|--------|-------|
+| `x-arbstr-request-id` | Request id, also used in `/v1/requests` |
+| `x-arbstr-provider` | Provider that served the request |
+| `x-arbstr-cost-sats` | Actual cost (non-streaming; streaming sends it in a trailing SSE event) |
+| `x-arbstr-latency-ms` | Time to response |
+| `x-arbstr-streaming` | Whether the response streamed |
+| `x-arbstr-retries` | Retries/fallbacks used, when any |
+| `x-arbstr-complexity-score`, `x-arbstr-tier` | Complexity score and the tier it selected |
 
 ## CLI
 
@@ -224,7 +257,7 @@ Policies are matched in two ways:
 arbstr serve [OPTIONS]          Start the proxy server
   -c, --config <PATH>           Config file path [default: config.toml]
   -l, --listen <ADDR>           Override listen address
-      --mock                    Use mock providers (no real API calls)
+      --mock                    Use a built-in mock config instead of --config
 
 arbstr check [OPTIONS]          Validate configuration
   -c, --config <PATH>           Config file path [default: config.toml]
@@ -253,9 +286,11 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full development guide including 
 
 ```bash
 cargo test                    # Run all tests
-cargo run -- serve --mock     # Run with mock providers
+cargo run -- serve --mock     # Run with the built-in mock config
 cargo fmt && cargo clippy -- -D warnings  # Format and lint
 ```
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on every PR, on Rust 1.95.0. Merges to main also publish `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` for amd64 and arm64.
 
 ## Roadmap
 
@@ -278,6 +313,9 @@ cargo fmt && cargo clippy -- -D warnings  # Format and lint
 ```bash
 cargo build --release
 ./target/release/arbstr serve -c config.toml
+
+# or with the published image
+docker run -p 8080:8080 -v "$PWD/config.toml:/config/config.toml:ro" ghcr.io/johnzilla/arbstr:latest
 ```
 
 ### Full stack (with billing)
@@ -287,10 +325,10 @@ Use [arbstr-node](https://github.com/johnzilla/arbstr-node) for the complete sta
 ```bash
 git clone https://github.com/johnzilla/arbstr-node && cd arbstr-node
 cp .env.example .env   # fill in secrets
-docker compose up
+docker compose up -d
 ```
 
-Your inference proxy is live at `http://localhost:8080`. See [arbstr.com](https://arbstr.com) for the full getting started guide.
+Your inference proxy is live at `http://localhost:8080`. Before the first request, create and fund an agent and set its spending policy — the [arbstr-node README](https://github.com/johnzilla/arbstr-node#create-an-agent) walks through it.
 
 ## Related Projects
 

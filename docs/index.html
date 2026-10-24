@@ -122,9 +122,10 @@
             <span class="terminal-dot yellow" aria-hidden="true"></span>
             <span class="terminal-dot green" aria-hidden="true"></span>
           </div>
-          <pre><code>git clone https://github.com/johnzilla/arbstr-node &amp;&amp; cd arbstr-node
+          <pre><code>git clone --recurse-submodules https://github.com/johnzilla/arbstr-node &amp;&amp; cd arbstr-node
 cp .env.example .env  # edit with your secrets
-docker compose up</code></pre>
+docker compose up -d
+# then create and fund an agent (see the arbstr-node README)</code></pre>
         </div>
         <div class="terminal">
           <div class="terminal-bar">
@@ -135,7 +136,7 @@ docker compose up</code></pre>
           <pre><code>curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-agent-token" \
-  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'</code></pre>
+  -d '{"model": "claude-sonnet-5-5", "max_tokens": 200, "messages": [{"role": "user", "content": "Hello"}]}'</code></pre>
         </div>
         <p>See the <a href="https://github.com/johnzilla/arbstr#readme">full documentation on GitHub</a>.</p>
       </div>

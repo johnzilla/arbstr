@@ -10,11 +10,13 @@ listen = "127.0.0.1:8080"
 # Global rate limit in requests per second (optional, omit or 0 = unlimited)
 # rate_limit_rps = 100
 # Optional bearer token for proxy endpoint authentication
-# When set, /v1/chat/completions and /v1/models require Authorization: Bearer <token>
+# When set, /v1/chat/completions, /v1/models and /v1/cost require Authorization: Bearer <token>
+# Ignored when [vault] is configured: clients send their vault agent token instead
+# /v1/stats, /v1/requests, /health and /providers are never authenticated
 # auth_token = "my-secret-token"
 
 [database]
-# SQLite database path for logging and learning
+# SQLite database path for request logs and pending settlements
 path = "./arbstr.db"
 
 # Vault treasury integration (optional)
@@ -87,7 +89,7 @@ base_fee = 0
 # Routing policies
 [policies]
 # Default strategy when no policy matched
-# Options: "cheapest", "lowest_latency", "round_robin"
+# Only "cheapest" is implemented; other values are accepted but route as cheapest
 default_strategy = "cheapest"
 
 # Policy rules - matched by X-Arbstr-Policy header or heuristics
@@ -95,7 +97,7 @@ default_strategy = "cheapest"
 name = "code_generation"
 # Only route to these models
 allowed_models = ["claude-3.5-sonnet", "gpt-4o", "deepseek-coder"]
-# Routing strategy for this policy
+# Routing strategy for this policy (reserved; selection is always cheapest)
 strategy = "lowest_cost"
 # Maximum cost constraint (optional) — sats per 1M output tokens
 max_sats_per_1m_output = 50000
