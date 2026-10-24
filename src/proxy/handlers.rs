@@ -15,7 +15,7 @@ use super::circuit_breaker::{CircuitState, PermitType, ProbeGuard};
 use super::retry::{format_retries_header, retry_with_fallback, AttemptRecord, CandidateInfo};
 use super::server::{AppState, RequestId};
 use super::types::ChatCompletionRequest;
-use super::vault::{SettleMetadata, VaultClient};
+use super::vault::{SettleMetadata, VaultClient, VaultError};
 use crate::config::Tier;
 use crate::error::Error;
 use crate::router::{score_complexity, score_to_max_tier};
@@ -726,6 +726,14 @@ pub async fn chat_completions(
                     resolved.complexity_score,
                     Some(resolved.tier.to_string()),
                 );
+                let mut error = serde_json::json!({
+                    "message": message,
+                    "type": "billing_error",
+                    "code": format!("vault_{}", status_code)
+                });
+                if let VaultError::PolicyDenied(reason) = &e {
+                    error["reason"] = serde_json::Value::from(reason.as_str());
+                }
                 return Ok(Response::builder()
                     .status(
                         StatusCode::from_u16(status_code)
@@ -733,14 +741,7 @@ pub async fn chat_completions(
                     )
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        serde_json::to_vec(&serde_json::json!({
-                            "error": {
-                                "message": message,
-                                "type": "billing_error",
-                                "code": format!("vault_{}", status_code)
-                            }
-                        }))
-                        .unwrap(),
+                        serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap(),
                     ))
                     .unwrap());
             }

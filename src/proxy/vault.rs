@@ -73,8 +73,8 @@ pub enum VaultError {
     #[error("Insufficient balance")]
     InsufficientBalance,
 
-    /// Agent's policy denied the request (HTTP 403).
-    #[error("Policy denied: {0}")]
+    /// Agent's policy denied the request (HTTP 403). Holds vault's `reason` code.
+    #[error("{}", policy_denied_message(.0))]
     PolicyDenied(String),
 
     /// Rate limited by vault (HTTP 429).
@@ -215,8 +215,10 @@ impl VaultClient {
             }
             402 => Err(VaultError::InsufficientBalance),
             403 => {
+                // Vault: {"error": {"code": "policy_denied", ...}, "reason": "exceeds_daily_limit"}
                 let body = response.text().await.unwrap_or_default();
-                Err(VaultError::PolicyDenied(body))
+                let reason = policy_reason(&body).unwrap_or_else(|| "policy_denied".to_string());
+                Err(VaultError::PolicyDenied(reason))
             }
             429 => Err(VaultError::RateLimited),
             500..=599 => {
@@ -632,6 +634,35 @@ fn error_code(body: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Extract the top-level `reason` from a vault 403 body.
+fn policy_reason(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("reason")?
+        .as_str()
+        .filter(|r| !r.is_empty())
+        .map(str::to_string)
+}
+
+/// Client-facing message for a vault policy denial reason.
+fn policy_denied_message(reason: &str) -> String {
+    match reason {
+        "exceeds_max_transaction" | "exceeds_max_transaction_requires_approval" => {
+            "Request denied: its estimated cost exceeds this agent's per-request spending limit. \
+             Set or lower max_tokens, or ask the operator to raise the limit."
+                .to_string()
+        }
+        "exceeds_daily_limit" => {
+            "Request denied: this agent has reached its daily spending limit.".to_string()
+        }
+        "no_policy_configured" | "deny_all_policy" => {
+            "Request denied: this agent has no spending policy. Ask the operator to set one."
+                .to_string()
+        }
+        other => format!("Request denied by agent policy ({other})."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,6 +727,35 @@ mod tests {
         assert_eq!(error_code(r#"{"error":"flat string"}"#), None);
         assert_eq!(error_code("not json"), None);
         assert_eq!(error_code(""), None);
+    }
+
+    #[test]
+    fn test_policy_reason_parsing() {
+        // Body arbstr-vault sends from /internal/reserve on a policy denial
+        let body = r#"{"error":{"code":"policy_denied","message":"Reservation denied by agent policy: exceeds_daily_limit"},"reason":"exceeds_daily_limit"}"#;
+        assert_eq!(policy_reason(body).as_deref(), Some("exceeds_daily_limit"));
+        assert_eq!(policy_reason(r#"{"reason":""}"#), None);
+        assert_eq!(policy_reason(r#"{"error":"mock vault error"}"#), None);
+        assert_eq!(policy_reason("not json"), None);
+    }
+
+    #[test]
+    fn test_policy_denied_message() {
+        let msg = |r: &str| VaultError::PolicyDenied(r.into()).to_string();
+        assert!(msg("exceeds_max_transaction").contains("max_tokens"));
+        assert_eq!(
+            msg("exceeds_max_transaction_requires_approval"),
+            msg("exceeds_max_transaction")
+        );
+        assert!(msg("exceeds_daily_limit").contains("daily spending limit"));
+        assert!(msg("deny_all_policy").contains("no spending policy"));
+        assert!(msg("no_policy_configured").contains("no spending policy"));
+        assert_eq!(
+            msg("policy_engine_error"),
+            "Request denied by agent policy (policy_engine_error)."
+        );
+        // Never echo a raw vault body
+        assert!(!msg("exceeds_daily_limit").contains('{'));
     }
 
     #[test]
