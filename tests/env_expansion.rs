@@ -8,7 +8,7 @@
 use arbstr::config::{Config, KeySource};
 use std::fs;
 
-/// Test that ${VAR} references in api_key are expanded from environment (ENV-01).
+/// Test that ${VAR} references in api_key are expanded from environment.
 #[test]
 fn test_env_expansion_resolves_var() {
     let var_name = "TEST_E2E_06_01_KEY";
@@ -69,7 +69,7 @@ output_rate = 30
     let _ = fs::remove_file(config_path);
 }
 
-/// Test that missing env vars produce clear errors naming variable and provider (ENV-02).
+/// Test that missing env vars produce clear errors naming variable and provider.
 #[test]
 fn test_env_expansion_missing_var_errors() {
     let var_name = "TEST_E2E_06_02_MISSING";
@@ -119,7 +119,7 @@ output_rate = 30
     let _ = fs::remove_file(config_path);
 }
 
-/// Test that convention-based env var discovery works end-to-end (ENV-03).
+/// Test that convention-based env var discovery works end-to-end.
 #[test]
 fn test_env_convention_discovers_key() {
     let var_name = "ARBSTR_CONV_PROVIDER_API_KEY";

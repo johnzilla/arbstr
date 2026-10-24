@@ -63,8 +63,8 @@ impl Default for DatabaseConfig {
 /// API key wrapper that redacts in Debug/Display/Serialize and zeroizes on drop.
 ///
 /// The inner `SecretString` ensures the key value is:
-/// - Zeroized in memory when dropped (SEC-02)
-/// - Never exposed via Debug or Display (SEC-01)
+/// - Zeroized in memory when dropped
+/// - Never exposed via Debug or Display
 /// - Only accessible via `.expose_secret()` (grep-auditable)
 #[derive(Clone)]
 pub struct ApiKey(SecretString);
@@ -188,8 +188,6 @@ impl Tier {
 }
 
 /// Routing configuration for complexity-based tier selection.
-///
-/// Parsed in Phase 16 but routing logic is implemented in Phase 18.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoutingConfig {
     /// Requests scoring below this threshold route to local tier.
@@ -224,8 +222,7 @@ impl Default for RoutingConfig {
 
 /// Signal weights for the heuristic complexity scorer.
 ///
-/// All weights default to 1.0 (equal weighting). Parsed in Phase 16 but
-/// consumed by the scorer in Phase 17.
+/// All weights default to 1.0 (equal weighting).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ComplexityWeightsConfig {
     #[serde(default = "default_weight")]

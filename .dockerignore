@@ -1,6 +1,5 @@
 target/
 .git/
-.planning/
 .github/
 *.db
 *.db-shm

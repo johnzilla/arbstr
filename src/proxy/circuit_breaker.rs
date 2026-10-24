@@ -475,7 +475,7 @@ impl CircuitBreakerRegistry {
             .collect()
     }
 
-    /// Read-only accessor for circuit state (for Phase 15 health endpoint).
+    /// Read-only accessor for circuit state (used by the health endpoint).
     pub fn state(&self, provider_name: &str) -> Option<CircuitState> {
         self.breakers.get(provider_name).map(|entry| {
             entry
@@ -487,7 +487,7 @@ impl CircuitBreakerRegistry {
         })
     }
 
-    /// Read-only accessor for current failure count (for Phase 15).
+    /// Read-only accessor for current failure count.
     pub fn failure_count(&self, provider_name: &str) -> Option<u32> {
         self.breakers.get(provider_name).map(|entry| {
             entry
@@ -499,7 +499,7 @@ impl CircuitBreakerRegistry {
         })
     }
 
-    /// Read-only accessor for cumulative trip count (for Phase 15).
+    /// Read-only accessor for cumulative trip count.
     pub fn trip_count(&self, provider_name: &str) -> Option<u32> {
         self.breakers.get(provider_name).map(|entry| {
             entry

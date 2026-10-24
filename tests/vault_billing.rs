@@ -4,12 +4,12 @@
 //! - Bearer token required when vault is configured (401 without)
 //! - Vault error codes (402, 403, 429) mapped to OpenAI-compatible format
 //! - Vault 401 split by error code: invalid_agent_token -> 401, anything else -> 500
-//! - Frontier rates used for reserve amount estimation (BILL-05)
-//! - Reserve happens BEFORE provider contact (BILL-02 ordering)
-//! - Full reserve -> route -> settle path (BILL-03)
-//! - Release on provider failure (BILL-04)
-//! - Free proxy mode works without vault (BILL-08)
-//! - Vault auth replaces server auth when vault configured (D-01)
+//! - Frontier rates used for reserve amount estimation
+//! - Reserve happens BEFORE provider contact
+//! - Full reserve -> route -> settle path
+//! - Release on provider failure
+//! - Free proxy mode works without vault
+//! - Vault auth replaces server auth when vault configured
 
 mod common;
 
@@ -475,7 +475,7 @@ async fn test_vault_reserve_401_without_known_code_returns_500() {
 }
 
 // ============================================================================
-// Test e: Reserve uses frontier rates (BILL-05)
+// Test e: Reserve uses frontier rates
 // ============================================================================
 
 #[tokio::test]
@@ -519,7 +519,7 @@ async fn test_vault_reserve_uses_frontier_rates() {
 }
 
 // ============================================================================
-// Test f: Full reserve -> route -> settle path (BILL-02 ordering + BILL-03)
+// Test f: Full reserve -> route -> settle path
 // ============================================================================
 
 #[tokio::test]
@@ -542,7 +542,7 @@ async fn test_full_reserve_route_settle_path() {
     assert_eq!(json["model"], "gpt-4o");
     assert_eq!(json["choices"][0]["message"]["content"], "test response");
 
-    // BILL-02: Vault reserve timestamp BEFORE provider contact timestamp
+    // Vault reserve timestamp BEFORE provider contact timestamp
     {
         let vault_calls = vault_log.lock().unwrap();
         let provider_calls = provider_log.lock().unwrap();
@@ -557,7 +557,7 @@ async fn test_full_reserve_route_settle_path() {
 
         assert!(
             reserve_call.2 < provider_call.2,
-            "BILL-02: vault reserve must happen before provider contact"
+            "vault reserve must happen before provider contact"
         );
 
         // Verify reserve body contains expected fields
@@ -575,7 +575,7 @@ async fn test_full_reserve_route_settle_path() {
         );
     }
 
-    // BILL-03: Wait briefly for the spawned settle task, then verify
+    // Wait briefly for the spawned settle task, then verify
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     {
@@ -583,7 +583,7 @@ async fn test_full_reserve_route_settle_path() {
         let settle_call = vault_calls
             .iter()
             .find(|(op, _, _)| op == "settle")
-            .expect("BILL-03: settle should be called after successful response");
+            .expect("settle should be called after successful response");
 
         assert_eq!(
             settle_call.1["reservation_id"], "res-test-123",
@@ -609,7 +609,7 @@ async fn test_full_reserve_route_settle_path() {
 }
 
 // ============================================================================
-// Test g: Release on provider failure (BILL-04)
+// Test g: Release on provider failure
 // ============================================================================
 
 #[tokio::test]
@@ -638,23 +638,23 @@ async fn test_vault_release_on_provider_failure() {
     // Wait briefly for the spawned release task
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // BILL-04: Vault release should be called (not settle)
+    // Vault release should be called (not settle)
     let vault_calls = vault_log.lock().unwrap();
     let has_release = vault_calls.iter().any(|(op, _, _)| op == "release");
     let has_settle = vault_calls.iter().any(|(op, _, _)| op == "settle");
 
     assert!(
         has_release,
-        "BILL-04: vault release should be called when provider fails"
+        "vault release should be called when provider fails"
     );
     assert!(
         !has_settle,
-        "BILL-04: vault settle should NOT be called when provider fails"
+        "vault settle should NOT be called when provider fails"
     );
 }
 
 // ============================================================================
-// Test h: Free proxy mode (no vault, no auth required) (BILL-08)
+// Test h: Free proxy mode (no vault, no auth required)
 // ============================================================================
 
 #[tokio::test]
@@ -688,7 +688,7 @@ async fn test_free_proxy_mode_no_vault() {
 }
 
 // ============================================================================
-// Test i: Vault auth replaces server auth (D-01; D-02 superseded)
+// Test i: Vault auth replaces server auth
 // ============================================================================
 
 #[tokio::test]
@@ -704,7 +704,7 @@ async fn test_vault_auth_replaces_server_auth() {
     );
 
     // Send request with a bearer token that does NOT match server auth_token
-    // but IS a valid vault agent token. Per D-01, server auth is disabled when
+    // but IS a valid vault agent token. Server auth is disabled when
     // vault is configured, so this should NOT be rejected by server auth middleware.
     let request = Request::post("/v1/chat/completions")
         .header("content-type", "application/json")
@@ -719,7 +719,7 @@ async fn test_vault_auth_replaces_server_auth() {
     assert_eq!(
         status,
         http::StatusCode::OK,
-        "D-01: vault auth should replace server auth when vault is configured"
+        "vault auth should replace server auth when vault is configured"
     );
 
     // Verify the request reached the vault reserve endpoint

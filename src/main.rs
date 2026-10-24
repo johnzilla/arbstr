@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!(config = %config_path, "Loading configuration");
                 let result = Config::from_file_with_env(&config_path)?;
 
-                // RED-01: Warn if config file permissions are too open
+                // Warn if config file permissions are too open
                 if let Some((path, mode)) =
                     arbstr::config::check_file_permissions(std::path::Path::new(&config_path))
                 {
@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("  Providers: {}", config.providers.len());
                     println!("  Policy rules: {}", config.policies.rules.len());
 
-                    // RED-01: Check config file permissions
+                    // Check config file permissions
                     if let Some((path, mode)) =
                         arbstr::config::check_file_permissions(std::path::Path::new(&config_path))
                     {

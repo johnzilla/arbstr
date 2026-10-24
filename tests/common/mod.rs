@@ -175,7 +175,7 @@ pub fn setup_vault_test_app(vault_url: &str, provider_url: &str) -> axum::Router
 }
 
 /// Build a test app with vault billing enabled AND an optional server auth_token.
-/// When vault is configured, server auth middleware is bypassed (D-01).
+/// When vault is configured, server auth middleware is bypassed.
 pub fn setup_vault_test_app_with_auth(
     vault_url: &str,
     provider_url: &str,

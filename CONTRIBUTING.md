@@ -10,7 +10,7 @@ Thanks for your interest in contributing to arbstr! This document covers everyth
    cd arbstr
    ```
 
-2. Install the Rust toolchain (stable): [rustup.rs](https://rustup.rs)
+2. Install the Rust toolchain: [rustup.rs](https://rustup.rs). CI uses Rust 1.95.0; `rustup toolchain install 1.95.0` matches it exactly (newer clippy versions report lints CI doesn't).
 
 3. Build:
    ```bash
@@ -22,7 +22,7 @@ Thanks for your interest in contributing to arbstr! This document covers everyth
    cargo test
    ```
 
-5. Run with mock providers (no real API calls needed):
+5. Run with the built-in mock config (no API keys needed; chat requests fail because nothing serves the mock providers, but the CLI and the `/health`, `/providers` and `/v1/models` endpoints work):
    ```bash
    cargo run -- serve --mock
    ```
@@ -31,10 +31,11 @@ Thanks for your interest in contributing to arbstr! This document covers everyth
 
 - Format code before committing: `cargo fmt`
 - Run clippy: `cargo clippy -- -D warnings`
-- Run the full check before pushing:
+- Run the same checks CI runs before pushing:
   ```bash
-  cargo fmt && cargo clippy -- -D warnings && cargo test
+  cargo fmt --check && cargo clippy -- -D warnings && cargo test
   ```
+- CI (`.github/workflows/ci.yml`) runs those checks on every PR. Merges to main publish the Docker image.
 - Use debug logging for development: `RUST_LOG=arbstr=debug cargo run -- serve --mock`
 
 ## Code Style
@@ -50,7 +51,7 @@ Follow the conventions documented in [DEVELOPMENT.md](./DEVELOPMENT.md#code-conv
 ## Testing
 
 - **Unit tests**: Test routing logic and components in isolation with mocks
-- **Integration tests**: Spin up test server with `--mock` flag, make real HTTP calls
+- **Integration tests**: Spin up the app against mock provider and mock vault servers (see `tests/common/mod.rs`), make real HTTP calls
 - All tests must pass before submitting a PR: `cargo test`
 
 ## Submitting a Pull Request
@@ -58,7 +59,7 @@ Follow the conventions documented in [DEVELOPMENT.md](./DEVELOPMENT.md#code-conv
 1. Fork the repository
 2. Create a feature branch from `main`
 3. Make your changes with clear, focused commits
-4. Ensure `cargo fmt && cargo clippy -- -D warnings && cargo test` all pass
+4. Ensure `cargo fmt --check && cargo clippy -- -D warnings && cargo test` all pass
 5. Open a PR with a description of what and why
 
 ## Architecture Overview
