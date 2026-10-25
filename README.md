@@ -318,6 +318,7 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D wa
 | **v2.1.0** | Hardening and releases -- vault policy errors surfaced (403 with reason), reserve estimate covers prompt framing, operator token for stats/logs, vault-verified agent tokens for models/cost, CI with multi-arch images, signed releases with build provenance | Shipped |
 | **v2.2.0** | Market feed hardening -- tokenstats keys only go to https endpoints on `allowed_hosts`, quote prices bounded by `max_price_sats_per_1m` (no free/negative quotes, no reserve inflation); new tagline; `.env.example` lists what core reads | Shipped |
 | **v2.2.1** | Billing fixes -- requests without provider usage settle at the reservation instead of free; images no longer inflate the reserve estimate; server tokens redacted in logs | Shipped |
+| **v2.3.0** | Per-client rate limiting (`client_rate_limit_rps`, opt-in); warnings on implausible provider usage; provider error bodies and key prefixes no longer exposed; one `[DONE]` per stream | Shipped |
 
 ## Deployment
 
