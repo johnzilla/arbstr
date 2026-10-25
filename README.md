@@ -315,6 +315,7 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D wa
 | **v1.7** | Complexity routing -- tier system, heuristic scorer, tier-aware routing, escalation | Shipped |
 | **v2.0** | Inference marketplace -- vault billing wiring, mesh-llm auto-discovery, Docker Compose deployment, arbstr.com landing page | Shipped |
 | **v2.1.0** | Hardening and releases -- vault policy errors surfaced (403 with reason), reserve estimate covers prompt framing, operator token for stats/logs, vault-verified agent tokens for models/cost, CI with multi-arch images, signed releases with build provenance | Shipped |
+| **v2.2.0** | Market feed hardening -- tokenstats keys only go to https endpoints on `allowed_hosts`, quote prices bounded by `max_price_sats_per_1m` (no free/negative quotes, no reserve inflation); new tagline; `.env.example` lists what core reads | Shipped |
 
 ## Deployment
 
