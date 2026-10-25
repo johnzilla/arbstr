@@ -261,6 +261,7 @@ CREATE TABLE pending_settlements (
 - **v1.6** -- Vault treasury integration: per-request billing via reserve/settle/release against arbstr vault, `VaultClient` with retry and exponential backoff, pending settlement persistence (`pending_settlements` table) for fault tolerance, `POST /v1/cost` endpoint for pre-request cost estimation, Docker Compose full-stack deployment (core + vault + LND + Cashu mint), `.env.example` for node secrets
 - **v1.7** -- Intelligent complexity routing: provider `tier` field (local/standard/frontier) with `[routing]` config, heuristic complexity scorer with 5 configurable weighted signals (`src/router/complexity.rs`), tier-aware `select_candidates` with `max_tier` parameter, `X-Arbstr-Complexity` header override (high/medium/low), automatic one-way tier escalation on circuit break, complexity score + tier surfaced in response headers/SSE metadata/request log DB, `group_by=tier` stats endpoint
 - **v2.0** -- Inference Marketplace Foundation: vault billing wiring (reserve/settle/release per inference request with frontier-tier reserve pricing), vault fault tolerance (pending settlement persistence and background reconciliation), Docker Compose full-stack deployment (core + vault + LND + Cashu mint), mesh-llm auto-discovery (`auto_discover` config field, startup `/v1/models` polling, zero-cost local-tier routing), arbstr.com landing page (static HTML/CSS, dark theme, GitHub Pages)
+- **v2.1.0** -- Hardening and releases: clean 403 with vault's policy `reason`, reserve estimate includes per-request/per-message token overhead, warning when vault caps a settle, `[server] operator_token` for `/v1/stats` and `/v1/requests`, vault-verified agent tokens for `/v1/models` and `/v1/cost` (`POST /internal/agents/verify`), constant-time token comparison, CI on every PR with multi-arch image publish, Rust 1.99.1, first signed GitHub Release with build provenance
 
 ## Key Files
 
@@ -322,3 +323,23 @@ docs/
 - `VAULT_INTERNAL_TOKEN`: Shared secret for vault internal API authentication (required when vault is configured)
 
 Config path comes from `-c` (default `config.toml`) and the database path from `[database].path`; no env vars override them.
+
+## Releases
+
+Versions are semver. `Cargo.toml`'s `version` is the source of truth, and the release tag must match it.
+
+1. In a PR, bump `version` in `Cargo.toml` (and the lockfile via `cargo build`), and add the release to "Shipped Versions" here and the README's Roadmap table.
+2. After it merges, tag main and push the tag. Tags are SSH-signed (`git config --global tag.gpgSign true`):
+   ```bash
+   git switch main && git pull
+   git tag -a vX.Y.Z -m "arbstr vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+3. CI checks the tag against `Cargo.toml`, publishes `ghcr.io/johnzilla/arbstr:X.Y.Z` and `:X.Y` (amd64 + arm64), attaches signed build provenance, and creates the GitHub Release with generated notes. Verify an image with:
+   ```bash
+   gh attestation verify oci://ghcr.io/johnzilla/arbstr:X.Y.Z --owner johnzilla
+   ```
+
+`:latest` and `:<short-sha>` keep tracking main. [arbstr-node](https://github.com/johnzilla/arbstr-node) pins a released version.
+
+The tags before v2.1.0 (`v1` … `v2.0`) are milestone markers from earlier planning, not releases; there are no images or GitHub Releases for them.
