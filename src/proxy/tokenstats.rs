@@ -45,6 +45,9 @@ pub struct MarketStatus {
     pub quotes_seen: usize,
     pub nodes_seen: usize,
     pub routable_market_providers: usize,
+    /// tokenstats' own feed status from `/health` (`ok`, `degraded`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feed_status: Option<String>,
     pub skipped: Vec<SkipEntry>,
     pub notes: Vec<String>,
 }
@@ -60,6 +63,7 @@ impl Default for MarketStatus {
             quotes_seen: 0,
             nodes_seen: 0,
             routable_market_providers: 0,
+            feed_status: None,
             skipped: Vec::new(),
             notes: vec![
                 "tokenstats feed not configured — using static [[providers]] only".to_string(),
@@ -95,6 +99,30 @@ impl MarketState {
 struct HealthResponse {
     ok: Option<bool>,
     quotes: Option<usize>,
+    /// `ok` | `degraded` | `down` | `starting` | `offline` (tokenstats ≥ Oct 2026).
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    feed: Option<HealthFeed>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HealthFeed {
+    #[serde(default)]
+    reasons: Vec<String>,
+}
+
+/// Centralized catalogs: one shared key per source, always polled by tokenstats.
+const REFERENCE_SOURCES: &[&str] = &["openrouter", "orcarouter"];
+/// Source names tokenstats publishes; any other bare key is a node provider_id.
+const KNOWN_SOURCES: &[&str] = &["openrouter", "orcarouter", "routstr", "nostr"];
+/// Ask for the whole (filtered) board; tokenstats caps this itself.
+const QUOTE_LIMIT: usize = 20_000;
+
+fn is_reference_source(source: &str) -> bool {
+    REFERENCE_SOURCES
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(source))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,6 +135,13 @@ pub struct Quote {
     pub price_out_sats: Option<f64>,
     pub endpoint: Option<String>,
     pub observed_at: Option<DateTime<Utc>>,
+    /// Endpoint catalog-fetch success rate over 24h (tokenstats ≥ Oct 2026;
+    /// persisted, so steadier than `/api/nodes` 1h `reliability`).
+    #[serde(default)]
+    pub reliability_24h: Option<f64>,
+    /// Node's `/v1/info` npub matches its announcing Nostr key.
+    #[serde(default)]
+    pub identity_verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +159,7 @@ struct QuoteGroup {
     models: HashMap<String, ModelRates>,
     reliability: Option<f64>,
     low_reliability: bool,
+    unverified_identity: bool,
 }
 
 /// Normalize an OpenAI-compatible base URL to end with `/v1`.
@@ -203,9 +239,12 @@ pub fn resolve_market_key(
 }
 
 fn key_hint(source: &str, provider_id: &str) -> String {
-    if source.eq_ignore_ascii_case("openrouter") {
-        "Set [tokenstats.keys] openrouter = \"${OPENROUTER_API_KEY}\" (shared for all OpenRouter quotes)"
-            .to_string()
+    if is_reference_source(source) {
+        let src = source.to_ascii_lowercase();
+        format!(
+            "Set [tokenstats.keys] {src} = \"${{{}_API_KEY}}\" (shared for all {src} quotes)",
+            src.to_ascii_uppercase()
+        )
     } else {
         format!(
             "Set [tokenstats.keys] \"{provider_id}\" = \"${{CASHU_OR_API_KEY}}\" \
@@ -271,12 +310,19 @@ fn build_groups(
             continue;
         }
 
-        let rel = reliability.get(q.provider_id.as_str()).copied();
-        let low_rel = if q.source.eq_ignore_ascii_case("openrouter") {
-            false
-        } else {
-            rel.map(|r| r < cfg.min_reliability).unwrap_or(false)
+        // Prefer the quote's own 24h figure; fall back to /api/nodes (older
+        // tokenstats). Unknown reliability is not trusted, except for the
+        // reference catalogs on a tokenstats that doesn't report it yet.
+        let rel = q
+            .reliability_24h
+            .or_else(|| reliability.get(q.provider_id.as_str()).copied());
+        let low_rel = match rel {
+            Some(r) => r < cfg.min_reliability,
+            None => !is_reference_source(&q.source),
         };
+        let unverified = cfg.require_verified_identity
+            && !is_reference_source(&q.source)
+            && q.identity_verified != Some(true);
 
         // A missing, negative or absurd price is dropped, not read as free:
         // the cheapest quote wins routing, and the highest sets reserves
@@ -298,10 +344,14 @@ fn build_groups(
             models: HashMap::new(),
             reliability: rel,
             low_reliability: low_rel,
+            unverified_identity: unverified,
         });
         g.models.insert(q.model.clone(), rates);
         if low_rel {
             g.low_reliability = true;
+        }
+        if unverified {
+            g.unverified_identity = true;
         }
         if g.reliability.is_none() {
             g.reliability = rel;
@@ -326,9 +376,10 @@ pub fn merge_quotes_into_providers(
     cfg: &TokenstatsConfig,
     now: DateTime<Utc>,
 ) -> (Vec<ProviderConfig>, Vec<SkipEntry>, usize) {
+    // Unknown stays unknown (it used to default to 1.0, i.e. trusted).
     let reliability: HashMap<&str, f64> = nodes
         .iter()
-        .map(|n| (n.provider_id.as_str(), n.reliability.unwrap_or(1.0)))
+        .filter_map(|n| Some((n.provider_id.as_str(), n.reliability?)))
         .collect();
 
     let (groups, stale_count, invalid_price_count) = build_groups(quotes, &reliability, cfg, now);
@@ -346,6 +397,17 @@ pub fn merge_quotes_into_providers(
 
     for group in &groups {
         if group.low_reliability {
+            let hint = match group.reliability {
+                Some(r) => format!(
+                    "Node reliability {:.0}% (24h) is below min_reliability ({:.0}%). \
+                     Lower [tokenstats].min_reliability or wait for healthier polls.",
+                    r * 100.0,
+                    cfg.min_reliability * 100.0
+                ),
+                None => "Node reliability is unknown (tokenstats hasn't polled it yet); \
+                         it becomes routable once it has a track record."
+                    .to_string(),
+            };
             skipped.push(SkipEntry {
                 source: group.source.clone(),
                 provider: group.provider.clone(),
@@ -353,12 +415,23 @@ pub fn merge_quotes_into_providers(
                 endpoint: Some(group.endpoint.clone()),
                 models_count: group.models.len(),
                 reason: "low_reliability".to_string(),
-                hint: format!(
-                    "Node reliability {:.0}% is below min_reliability ({:.0}%). \
-                     Raise [tokenstats].min_reliability or wait for healthier polls.",
-                    group.reliability.unwrap_or(0.0) * 100.0,
-                    cfg.min_reliability * 100.0
-                ),
+                hint,
+                reliability: group.reliability,
+            });
+            continue;
+        }
+
+        if group.unverified_identity {
+            skipped.push(SkipEntry {
+                source: group.source.clone(),
+                provider: group.provider.clone(),
+                provider_id: group.provider_id.clone(),
+                endpoint: Some(group.endpoint.clone()),
+                models_count: group.models.len(),
+                reason: "unverified_identity".to_string(),
+                hint: "require_verified_identity is on and tokenstats could not confirm \
+                       this node's npub matches its Nostr announcement."
+                    .to_string(),
                 reliability: group.reliability,
             });
             continue;
@@ -489,6 +562,90 @@ pub fn merge_quotes_into_providers(
     (static_out, skipped, market_count)
 }
 
+fn fmt_reasons(reasons: &[String]) -> String {
+    if reasons.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", reasons.join("; "))
+    }
+}
+
+/// Which tokenstats sources to fetch, as a comma list (`None` = all).
+///
+/// arbstr can only route where it has a key, and only overlays rates onto
+/// static providers whose endpoint matches a quote, so there is no point
+/// downloading the whole board (~8k quotes, mostly Routstr) every poll. An
+/// explicit `[tokenstats] source` wins; otherwise sources come from
+/// `[tokenstats.keys]` (a bare key that isn't a source name is a node
+/// provider_id, i.e. routstr) plus reference catalogs matching a static
+/// provider's host. With neither, fetch everything (observability only).
+fn quote_sources(cfg: &TokenstatsConfig, static_providers: &[ProviderConfig]) -> Option<String> {
+    if let Some(src) = cfg
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(src.to_string());
+    }
+    let mut sources = std::collections::BTreeSet::new();
+    for (key, value) in &cfg.keys {
+        if value.is_empty() {
+            continue;
+        }
+        let key = key.to_ascii_lowercase();
+        let source = match key.split_once(':') {
+            Some((src, _)) => src.to_string(),
+            None if KNOWN_SOURCES.contains(&key.as_str()) => key,
+            None => "routstr".to_string(),
+        };
+        sources.insert(source);
+    }
+    for p in static_providers {
+        let host = reqwest::Url::parse(&p.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default();
+        for (domain, source) in [
+            ("openrouter.ai", "openrouter"),
+            ("orcarouter.ai", "orcarouter"),
+        ] {
+            if host == domain || host.ends_with(&format!(".{domain}")) {
+                sources.insert(source.to_string());
+            }
+        }
+    }
+    (!sources.is_empty()).then(|| sources.into_iter().collect::<Vec<_>>().join(","))
+}
+
+/// `/api/quotes` with server-side quality filters: chat models only (arbstr
+/// proxies chat completions), fresher than `stale_after_secs`, and no price
+/// outliers (the cheapest quote wins routing, so a node priced 1000x too low
+/// would otherwise attract traffic). Local checks stay as defense in depth.
+fn quotes_url(
+    base: &str,
+    cfg: &TokenstatsConfig,
+    sources: Option<&str>,
+) -> Result<reqwest::Url, String> {
+    let limit = QUOTE_LIMIT.to_string();
+    let max_age = cfg.stale_after_secs.to_string();
+    let ratio = cfg.blend_ratio.to_string();
+    let mut params = vec![
+        ("limit", limit.as_str()),
+        ("kind", "chat"),
+        ("max_age_secs", max_age.as_str()),
+        ("exclude_outliers", "1"),
+    ];
+    if let Some(src) = sources {
+        params.push(("source", src));
+    }
+    if (cfg.blend_ratio - 3.0).abs() > f64::EPSILON {
+        params.push(("ratio", ratio.as_str()));
+    }
+    reqwest::Url::parse_with_params(&format!("{base}/api/quotes"), &params)
+        .map_err(|e| e.to_string())
+}
+
 /// Fetch quotes + nodes from tokenstats and update the router.
 pub async fn poll_once(
     client: &Client,
@@ -508,6 +665,7 @@ pub async fn poll_once(
         quotes_seen: 0,
         nodes_seen: 0,
         routable_market_providers: 0,
+        feed_status: None,
         skipped: Vec::new(),
         notes: Vec::new(),
     };
@@ -525,6 +683,31 @@ pub async fn poll_once(
                         "tokenstats /health reports zero quotes — waiting for catalog data"
                             .to_string(),
                     );
+                }
+                let reasons = h.feed.map(|f| f.reasons).unwrap_or_default();
+                status.feed_status = h.status.clone();
+                match h.status.as_deref() {
+                    // No trustworthy data: same as unreachable.
+                    Some(s @ ("down" | "starting")) => {
+                        status.last_error = Some(format!("tokenstats feed status {s}"));
+                        status.notes.push(format!(
+                            "tokenstats feed is {s} — keeping last provider set \
+                             (static + previous market){}",
+                            fmt_reasons(&reasons)
+                        ));
+                        market.set(status);
+                        return;
+                    }
+                    Some("degraded") => status.notes.push(format!(
+                        "tokenstats feed is degraded{}",
+                        fmt_reasons(&reasons)
+                    )),
+                    Some("offline") => status.notes.push(
+                        "tokenstats is serving a snapshot (polling disabled); \
+                         quotes older than stale_after_secs are dropped"
+                            .to_string(),
+                    ),
+                    _ => {}
                 }
             }
         }
@@ -548,16 +731,25 @@ pub async fn poll_once(
         }
     }
 
-    let mut quotes_url = format!("{base}/api/quotes?limit=2000");
-    if let Some(src) = &cfg.source {
-        quotes_url.push_str(&format!("&source={src}"));
-    }
-    if (cfg.blend_ratio - 3.0).abs() > f64::EPSILON {
-        quotes_url.push_str(&format!("&ratio={}", cfg.blend_ratio));
+    let sources = quote_sources(cfg, static_providers);
+    let quotes_url = match quotes_url(base, cfg, sources.as_deref()) {
+        Ok(u) => u,
+        Err(e) => {
+            status.last_error = Some(format!("bad tokenstats url: {e}"));
+            market.set(status);
+            return;
+        }
+    };
+    match &sources {
+        Some(s) if cfg.source.is_none() => status.notes.push(format!(
+            "Fetching sources {s} (from [tokenstats.keys] and static provider hosts); \
+             set [tokenstats] source to widen"
+        )),
+        _ => {}
     }
 
     let quotes: Vec<Quote> = match client
-        .get(&quotes_url)
+        .get(quotes_url)
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -668,6 +860,8 @@ mod tests {
             price_out_sats: Some(out),
             endpoint: Some(endpoint.to_string()),
             observed_at: Some(Utc::now()),
+            reliability_24h: None,
+            identity_verified: None,
         }
     }
 
@@ -682,6 +876,7 @@ mod tests {
             keys,
             allowed_hosts: vec!["openrouter.ai".to_string(), "node.example.com".to_string()],
             max_price_sats_per_1m: 1_000_000.0,
+            require_verified_identity: false,
         }
     }
 
@@ -792,6 +987,183 @@ mod tests {
         assert_eq!(market, 0);
         assert!(providers.is_empty());
         assert_eq!(skipped[0].reason, "low_reliability");
+    }
+
+    fn node_cfg() -> TokenstatsConfig {
+        let mut keys = HashMap::new();
+        keys.insert("node-a".to_string(), "cashu".to_string());
+        cfg_with_keys(keys)
+    }
+
+    fn node_quote(rel_24h: Option<f64>, identity: Option<bool>) -> Quote {
+        let mut q = sample_quote(
+            "routstr",
+            "node-a",
+            "gpt-4o",
+            "https://node.example.com",
+            50.0,
+        );
+        q.reliability_24h = rel_24h;
+        q.identity_verified = identity;
+        q
+    }
+
+    #[test]
+    fn quote_reliability_24h_wins_over_nodes_1h() {
+        let nodes = vec![NodeInfo {
+            provider_id: "node-a".to_string(),
+            reliability: Some(0.1),
+        }];
+        let quotes = vec![node_quote(Some(0.95), None)];
+        let (_, skipped, market) =
+            merge_quotes_into_providers(&[], &quotes, &nodes, &node_cfg(), Utc::now());
+        assert_eq!(market, 1, "{skipped:?}");
+    }
+
+    #[test]
+    fn unknown_node_reliability_is_not_trusted() {
+        // Used to default to 1.0; now a node with no track record waits.
+        let nodes = vec![NodeInfo {
+            provider_id: "node-a".to_string(),
+            reliability: None,
+        }];
+        let quotes = vec![node_quote(None, None)];
+        let (_, skipped, market) =
+            merge_quotes_into_providers(&[], &quotes, &nodes, &node_cfg(), Utc::now());
+        assert_eq!(market, 0);
+        assert_eq!(skipped[0].reason, "low_reliability");
+        assert!(skipped[0].hint.contains("unknown"), "{}", skipped[0].hint);
+    }
+
+    #[test]
+    fn reference_catalogs_ok_without_reliability_but_not_when_low() {
+        let cfg = openrouter_cfg();
+        let mut q = sample_quote(
+            "openrouter",
+            "openrouter",
+            "m",
+            "https://openrouter.ai/api/v1",
+            5.0,
+        );
+        // Older tokenstats: no figure at all → still routable.
+        assert_eq!(merge(&cfg, vec![q.clone()]).2, 1);
+        // Reported and below the floor → skipped like any node.
+        q.reliability_24h = Some(0.2);
+        let (_, skipped, market) = merge(&cfg, vec![q]);
+        assert_eq!(market, 0);
+        assert_eq!(skipped[0].reason, "low_reliability");
+    }
+
+    #[test]
+    fn require_verified_identity_skips_unverified_nodes() {
+        let mut cfg = node_cfg();
+        cfg.require_verified_identity = true;
+        for (identity, routable) in [(Some(true), 1), (Some(false), 0), (None, 0)] {
+            let quotes = vec![node_quote(Some(1.0), identity)];
+            let (_, skipped, market) =
+                merge_quotes_into_providers(&[], &quotes, &[], &cfg, Utc::now());
+            assert_eq!(market, routable, "{identity:?}");
+            if routable == 0 {
+                assert_eq!(skipped[0].reason, "unverified_identity");
+            }
+        }
+        // Reference catalogs have no Nostr identity to verify.
+        let mut cfg = openrouter_cfg();
+        cfg.require_verified_identity = true;
+        let q = sample_quote(
+            "openrouter",
+            "openrouter",
+            "m",
+            "https://openrouter.ai/api/v1",
+            5.0,
+        );
+        assert_eq!(merge(&cfg, vec![q]).2, 1);
+    }
+
+    fn static_provider(url: &str) -> ProviderConfig {
+        let mut p = openrouter_cfg_static();
+        p.url = url.to_string();
+        p
+    }
+
+    fn openrouter_cfg_static() -> ProviderConfig {
+        let quotes = vec![sample_quote(
+            "openrouter",
+            "openrouter",
+            "m",
+            "https://openrouter.ai/api/v1",
+            5.0,
+        )];
+        merge(&openrouter_cfg(), quotes).0.remove(0)
+    }
+
+    #[test]
+    fn sources_come_from_keys_static_hosts_or_explicit_config() {
+        let mut keys = HashMap::new();
+        keys.insert("openrouter".to_string(), "k".to_string());
+        keys.insert("node-a".to_string(), "cashu".to_string());
+        keys.insert("orcarouter:orcarouter".to_string(), "k".to_string());
+        keys.insert("unset".to_string(), String::new());
+        let cfg = cfg_with_keys(keys);
+        assert_eq!(
+            quote_sources(&cfg, &[]).as_deref(),
+            Some("openrouter,orcarouter,routstr")
+        );
+
+        let bare = cfg_with_keys(HashMap::new());
+        assert_eq!(quote_sources(&bare, &[]), None, "no keys: fetch everything");
+        let statics = [static_provider("https://openrouter.ai/api/v1")];
+        assert_eq!(
+            quote_sources(&bare, &statics).as_deref(),
+            Some("openrouter")
+        );
+
+        let mut explicit = cfg.clone();
+        explicit.source = Some("routstr".to_string());
+        assert_eq!(
+            quote_sources(&explicit, &statics).as_deref(),
+            Some("routstr")
+        );
+    }
+
+    #[test]
+    fn quotes_url_carries_quality_filters() {
+        let mut cfg = openrouter_cfg();
+        cfg.stale_after_secs = 300;
+        cfg.blend_ratio = 4.0;
+        let url = quotes_url("https://tokenstats.ai", &cfg, Some("openrouter,routstr")).unwrap();
+        let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
+        assert_eq!(url.path(), "/api/quotes");
+        assert_eq!(q["kind"], "chat");
+        assert_eq!(q["max_age_secs"], "300");
+        assert_eq!(q["exclude_outliers"], "1");
+        assert_eq!(q["source"], "openrouter,routstr");
+        assert_eq!(q["ratio"], "4");
+        assert_eq!(q["limit"], QUOTE_LIMIT.to_string());
+        let all = quotes_url("https://tokenstats.ai", &openrouter_cfg(), None).unwrap();
+        assert!(!all.query().unwrap().contains("source="));
+        assert!(!all.query().unwrap().contains("ratio="));
+    }
+
+    #[test]
+    fn orcarouter_key_hint_is_shared_like_openrouter() {
+        let hint = key_hint("orcarouter", "orcarouter");
+        assert!(
+            hint.contains("orcarouter = \"${ORCAROUTER_API_KEY}\""),
+            "{hint}"
+        );
+    }
+
+    #[test]
+    fn health_response_parses_new_and_old_shapes() {
+        let new: HealthResponse = serde_json::from_str(
+            r#"{"ok":true,"quotes":10,"status":"degraded","feed":{"reasons":["openrouter catalog is stale"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.status.as_deref(), Some("degraded"));
+        assert_eq!(new.feed.unwrap().reasons.len(), 1);
+        let old: HealthResponse = serde_json::from_str(r#"{"ok":true,"quotes":10}"#).unwrap();
+        assert!(old.status.is_none() && old.feed.is_none());
     }
 
     fn openrouter_cfg() -> TokenstatsConfig {

@@ -333,6 +333,11 @@ pub struct TokenstatsConfig {
     /// (default 1,000,000)
     #[serde(default = "default_max_price")]
     pub max_price_sats_per_1m: f64,
+    /// Only route to Routstr nodes whose self-reported npub (tokenstats
+    /// `/v1/info` probe) matches the Nostr key that announced them, i.e.
+    /// tokenstats `identity_verified = true`. Default false.
+    #[serde(default)]
+    pub require_verified_identity: bool,
 }
 
 fn default_tokenstats_poll() -> u64 {
