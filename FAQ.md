@@ -71,7 +71,7 @@ It is feature-rich, with good observability, circuit breakers, streaming support
 The easiest way is using **arbstr-node**:
 
 ```bash
-git clone --recurse-submodules https://github.com/johnzilla/arbstr-node
+git clone https://github.com/johnzilla/arbstr-node
 cd arbstr-node
 cp .env.example .env   # fill in secrets
 docker compose up -d

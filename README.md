@@ -40,7 +40,7 @@ Multiple providers offer the same models at different rates (priced in satoshis)
 - **Policy engine** -- constrain routing by allowed models and max cost; keyword heuristics for auto-matching
 - **Secret management** -- SecretString API keys with zeroize-on-drop; env var expansion; convention-based key discovery
 - **Cost querying API** -- aggregate stats, time range filtering, paginated request logs
-- **Docker image** -- multi-arch (amd64 + arm64) `ghcr.io/johnzilla/arbstr`, published by CI on every merge to main
+- **Docker image** -- multi-arch (amd64 + arm64) `ghcr.io/johnzilla/arbstr`: `:latest` tracks main, and each [release](https://github.com/johnzilla/arbstr/releases) publishes `:X.Y.Z` with signed build provenance
 - **Mock config** -- `--mock` starts with a built-in config of two fake providers, for trying the CLI and endpoints without API keys
 
 ## FAQ
@@ -320,7 +320,7 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D wa
 cargo build --release
 ./target/release/arbstr serve -c config.toml
 
-# or with the published image
+# or with the published image (:latest tracks main; pin a release tag such as :X.Y.Z for anything long-lived)
 docker run -p 8080:8080 -v "$PWD/config.toml:/config/config.toml:ro" ghcr.io/johnzilla/arbstr:latest
 ```
 
@@ -338,8 +338,9 @@ Your inference proxy is live at `http://localhost:8080`. Before the first reques
 
 ## Related Projects
 
-- [arbstr-node](https://github.com/johnzilla/arbstr-node) -- Full-stack deployment (core + vault + LND + Cashu mint)
-- [arbstr-vault](https://github.com/johnzilla/arbstr-vault) -- Treasury service for Bitcoin settlement
+- [arbstr](https://github.com/johnzilla/arbstr) -- Routing engine: OpenAI-compatible proxy that picks the cheapest qualified provider
+- [arbstr-vault](https://github.com/johnzilla/arbstr-vault) -- Treasury: agent accounts, spending policy, per-request billing, Lightning and Cashu rails
+- [arbstr-node](https://github.com/johnzilla/arbstr-node) -- The full stack (core + vault + LND + Cashu mint) as one `docker compose up`, pinned to released versions
 - [mesh-llm](https://docs.anarchai.org) -- Distributed P2P inference network (local provider)
 - [Routstr](https://routstr.com) -- Decentralized LLM marketplace
 
