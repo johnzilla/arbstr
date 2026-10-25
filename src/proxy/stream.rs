@@ -359,9 +359,88 @@ where
     (wrapped, handle)
 }
 
+/// Removes the provider's `data: [DONE]` lines from a forwarded SSE stream, so
+/// the client sees exactly one `[DONE]`: the one arbstr sends after its trailing
+/// cost event. Works line by line, holding back only an incomplete final line
+/// until the next chunk (an event is not dispatched before its newline anyway).
+#[derive(Default)]
+pub struct DoneFilter {
+    pending: Vec<u8>,
+}
+
+impl DoneFilter {
+    /// Feed one upstream chunk; returns the bytes to forward now.
+    pub fn push(&mut self, chunk: &[u8]) -> Bytes {
+        self.pending.extend_from_slice(chunk);
+        let Some(last_newline) = self.pending.iter().rposition(|b| *b == b'\n') else {
+            return Bytes::new();
+        };
+        let rest = self.pending.split_off(last_newline + 1);
+        let complete = std::mem::replace(&mut self.pending, rest);
+        let mut out = Vec::with_capacity(complete.len());
+        for line in complete.split_inclusive(|b| *b == b'\n') {
+            if !is_done_line(line) {
+                out.extend_from_slice(line);
+            }
+        }
+        Bytes::from(out)
+    }
+
+    /// Flush a final line the stream ended without terminating.
+    pub fn finish(&mut self) -> Bytes {
+        let rest = std::mem::take(&mut self.pending);
+        if is_done_line(&rest) {
+            Bytes::new()
+        } else {
+            Bytes::from(rest)
+        }
+    }
+}
+
+fn is_done_line(line: &[u8]) -> bool {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    line.strip_prefix(b"data:")
+        .is_some_and(|data| data.trim_ascii() == b"[DONE]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn filter_chunks(chunks: &[&str]) -> String {
+        let mut filter = DoneFilter::default();
+        let mut out = Vec::new();
+        for chunk in chunks {
+            out.extend_from_slice(&filter.push(chunk.as_bytes()));
+        }
+        out.extend_from_slice(&filter.finish());
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn done_filter_drops_done_and_keeps_events() {
+        let out = filter_chunks(&["data: {\"a\":1}\n\ndata: [DONE]\n\n"]);
+        assert_eq!(out, "data: {\"a\":1}\n\n\n");
+    }
+
+    #[test]
+    fn done_filter_handles_done_split_across_chunks() {
+        let out = filter_chunks(&["data: {\"a\":1}\n\ndata: [DO", "NE]\r\n", "\r\n"]);
+        assert_eq!(out, "data: {\"a\":1}\n\n\r\n");
+    }
+
+    #[test]
+    fn done_filter_drops_unterminated_done_and_keeps_other_tails() {
+        assert_eq!(filter_chunks(&["data: x\n\ndata:[DONE]"]), "data: x\n\n");
+        assert_eq!(filter_chunks(&["data: x\n\ndata: y"]), "data: x\n\ndata: y");
+    }
+
+    #[test]
+    fn done_filter_keeps_content_mentioning_done() {
+        let event = "data: {\"content\":\"[DONE]\"}\n\n";
+        assert_eq!(filter_chunks(&[event]), event);
+    }
 
     /// Build SSE data from event lines, then split at the given byte positions.
     ///

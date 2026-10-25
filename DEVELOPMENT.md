@@ -150,6 +150,7 @@ Config file: `config.toml` (see `config.example.toml` for full example)
 [server]
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional (requests/sec, 0 or absent = unlimited)
+# client_rate_limit_rps = 10 # optional per-client token bucket (src/proxy/rate_limit.rs): keyed by bearer token, else peer IP; X-Forwarded-For is not trusted
 # auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models, /v1/cost (ignored when [vault] is set — vault validates agent tokens)
 # operator_token = "${ARBSTR_OPERATOR_TOKEN}"  # /v1/stats, /v1/requests; required with [vault] (empty = unset)
 

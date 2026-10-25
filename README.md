@@ -88,6 +88,7 @@ Copy `config.example.toml` to `config.toml` and customize:
 [server]
 listen = "127.0.0.1:8080"
 # rate_limit_rps = 100       # optional global rate limit (requests/sec)
+# client_rate_limit_rps = 10 # optional per-client limit: per bearer token, else per IP (requests/sec, burst of the same size)
 # auth_token = "my-secret"   # optional bearer token for /v1/chat/completions, /v1/models, /v1/cost (ignored when [vault] is set)
 # operator_token = "${ARBSTR_OPERATOR_TOKEN}"  # bearer token for /v1/stats and /v1/requests (required with [vault])
 
@@ -239,7 +240,7 @@ When `[vault]` is configured, arbstr bills every request to an agent account in 
 | `401` | Unknown agent token |
 | `402` | Agent balance too low for the reservation |
 | `403` | Agent's spending policy refused the request. `error.reason` gives the cause: `exceeds_max_transaction` (set or lower `max_tokens`), `exceeds_daily_limit`, `no_policy_configured` or `deny_all_policy` |
-| `429` | Vault rate limited the request |
+| `429` | Vault rate limited the request, or (`error.code = client_rate_limited`, with `Retry-After`) this client exceeded `client_rate_limit_rps` |
 | `503` | Vault unreachable, or too many settlements are waiting to be retried (`pending_threshold`) |
 
 A misconfigured `internal_token` returns `500`, since that's an operator error, not the client's.

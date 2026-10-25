@@ -1257,16 +1257,23 @@ async fn send_to_provider(
             body = %error_body,
             "Provider returned error"
         );
+        // The body stays in the log above: it can carry details of the operator's
+        // provider account (quota, organization), so clients only get the status.
         return Err(RequestError {
             error: Box::new(Error::Provider(format!(
-                "Provider '{}' returned {}: {}",
-                provider.name, status, error_body
+                "Provider '{}' returned {}",
+                provider.name, status
             ))),
             provider_name: Some(provider.name.clone()),
             status_code: status.as_u16(),
             message: format!("Provider returned {}", status),
         });
     }
+
+    let expected = UsageExpectation {
+        estimated_input: request.estimate_tokens(0).0,
+        max_output: request.max_tokens,
+    };
 
     if is_streaming {
         handle_streaming_response(
@@ -1277,6 +1284,7 @@ async fn send_to_provider(
             state.vault.clone(),
             reservation_id,
             reserve_msats,
+            expected,
             state.db.clone(),
             stream_start,
             complexity_score,
@@ -1284,7 +1292,47 @@ async fn send_to_provider(
         )
         .await
     } else {
-        handle_non_streaming_response(upstream_response, provider).await
+        let outcome = handle_non_streaming_response(upstream_response, provider).await?;
+        if let (Some(input), Some(output)) = (outcome.input_tokens, outcome.output_tokens) {
+            expected.check(&provider.name, input, output);
+        }
+        Ok(outcome)
+    }
+}
+
+/// What a request's usage should look like, for spotting implausible reports.
+#[derive(Clone, Copy)]
+struct UsageExpectation {
+    estimated_input: u32,
+    max_output: Option<u32>,
+}
+
+/// Reported input beyond this multiple of the estimate is flagged. The
+/// estimate is rough (bytes / 4, a fixed cost per image), so the margin is wide.
+const IMPLAUSIBLE_INPUT_FACTOR: u32 = 4;
+
+impl UsageExpectation {
+    /// Warn when provider-reported usage cannot be right for this request: more
+    /// output than `max_tokens` allowed, or input far beyond the estimate.
+    /// Returns whether it warned. Billing is unaffected (vault caps a settle at
+    /// the reservation); this makes a misreporting provider visible.
+    fn check(&self, provider: &str, input: u32, output: u32) -> bool {
+        let output_over = self.max_output.is_some_and(|max| output > max);
+        let input_over = input
+            > self
+                .estimated_input
+                .saturating_mul(IMPLAUSIBLE_INPUT_FACTOR);
+        if output_over || input_over {
+            tracing::warn!(
+                provider = %provider,
+                reported_input = input,
+                estimated_input = self.estimated_input,
+                reported_output = output,
+                max_tokens = ?self.max_output,
+                "Provider reported implausible usage"
+            );
+        }
+        output_over || input_over
     }
 }
 
@@ -1390,6 +1438,7 @@ async fn handle_streaming_response(
     vault: Option<VaultClient>,
     reservation_id: Option<String>,
     reserve_msats: u64,
+    expected: UsageExpectation,
     db_pool: Option<sqlx::SqlitePool>,
     stream_start: std::time::Instant,
     complexity_score: Option<f64>,
@@ -1418,12 +1467,15 @@ async fn handle_streaming_response(
         futures::pin_mut!(observed_stream);
 
         let mut client_connected = true;
+        // The provider's [DONE] is held back; arbstr sends one after its cost event
+        let mut done_filter = crate::proxy::stream::DoneFilter::default();
 
         // Forward loop: relay chunks to client, continue consuming on disconnect
         while let Some(chunk_result) = observed_stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
-                    if client_connected && tx.send(Ok(bytes)).await.is_err() {
+                    let bytes = done_filter.push(&bytes);
+                    if client_connected && !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
                         client_connected = false;
                         tracing::info!(
                             correlation_id = %cid,
@@ -1458,6 +1510,11 @@ async fn handle_streaming_response(
         let (input_tokens, output_tokens, cost_sats) = match &stream_result {
             Some(sr) => match &sr.usage {
                 Some(usage) => {
+                    expected.check(
+                        &provider_name_for_vault,
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                    );
                     let cost = crate::router::actual_cost_sats(
                         usage.prompt_tokens,
                         usage.completion_tokens,
@@ -1490,6 +1547,10 @@ async fn handle_streaming_response(
 
         // Emit trailing SSE event if client is still connected
         if client_connected {
+            let tail = done_filter.finish();
+            if !tail.is_empty() {
+                let _ = tx.send(Ok(tail)).await;
+            }
             let trailing = build_trailing_sse_event(
                 cost_sats,
                 stream_duration_ms,
@@ -1844,11 +1905,8 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
                 "source": p.source,
                 "provider_id": p.provider_id,
                 "routable": true,
+                // Public endpoint: whether a key is set, never any of the key
                 "has_api_key": p.api_key.is_some(),
-                "api_key": match &p.api_key {
-                    Some(key) => serde_json::Value::String(key.masked_prefix()),
-                    None => serde_json::Value::Null,
-                },
             })
         })
         .collect();
@@ -1865,6 +1923,30 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_usage_expectation_flags_implausible_reports() {
+        let expected = UsageExpectation {
+            estimated_input: 100,
+            max_output: Some(50),
+        };
+        assert!(!expected.check("p", 100, 50), "at the limits is plausible");
+        assert!(
+            !expected.check("p", 400, 0),
+            "4x the estimate is still plausible"
+        );
+        assert!(expected.check("p", 401, 10), "input beyond 4x the estimate");
+        assert!(expected.check("p", 80, 51), "output beyond max_tokens");
+
+        let no_max = UsageExpectation {
+            estimated_input: 100,
+            max_output: None,
+        };
+        assert!(
+            !no_max.check("p", 100, 100_000),
+            "no max_tokens, no output bound"
+        );
+    }
 
     #[test]
     fn test_settle_msats_uses_reported_cost() {

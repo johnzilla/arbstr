@@ -280,3 +280,15 @@ async fn health_and_providers_stay_open() {
         );
     }
 }
+
+#[tokio::test]
+async fn providers_shows_whether_a_key_is_set_but_none_of_it() {
+    let mut provider = common::test_provider("keyed");
+    provider.api_key = Some("sk-live-0123456789abcdef".into());
+    let (app, _) = common::setup_circuit_test_app(vec![provider]);
+    let (status, body) = status(&app, get("/providers", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = body.to_string();
+    assert!(text.contains("\"has_api_key\":true"), "{text}");
+    assert!(!text.contains("sk-liv"), "no part of the key: {text}");
+}

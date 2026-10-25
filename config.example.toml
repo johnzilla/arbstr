@@ -9,6 +9,12 @@
 listen = "127.0.0.1:8080"
 # Global rate limit in requests per second (optional, omit or 0 = unlimited)
 # rate_limit_rps = 100
+# Per-client rate limit in requests per second (optional, omit or 0 = off).
+# A client is its bearer token (so each vault agent gets its own budget), or
+# its IP when there is no token. Each client may burst up to this many
+# requests. Behind a reverse proxy, unauthenticated requests share the proxy's
+# IP: X-Forwarded-For is not trusted.
+# client_rate_limit_rps = 10
 # Optional bearer token for proxy endpoint authentication
 # When set, /v1/chat/completions, /v1/models and /v1/cost require Authorization: Bearer <token>
 # Ignored when [vault] is configured: clients send their vault agent token instead
