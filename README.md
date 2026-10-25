@@ -295,7 +295,7 @@ cargo run -- serve --mock     # Run with the built-in mock config
 cargo fmt && cargo clippy -- -D warnings  # Format and lint
 ```
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on every PR, on Rust 1.95.0. Merges to main also publish `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` for amd64 and arm64.
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on every PR, on Rust 1.99.1. Merges to main also publish `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` for amd64 and arm64.
 
 ## Roadmap
 

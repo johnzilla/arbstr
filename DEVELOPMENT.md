@@ -38,7 +38,7 @@ cargo fmt
 cargo clippy -- -D warnings
 ```
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on Rust 1.95.0 for every PR, and publishes `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` (amd64 + arm64) on merge to main. Run all three locally before pushing. Newer clippy releases flag `result_large_err` on `RequestError`; fix that before bumping the pinned toolchain.
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on Rust 1.99.1 for every PR, and publishes `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` (amd64 + arm64) on merge to main. Run all three locally before pushing. The toolchain is pinned in `ci.yml` and the Dockerfile's builder image; bump both together, along with any fixes the newer clippy asks for.
 
 ## Architecture
 
