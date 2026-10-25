@@ -6,6 +6,7 @@
 pub mod discovery;
 mod handlers;
 pub mod logs;
+mod rate_limit;
 pub mod retry;
 mod server;
 pub mod stats;

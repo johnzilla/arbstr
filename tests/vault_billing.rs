@@ -685,13 +685,20 @@ async fn test_vault_release_on_provider_failure() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    let (status, _json) = common::parse_body(response).await;
+    let (status, json) = common::parse_body(response).await;
 
     // Provider failed, so we should get an error response
     assert!(
         status.is_server_error() || status.as_u16() == 502,
         "should return error when provider fails, got {}",
         status
+    );
+    // ...naming the status, but not echoing the provider's error body
+    let body = json.to_string();
+    assert!(body.contains("500"), "error should name the status: {body}");
+    assert!(
+        !body.contains("provider failure"),
+        "provider error body must not reach the client: {body}"
     );
 
     // Wait briefly for the spawned release task

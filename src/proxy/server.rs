@@ -12,7 +12,7 @@ use axum::{
 use reqwest::Client;
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use super::circuit_breaker::CircuitBreakerRegistry;
 use super::handlers;
+use super::rate_limit::{client_key, too_many_requests, ClientRateLimiter};
 use super::tokenstats::{self, MarketState};
 use super::vault::VaultClient;
 use crate::config::{ApiKey, Config};
@@ -180,6 +181,7 @@ async fn inject_request_id(
 /// Create the axum router with all endpoints.
 pub fn create_router(state: AppState) -> Router {
     let rate_limit_rps = state.config.server.rate_limit_rps;
+    let client_rate_limit_rps = state.config.server.client_rate_limit_rps;
     let auth_token = state.config.server.auth_token.clone().map(Arc::new);
     let operator_token = state.config.server.operator_token.clone().map(Arc::new);
     let has_vault = state.vault.is_some();
@@ -250,6 +252,27 @@ pub fn create_router(state: AppState) -> Router {
                     )),
             );
         }
+    }
+
+    // Per-client limit, outside the global one so a refused client's requests
+    // do not use up the shared budget. /health stays exempt for probes.
+    if let Some(rps) = client_rate_limit_rps.filter(|rps| *rps > 0) {
+        tracing::info!(rps, "Per-client rate limiting enabled");
+        let limiter = Arc::new(ClientRateLimiter::new(rps));
+        app = app.layer(middleware::from_fn(
+            move |request: axum::http::Request<axum::body::Body>, next: middleware::Next| {
+                let limiter = limiter.clone();
+                async move {
+                    if request.uri().path() == "/health"
+                        || limiter.check(&client_key(&request), Instant::now())
+                    {
+                        next.run(request).await
+                    } else {
+                        too_many_requests()
+                    }
+                }
+            },
+        ));
     }
 
     app.layer(TraceLayer::new_for_http().make_span_with(
@@ -401,9 +424,13 @@ pub async fn run_server(mut config: Config) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!(address = %listen_addr, "Starting arbstr proxy server");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Connect info gives the per-client rate limiter each peer's IP
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // Signal background tasks to stop
     if let Some(cancel_tx) = tokenstats_cancel {

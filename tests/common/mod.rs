@@ -53,6 +53,7 @@ pub fn setup_circuit_test_app(
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
+            client_rate_limit_rps: None,
             auth_token: None,
             operator_token: None,
         },
@@ -93,6 +94,7 @@ pub fn db_test_config() -> Config {
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
+            client_rate_limit_rps: None,
             auth_token: None,
             operator_token: None,
         },
@@ -197,6 +199,7 @@ pub fn setup_vault_test_app_with_tokens(
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
+            client_rate_limit_rps: None,
             auth_token: auth_token.map(Into::into),
             operator_token: operator_token.map(Into::into),
         },
@@ -295,10 +298,25 @@ pub fn setup_free_proxy_test_app_with_tokens(
     auth_token: Option<&str>,
     operator_token: Option<&str>,
 ) -> axum::Router {
+    free_proxy_test_app(provider_url, auth_token, operator_token, None)
+}
+
+/// Free proxy mode with `[server] client_rate_limit_rps` set.
+pub fn setup_free_proxy_test_app_with_client_limit(provider_url: &str, rps: u64) -> axum::Router {
+    free_proxy_test_app(provider_url, None, None, Some(rps))
+}
+
+fn free_proxy_test_app(
+    provider_url: &str,
+    auth_token: Option<&str>,
+    operator_token: Option<&str>,
+    client_rate_limit_rps: Option<u64>,
+) -> axum::Router {
     let config = Config {
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
+            client_rate_limit_rps,
             auth_token: auth_token.map(Into::into),
             operator_token: operator_token.map(Into::into),
         },

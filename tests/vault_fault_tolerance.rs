@@ -511,6 +511,7 @@ fn setup_vault_test_app_with_db(
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
+            client_rate_limit_rps: None,
             auth_token: None,
             operator_token: None,
         },

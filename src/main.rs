@@ -245,6 +245,7 @@ fn mock_config() -> Config {
         server: ServerConfig {
             listen: "127.0.0.1:8080".to_string(),
             rate_limit_rps: None,
+            client_rate_limit_rps: None,
             auth_token: None,
             operator_token: None,
         },

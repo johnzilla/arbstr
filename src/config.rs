@@ -32,6 +32,11 @@ pub struct ServerConfig {
     /// Global rate limit in requests per second (0 or absent = unlimited)
     #[serde(default)]
     pub rate_limit_rps: Option<u64>,
+    /// Per-client rate limit in requests per second (0 or absent = off). A
+    /// client is its bearer token, else its IP; each may burst up to this many
+    /// requests. Applies on top of `rate_limit_rps`.
+    #[serde(default)]
+    pub client_rate_limit_rps: Option<u64>,
     /// Optional bearer token for proxy endpoint authentication
     pub auth_token: Option<ApiKey>,
     /// Bearer token for the analytics endpoints (/v1/stats, /v1/requests).
@@ -949,6 +954,7 @@ mod tests {
         let server = ServerConfig {
             listen: default_listen(),
             rate_limit_rps: None,
+            client_rate_limit_rps: None,
             auth_token: Some("proxy-secret-1234".into()),
             operator_token: Some("operator-secret-5678".into()),
         };
@@ -1120,6 +1126,7 @@ mod tests {
             server: ServerConfig {
                 listen: "127.0.0.1:9000".to_string(),
                 rate_limit_rps: None,
+                client_rate_limit_rps: None,
                 auth_token: None,
                 operator_token: None,
             },
