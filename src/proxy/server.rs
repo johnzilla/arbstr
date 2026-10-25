@@ -23,7 +23,7 @@ use super::circuit_breaker::CircuitBreakerRegistry;
 use super::handlers;
 use super::tokenstats::{self, MarketState};
 use super::vault::VaultClient;
-use crate::config::Config;
+use crate::config::{ApiKey, Config};
 use crate::router::Router as ProviderRouter;
 use crate::storage::DbWriter;
 
@@ -60,7 +60,20 @@ fn bearer_token(request: &axum::http::Request<axum::body::Body>) -> Option<&str>
 /// Compare tokens without short-circuiting on the first differing byte.
 fn tokens_match(provided: &str, expected: &str) -> bool {
     let (a, b) = (provided.as_bytes(), expected.as_bytes());
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    if b.is_empty() {
+        return false;
+    }
+    // Walk the provided token, cycling through the expected one, and fold the
+    // length check into the result instead of returning early: the time taken
+    // depends only on the caller's own input, so it reveals neither the
+    // expected token's bytes nor its length.
+    let diff = a
+        .iter()
+        .enumerate()
+        .fold((a.len() != b.len()) as u8, |acc, (i, x)| {
+            acc | (x ^ b[i % b.len()])
+        });
+    diff == 0
 }
 
 fn json_error(status: StatusCode, error: serde_json::Value) -> Response {
@@ -89,12 +102,14 @@ fn invalid_token_response() -> Response {
 /// Used for `server.auth_token` on the proxy endpoints (free proxy mode) and
 /// for `server.operator_token` on the analytics endpoints.
 async fn auth_middleware(
-    expected_token: Arc<String>,
+    expected_token: Arc<ApiKey>,
     request: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
 ) -> Response {
     match bearer_token(&request) {
-        Some(token) if tokens_match(token, &expected_token) => next.run(request).await,
+        Some(token) if tokens_match(token, expected_token.expose_secret()) => {
+            next.run(request).await
+        }
         _ => invalid_token_response(),
     }
 }
@@ -169,7 +184,7 @@ pub fn create_router(state: AppState) -> Router {
     let operator_token = state.config.server.operator_token.clone().map(Arc::new);
     let has_vault = state.vault.is_some();
 
-    let require = |token: Arc<String>| {
+    let require = |token: Arc<ApiKey>| {
         middleware::from_fn(move |req, next| auth_middleware(token.clone(), req, next))
     };
 
@@ -426,5 +441,22 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => tracing::info!("Received SIGINT, starting graceful shutdown"),
         _ = terminate => tracing::info!("Received SIGTERM, starting graceful shutdown"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tokens_match;
+
+    #[test]
+    fn tokens_match_requires_exact_token() {
+        assert!(tokens_match("secret-token", "secret-token"));
+        assert!(!tokens_match("secret-tokeN", "secret-token"));
+        assert!(!tokens_match("secret-token-x", "secret-token"));
+        assert!(!tokens_match("secret", "secret-token"));
+        assert!(!tokens_match("", "secret-token"));
+        // A repeat of the expected token must not match by wrapping around.
+        assert!(!tokens_match("abcabc", "abc"));
+        assert!(!tokens_match("", ""));
     }
 }

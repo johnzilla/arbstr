@@ -38,7 +38,7 @@ You can start in free mode and enable payments later.
 <summary>What providers can I use?</summary>
 
 - Local: Ollama, mesh-llm, or any local OpenAI-compatible server
-- Cloud: Routstr providers, OpenRouter, Anthropic (`https://api.anthropic.com/v1`), and other OpenAI-compatible APIs
+- Cloud: Routstr providers, OpenRouter, Anthropic (`https://api.anthropic.com/v1`, its OpenAI-compatible endpoint), and other OpenAI-compatible APIs
 - Live market quotes via the optional `[tokenstats]` feed
 
 Providers with `auto_discover = true` automatically pull available models at startup.

@@ -167,6 +167,13 @@ pub const REQUEST_OVERHEAD_TOKENS: u32 = 8;
 /// Tokens a provider adds per message (role markers and separators).
 pub const PER_MESSAGE_OVERHEAD_TOKENS: u32 = 4;
 
+/// Reserve estimate for one `image_url` part. Providers bill images by pixel
+/// size, not by the length of their base64 encoding; this covers the largest
+/// image Anthropic processes without downscaling (about 1.15 megapixels,
+/// ~1,600 tokens), which is also above OpenAI's high-detail cost for a
+/// typical image.
+pub const IMAGE_PART_TOKENS: u32 = 1_600;
+
 impl ChatCompletionRequest {
     /// Extract the user's prompt from messages (last user message).
     pub fn user_prompt(&self) -> Option<&str> {
@@ -185,13 +192,16 @@ impl ChatCompletionRequest {
     /// these, short prompts are underestimated by roughly half (a 52-char prompt
     /// estimated at 13 tokens was billed by Anthropic as 25), the vault reservation
     /// comes in below the real cost, and vault caps the settle at the reservation.
-    /// For multimodal `Parts` content, uses the serialized JSON length as fallback.
+    /// For multimodal `Parts` content, text parts count by length and each image
+    /// part counts as [`IMAGE_PART_TOKENS`]; other part types (audio, files) fall
+    /// back to their serialized JSON length.
     /// Output tokens: `max_tokens` if set, otherwise `default_output` parameter.
     ///
     /// Returns `(estimated_input_tokens, estimated_output_tokens)`.
     pub fn estimate_tokens(&self, default_output: u32) -> (u32, u32) {
         let total_chars: usize = self.messages.iter().map(|m| m.content.char_len()).sum();
-        let content = total_chars.div_ceil(4) as u32;
+        let images: u32 = self.messages.iter().map(|m| m.content.image_parts()).sum();
+        let content = total_chars.div_ceil(4) as u32 + images * IMAGE_PART_TOKENS;
         let framing =
             REQUEST_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS * self.messages.len() as u32;
         let input = (content + framing).max(1);
@@ -203,18 +213,32 @@ impl ChatCompletionRequest {
 impl MessageContent {
     /// Character length of the content for token estimation.
     ///
-    /// For text content, returns the string length.
-    /// For multimodal Parts, returns the serialized JSON length as a
-    /// conservative approximation (non-text parts like images contribute
-    /// their metadata size, not pixel count).
+    /// For text content, returns the string length. For multimodal Parts, text
+    /// parts contribute their text length and image parts nothing (they are
+    /// counted by [`Self::image_parts`]); any other part type contributes its
+    /// serialized JSON length as a conservative approximation.
     pub fn char_len(&self) -> usize {
         match self {
             MessageContent::Text(s) => s.len(),
-            MessageContent::Parts(parts) => {
-                // Serialize parts to JSON and use that length.
-                // This is a conservative estimate for multimodal content.
-                serde_json::to_string(parts).map(|s| s.len()).unwrap_or(0)
-            }
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .map(|p| match p.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => p.get("text").and_then(|t| t.as_str()).map_or(0, str::len),
+                    Some("image_url") => 0,
+                    _ => serde_json::to_string(p).map_or(0, |s| s.len()),
+                })
+                .sum(),
+        }
+    }
+
+    /// Number of image parts in multimodal content.
+    pub fn image_parts(&self) -> u32 {
+        match self {
+            MessageContent::Text(_) => 0,
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+                .count() as u32,
         }
     }
 }
@@ -267,6 +291,35 @@ mod tests {
             2 + REQUEST_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS
         );
         assert_eq!(two - one, 2 + PER_MESSAGE_OVERHEAD_TOKENS);
+    }
+
+    #[test]
+    fn test_estimate_tokens_counts_images_by_part_not_encoding() {
+        let mut req = minimal_request();
+        // A ~1 MB base64 image: by encoded length it would estimate ~250k tokens.
+        let image = format!("data:image/png;base64,{}", "A".repeat(1_000_000));
+        req.messages[0].content = MessageContent::Parts(vec![
+            serde_json::json!({"type": "text", "text": "abcdefgh"}),
+            serde_json::json!({"type": "image_url", "image_url": {"url": image}}),
+        ]);
+        let (input, _) = req.estimate_tokens(256);
+        assert_eq!(
+            input,
+            2 + IMAGE_PART_TOKENS + REQUEST_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS
+        );
+    }
+
+    #[test]
+    fn test_estimate_tokens_unknown_parts_use_json_length() {
+        let mut req = minimal_request();
+        let part = serde_json::json!({"type": "input_audio", "input_audio": {"data": "x".repeat(400), "format": "wav"}});
+        let len = serde_json::to_string(&part).unwrap().len();
+        req.messages[0].content = MessageContent::Parts(vec![part]);
+        let (input, _) = req.estimate_tokens(256);
+        assert_eq!(
+            input,
+            len.div_ceil(4) as u32 + REQUEST_OVERHEAD_TOKENS + PER_MESSAGE_OVERHEAD_TOKENS
+        );
     }
 
     /// Helper to build a minimal ChatCompletionRequest for testing.

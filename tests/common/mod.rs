@@ -197,8 +197,8 @@ pub fn setup_vault_test_app_with_tokens(
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
-            auth_token: auth_token.map(|s| s.to_string()),
-            operator_token: operator_token.map(|s| s.to_string()),
+            auth_token: auth_token.map(Into::into),
+            operator_token: operator_token.map(Into::into),
         },
         database: None,
         vault: Some(VaultConfig {
@@ -299,8 +299,8 @@ pub fn setup_free_proxy_test_app_with_tokens(
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
-            auth_token: auth_token.map(|s| s.to_string()),
-            operator_token: operator_token.map(|s| s.to_string()),
+            auth_token: auth_token.map(Into::into),
+            operator_token: operator_token.map(Into::into),
         },
         database: None,
         vault: None,
