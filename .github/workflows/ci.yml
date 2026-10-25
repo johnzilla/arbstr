@@ -1,6 +1,10 @@
 # Tests every PR and push to main. On main, also publishes the multi-arch
 # image to ghcr.io/<owner>/arbstr as :latest and :<short-sha>.
 #
+# Pushing a signed vX.Y.Z tag (matching Cargo.toml's version) also publishes
+# :X.Y.Z and :X.Y, attaches build provenance to the image, and creates the
+# GitHub Release.
+#
 # Each architecture builds on a native runner (no QEMU — Rust under emulation
 # is very slow), pushes by digest, and the merge job stitches the digests into
 # one tagged manifest list.
@@ -10,6 +14,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
 concurrency:
@@ -34,13 +39,23 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
 
   build:
     needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     strategy:
       fail-fast: true
       matrix:
@@ -97,6 +112,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -114,8 +133,10 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short,prefix=
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
       - name: Create and push manifest list
         working-directory: ${{ runner.temp }}/digests
         run: |
@@ -124,6 +145,42 @@ jobs:
           for d in *; do sources+=("$IMAGE@sha256:$d"); done
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
       - name: Inspect
-        run: docker buildx imagetools inspect "$IMAGE:$VERSION"
+        id: digest
+        run: |
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          echo "digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ steps.meta.outputs.version }}
+      # Signed SLSA build provenance, stored in the registry next to the image.
+      # Verify with: gh attestation verify oci://<image>:<tag> --owner johnzilla
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes=$(cat <<NOTES
+          Image: \`$IMAGE:$version\` (also \`:${version%.*}\`), linux/amd64 + linux/arm64
+          Digest: \`$DIGEST\`
+
+          Verify build provenance:
+          \`\`\`
+          gh attestation verify oci://$IMAGE:$version --owner $GITHUB_REPOSITORY_OWNER
+          \`\`\`
+          NOTES
+          )
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "arbstr $GITHUB_REF_NAME" --generate-notes --notes "$notes"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
