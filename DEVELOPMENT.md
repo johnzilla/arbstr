@@ -103,7 +103,7 @@ sequenceDiagram
     Proxy-->>App: Stream response
 ```
 
-Vault reserve uses frontier rates and the request's `max_tokens` (or `default_reserve_tokens`, which is then injected upstream). Vault errors map to client responses in `src/proxy/vault.rs` (`VaultError`): only `error.code = invalid_agent_token` becomes a client 401; a 403 carries vault's policy `reason` into `error.reason`; settle failures go to `pending_settlements` and a reconciliation task retries them.
+Vault reserve uses frontier rates and the request's `max_tokens` (or `default_reserve_tokens`, which is then injected upstream). Vault errors map to client responses in `src/proxy/vault.rs` (`VaultError`): only `error.code = invalid_agent_token` becomes a client 401; a 403 carries vault's policy `reason` into `error.reason`; settle failures go to `pending_settlements` and a reconciliation task retries them. A completed request whose provider reports no `usage` settles at the full reservation (logged as a warning), since its real cost is unknown; a stream that ends early with no usage is released instead.
 
 ### Key Components
 
