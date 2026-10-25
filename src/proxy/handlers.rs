@@ -62,7 +62,8 @@ pub(crate) struct RequestOutcome {
 
 /// Outcome of a failed request, containing the error and metadata for logging.
 pub(crate) struct RequestError {
-    pub(crate) error: Error,
+    /// Boxed so `Result<_, RequestError>` stays small (clippy::result_large_err)
+    pub(crate) error: Box<Error>,
     pub(crate) provider_name: Option<String>,
     pub(crate) status_code: u16,
     pub(crate) message: String,
@@ -263,14 +264,15 @@ fn attach_retries_header(response: &mut Response, retries_header: &Option<String
 /// and escalates one-way (Local -> Standard -> Frontier) if the tier has
 /// no available providers.
 ///
-/// Returns filtered candidates or an early-return error response.
+/// Returns filtered candidates or an early-return error response (boxed:
+/// a `Response` alone trips clippy::result_large_err).
 async fn resolve_candidates(
     state: &AppState,
     ctx: &RequestContext,
     user_prompt: Option<&str>,
     messages: &[crate::proxy::types::Message],
     complexity_override: Option<Tier>,
-) -> Result<ResolvedCandidates, Response> {
+) -> Result<ResolvedCandidates, Box<Response>> {
     let routing = &state.config.routing;
 
     // Determine max_tier: header override skips scorer
@@ -336,7 +338,7 @@ async fn resolve_candidates(
                     None,
                     ctx.is_streaming,
                 );
-                return Err(response);
+                return Err(Box::new(response));
             }
             Err(e) => {
                 // Non-tier error (NoProviders, NoPolicyMatch, BadRequest) -- no escalation
@@ -362,7 +364,7 @@ async fn resolve_candidates(
                     None,
                     ctx.is_streaming,
                 );
-                return Err(response);
+                return Err(Box::new(response));
             }
         };
 
@@ -425,7 +427,7 @@ async fn resolve_candidates(
                 None,
                 ctx.is_streaming,
             );
-            return Err(response);
+            return Err(Box::new(response));
         }
 
         return Ok(ResolvedCandidates {
@@ -598,7 +600,7 @@ pub async fn chat_completions(
     .await
     {
         Ok(r) => r,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     // Vault billing: reserve funds before routing
@@ -886,7 +888,7 @@ async fn handle_streaming_path(
                 );
             }
 
-            let mut error_response = outcome_err.error.into_response();
+            let mut error_response = (*outcome_err.error).into_response();
             attach_arbstr_headers(
                 &mut error_response,
                 &ctx.correlation_id,
@@ -933,9 +935,9 @@ async fn handle_non_streaming_path(
                     let name = info.name.clone();
                     return futures::future::Either::Left(async move {
                         Err(RequestError {
-                            error: Error::Internal(
+                            error: Box::new(Error::Internal(
                                 "candidate info did not match any provider".into(),
-                            ),
+                            )),
                             provider_name: Some(name),
                             status_code: 500,
                             message: "Internal routing error".into(),
@@ -1132,7 +1134,7 @@ async fn handle_non_streaming_path(
                     );
                 }
 
-                let mut error_response = outcome_err.error.into_response();
+                let mut error_response = (*outcome_err.error).into_response();
                 attach_arbstr_headers(
                     &mut error_response,
                     &ctx.correlation_id,
@@ -1198,10 +1200,10 @@ async fn send_to_provider(
     let upstream_response = upstream_request.send().await.map_err(|e| {
         tracing::error!(error = %e, provider = %provider.name, "Failed to reach provider");
         RequestError {
-            error: Error::Provider(format!(
+            error: Box::new(Error::Provider(format!(
                 "Failed to reach provider '{}': {}",
                 provider.name, e
-            )),
+            ))),
             provider_name: Some(provider.name.clone()),
             status_code: 502,
             message: format!("Failed to reach provider: {}", e),
@@ -1218,10 +1220,10 @@ async fn send_to_provider(
             "Provider returned error"
         );
         return Err(RequestError {
-            error: Error::Provider(format!(
+            error: Box::new(Error::Provider(format!(
                 "Provider '{}' returned {}: {}",
                 provider.name, status, error_body
-            )),
+            ))),
             provider_name: Some(provider.name.clone()),
             status_code: status.as_u16(),
             message: format!("Provider returned {}", status),
@@ -1257,10 +1259,10 @@ async fn handle_non_streaming_response(
     let mut response: serde_json::Value = upstream_response.json().await.map_err(|e| {
         tracing::error!(error = %e, "Failed to parse provider response");
         RequestError {
-            error: Error::Provider(format!(
+            error: Box::new(Error::Provider(format!(
                 "Failed to parse response from '{}': {}",
                 provider.name, e
-            )),
+            ))),
             provider_name: Some(provider.name.clone()),
             status_code: 502,
             message: format!("Failed to parse response: {}", e),
@@ -1301,7 +1303,9 @@ async fn handle_non_streaming_response(
     }
 
     let body_bytes = serde_json::to_vec(&response).map_err(|e| RequestError {
-        error: Error::Internal(format!("Failed to serialize response: {e}")),
+        error: Box::new(Error::Internal(format!(
+            "Failed to serialize response: {e}"
+        ))),
         provider_name: Some(provider.name.clone()),
         status_code: 500,
         message: format!("Failed to serialize response: {e}"),
@@ -1312,7 +1316,7 @@ async fn handle_non_streaming_response(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body_bytes))
         .map_err(|e| RequestError {
-            error: Error::Internal(format!("Failed to build response: {e}")),
+            error: Box::new(Error::Internal(format!("Failed to build response: {e}"))),
             provider_name: Some(provider.name.clone()),
             status_code: 500,
             message: format!("Failed to build response: {e}"),
@@ -1575,7 +1579,9 @@ async fn handle_streaming_response(
         .header(header::CACHE_CONTROL, "no-cache")
         .body(body)
         .map_err(|e| RequestError {
-            error: Error::Internal(format!("Failed to build streaming response: {e}")),
+            error: Box::new(Error::Internal(format!(
+                "Failed to build streaming response: {e}"
+            ))),
             provider_name: Some(provider_name.clone()),
             status_code: 500,
             message: format!("Failed to build streaming response: {e}"),
