@@ -1464,7 +1464,9 @@ async fn handle_streaming_response(
     tokio::spawn(async move {
         use futures::StreamExt;
 
-        futures::pin_mut!(observed_stream);
+        // Boxed rather than stack-pinned so it can be dropped below: the SSE
+        // observer inside it writes its result (usage, [DONE]) on drop.
+        let mut observed_stream = Box::pin(observed_stream);
 
         let mut client_connected = true;
         // The provider's [DONE] is held back; arbstr sends one after its cost event
@@ -1499,6 +1501,11 @@ async fn handle_streaming_response(
 
         // Stream ended -- measure duration
         let stream_duration_ms = stream_start.elapsed().as_millis() as i64;
+
+        // Drop the stream first: its observer writes the result on drop, so
+        // reading the handle while the stream is alive always finds nothing
+        // (and a completed stream would be released instead of settled).
+        drop(observed_stream);
 
         // Read result from handle
         let stream_result = result_handle
