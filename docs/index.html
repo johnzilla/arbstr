@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>arbstr — NiceHash for AI inference</title>
-  <meta name="description" content="Open-source inference marketplace. Route AI compute to the cheapest provider. Settle in bitcoin.">
-  <meta property="og:title" content="arbstr — NiceHash for AI inference">
-  <meta property="og:description" content="Open-source inference marketplace. Route AI compute to the cheapest provider. Settle in bitcoin.">
+  <title>arbstr — the cheapest route to any model, metered in sats</title>
+  <meta name="description" content="Open-source, OpenAI-compatible router. Sends each AI request to the cheapest qualified provider and meters it in sats against your agents' balances.">
+  <meta property="og:title" content="arbstr — the cheapest route to any model, metered in sats">
+  <meta property="og:description" content="Open-source, OpenAI-compatible router. Sends each AI request to the cheapest qualified provider and meters it in sats against your agents' balances.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://arbstr.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,8 +19,8 @@
   <header class="hero" id="hero">
     <div class="container">
       <h1>arbstr</h1>
-      <p class="tagline">NiceHash for AI inference</p>
-      <p class="sub-tagline">Route AI compute to the cheapest qualified provider. Settle in bitcoin over Lightning.</p>
+      <p class="tagline">The cheapest route to any model, metered in sats.</p>
+      <p class="sub-tagline">An OpenAI-compatible router that picks the cheapest qualified provider for every request and bills your agents in sats.</p>
       <p class="wip-notice">Early-stage software under active development</p>
       <div class="cta-buttons">
         <a href="#getting-started" class="btn btn-primary">Get Started</a>
@@ -52,8 +52,8 @@
           </div>
           <div class="step">
             <span class="step-number">4</span>
-            <h3>Bitcoin settles</h3>
-            <p>Actual cost settled in sats via Lightning/Cashu — no tokens, no subscriptions</p>
+            <h3>Sats are metered</h3>
+            <p>The estimated cost is reserved, the actual cost charged, the rest refunded — per request, in sats. No tokens, no subscriptions</p>
           </div>
         </div>
       </div>
@@ -62,7 +62,7 @@
     <section class="features" id="features">
       <div class="container">
         <h2>Features</h2>
-        <p class="section-lead">A production-minded routing engine, not a demo. Every request is scored, priced, and settled.</p>
+        <p class="section-lead">A production-minded routing engine, not a demo. Every request is scored, priced, and metered.</p>
         <div class="feature-grid">
           <div class="feature">
             <h3>OpenAI-compatible proxy</h3>
@@ -81,8 +81,8 @@
             <p>A heuristic scorer sends simple prompts to local/free nodes and hard ones to frontier providers, with automatic tier escalation when a provider trips.</p>
           </div>
           <div class="feature">
-            <h3>Bitcoin settlement</h3>
-            <p>Optional vault treasury reserves, settles, and releases sats per request over Lightning and Cashu — fault-tolerant with pending-settlement reconciliation.</p>
+            <h3>Sats-metered billing</h3>
+            <p>Optional vault treasury reserves, settles, and releases each request&#39;s cost in sats against the agent&#39;s balance, enforcing per-request and daily spending limits — fault-tolerant with pending-settlement reconciliation. Lightning and Cashu rails are built in for moving real sats.</p>
           </div>
           <div class="feature">
             <h3>Circuit breakers</h3>
@@ -108,14 +108,14 @@
       <div class="container">
         <h2>The Manifesto</h2>
         <p class="manifesto-lead">No tokens. No staking. No governance theater. Just sats.</p>
-        <p class="manifesto-body">Every other AI marketplace invents a token. We use bitcoin — the money that already works. arbstr settles inference costs in satoshis over Lightning. Providers get paid. Buyers pay fair price. No middleman token skimming value.</p>
+        <p class="manifesto-body">Every other AI marketplace invents a token. We use bitcoin — the money that already works. arbstr prices and meters inference in satoshis, and sends each request to the cheapest provider that can serve it. Buyers pay a fair price. No middleman token skimming value.</p>
       </div>
     </section>
 
     <section class="getting-started" id="getting-started">
       <div class="container">
         <h2>Get Started</h2>
-        <p>Run your own inference marketplace in under a minute.</p>
+        <p>Run the full stack — router, treasury, Lightning, and Cashu mint — with one <code>docker compose up</code>.</p>
         <div class="terminal">
           <div class="terminal-bar">
             <span class="terminal-dot red" aria-hidden="true"></span>
@@ -146,7 +146,7 @@ docker compose up -d
 
   <footer class="footer">
     <div class="container">
-      <p>arbstr is an open-source inference marketplace routing AI compute to the cheapest provider with Bitcoin settlement.</p>
+      <p>arbstr is an open-source, OpenAI-compatible router that sends AI inference to the cheapest provider and meters it in sats.</p>
       <p class="footer-links">
         <a href="https://github.com/johnzilla/arbstr">GitHub</a>
         <span class="separator">&middot;</span>

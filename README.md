@@ -1,6 +1,6 @@
 # arbstr
 
-**NiceHash for AI inference** — an open marketplace for buying and selling AI compute, settled in Bitcoin.
+**The cheapest route to any model, metered in sats.**
 
 > **Early-stage software** — under active development. APIs and configuration may change.
 

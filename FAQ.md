@@ -5,7 +5,7 @@
 
 Arbstr is an intelligent local proxy and cost arbitrage engine for AI inference. It acts as a drop-in OpenAI-compatible router that automatically selects the cheapest qualified provider for each request (local, standard, or frontier) and, with vault enabled, bills each request in Bitcoin sats against an agent's balance.
 
-Think of it as "NiceHash for LLM inference": it routes across Routstr, OpenRouter, Anthropic, local models, or any OpenAI-compatible endpoint.
+It routes across Routstr, OpenRouter, Anthropic, local models, or any OpenAI-compatible endpoint — the cheapest route to any model, metered in sats.
 
 </details>
 
