@@ -34,6 +34,12 @@ pub struct ServerConfig {
     pub rate_limit_rps: Option<u64>,
     /// Optional bearer token for proxy endpoint authentication
     pub auth_token: Option<String>,
+    /// Bearer token for the analytics endpoints (/v1/stats, /v1/requests).
+    /// Supports `${VAR}`; an empty value counts as unset. In free proxy mode
+    /// `auth_token` is used when this is unset; in vault mode the endpoints
+    /// refuse every request until it is set.
+    #[serde(default)]
+    pub operator_token: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -755,8 +761,18 @@ impl Config {
             None => None,
         };
 
+        // Expand ${VAR} in operator_token; empty (e.g. an unset compose passthrough) = unset
+        let mut server = raw.server;
+        server.operator_token = match server.operator_token {
+            Some(t) => {
+                let t = expand_env_vars_with(&t, "server.operator_token", &env_lookup)?;
+                Some(t).filter(|t| !t.trim().is_empty())
+            }
+            None => None,
+        };
+
         let config = Config {
-            server: raw.server,
+            server,
             database: raw.database,
             vault,
             tokenstats,
@@ -1076,6 +1092,7 @@ mod tests {
                 listen: "127.0.0.1:9000".to_string(),
                 rate_limit_rps: None,
                 auth_token: None,
+                operator_token: None,
             },
             database: None,
             vault: None,
@@ -1248,6 +1265,29 @@ mod tests {
             err
         );
         assert!(err.contains("vault"), "Error should name vault: {}", err);
+    }
+
+    #[test]
+    fn test_operator_token_env_expanded() {
+        let mut raw = make_raw_config_with_vault("http://vault:3000", "literal-token");
+        raw.server.operator_token = Some("${ARBSTR_OPERATOR_TOKEN}".to_string());
+        let (config, _) = Config::from_raw_with_lookup(raw, |name| {
+            (name == "ARBSTR_OPERATOR_TOKEN").then(|| "ops-secret".to_string())
+        })
+        .unwrap();
+        assert_eq!(config.server.operator_token.as_deref(), Some("ops-secret"));
+    }
+
+    #[test]
+    fn test_operator_token_empty_is_unset() {
+        // arbstr-node passes ARBSTR_OPERATOR_TOKEN=${ARBSTR_OPERATOR_TOKEN:-}, so an
+        // unset variable arrives as an empty string and must not become a token
+        for value in ["", "   ", "${EMPTY}"] {
+            let mut raw = make_raw_config_with_vault("http://vault:3000", "literal-token");
+            raw.server.operator_token = Some(value.to_string());
+            let (config, _) = Config::from_raw_with_lookup(raw, |_| Some(String::new())).unwrap();
+            assert_eq!(config.server.operator_token, None, "value {:?}", value);
+        }
     }
 
     // ── Masked prefix tests ──

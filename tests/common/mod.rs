@@ -54,6 +54,7 @@ pub fn setup_circuit_test_app(
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
             auth_token: None,
+            operator_token: None,
         },
         database: None,
         vault: None,
@@ -93,6 +94,7 @@ pub fn db_test_config() -> Config {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
             auth_token: None,
+            operator_token: None,
         },
         database: None,
         vault: None,
@@ -171,7 +173,7 @@ pub async fn setup_db_test_app() -> (axum::Router, SqlitePool) {
 /// Build a test app with vault billing enabled, connecting to a mock vault at the given URL
 /// and mock provider at the given URL. Returns the router.
 pub fn setup_vault_test_app(vault_url: &str, provider_url: &str) -> axum::Router {
-    setup_vault_test_app_with_auth(vault_url, provider_url, None)
+    setup_vault_test_app_with_tokens(vault_url, provider_url, None, None)
 }
 
 /// Build a test app with vault billing enabled AND an optional server auth_token.
@@ -181,11 +183,22 @@ pub fn setup_vault_test_app_with_auth(
     provider_url: &str,
     auth_token: Option<&str>,
 ) -> axum::Router {
+    setup_vault_test_app_with_tokens(vault_url, provider_url, auth_token, None)
+}
+
+/// Build a test app with vault billing enabled and optional auth/operator tokens.
+pub fn setup_vault_test_app_with_tokens(
+    vault_url: &str,
+    provider_url: &str,
+    auth_token: Option<&str>,
+    operator_token: Option<&str>,
+) -> axum::Router {
     let config = Config {
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
             auth_token: auth_token.map(|s| s.to_string()),
+            operator_token: operator_token.map(|s| s.to_string()),
         },
         database: None,
         vault: Some(VaultConfig {
@@ -273,11 +286,21 @@ pub async fn setup_test_db() -> SqlitePool {
 
 /// Build a test app WITHOUT vault (free proxy mode) but with a real mock provider URL.
 pub fn setup_free_proxy_test_app(provider_url: &str) -> axum::Router {
+    setup_free_proxy_test_app_with_tokens(provider_url, None, None)
+}
+
+/// Free proxy mode with optional auth/operator tokens.
+pub fn setup_free_proxy_test_app_with_tokens(
+    provider_url: &str,
+    auth_token: Option<&str>,
+    operator_token: Option<&str>,
+) -> axum::Router {
     let config = Config {
         server: ServerConfig {
             listen: "127.0.0.1:0".to_string(),
             rate_limit_rps: None,
-            auth_token: None,
+            auth_token: auth_token.map(|s| s.to_string()),
+            operator_token: operator_token.map(|s| s.to_string()),
         },
         database: None,
         vault: None,

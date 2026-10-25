@@ -12,8 +12,13 @@ listen = "127.0.0.1:8080"
 # Optional bearer token for proxy endpoint authentication
 # When set, /v1/chat/completions, /v1/models and /v1/cost require Authorization: Bearer <token>
 # Ignored when [vault] is configured: clients send their vault agent token instead
-# /v1/stats, /v1/requests, /health and /providers are never authenticated
+# /health and /providers are never authenticated
 # auth_token = "my-secret-token"
+# Bearer token for /v1/stats and /v1/requests, which cover every client's traffic.
+# Free proxy mode: falls back to auth_token, open if neither is set.
+# With [vault]: required — without it these endpoints refuse every request.
+# Supports ${VAR}; an empty value counts as unset.
+# operator_token = "${ARBSTR_OPERATOR_TOKEN}"
 
 [database]
 # SQLite database path for request logs and pending settlements

@@ -2,6 +2,8 @@
 
 use axum::{
     error_handling::HandleErrorLayer,
+    extract::State,
+    http::StatusCode,
     middleware,
     response::Response,
     routing::{get, post},
@@ -46,37 +48,106 @@ pub struct AppState {
     pub market: MarketState,
 }
 
-/// Middleware that verifies the `Authorization: Bearer <token>` header.
+/// Extract the token from an `Authorization: Bearer <token>` header.
+fn bearer_token(request: &axum::http::Request<axum::body::Body>) -> Option<&str> {
+    request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+/// Compare tokens without short-circuiting on the first differing byte.
+fn tokens_match(provided: &str, expected: &str) -> bool {
+    let (a, b) = (provided.as_bytes(), expected.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn json_error(status: StatusCode, error: serde_json::Value) -> Response {
+    Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap(),
+        ))
+        .unwrap()
+}
+
+fn invalid_token_response() -> Response {
+    json_error(
+        StatusCode::UNAUTHORIZED,
+        serde_json::json!({
+            "message": "Invalid or missing bearer token",
+            "type": "authentication_error",
+            "code": "invalid_api_key"
+        }),
+    )
+}
+
+/// Middleware that requires `Authorization: Bearer <expected_token>`.
 ///
-/// Returns 401 Unauthorized if the token is missing or incorrect.
-/// Only applied when `server.auth_token` is set in config.
+/// Used for `server.auth_token` on the proxy endpoints (free proxy mode) and
+/// for `server.operator_token` on the analytics endpoints.
 async fn auth_middleware(
     expected_token: Arc<String>,
     request: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
 ) -> Response {
-    let auth_header = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
+    match bearer_token(&request) {
+        Some(token) if tokens_match(token, &expected_token) => next.run(request).await,
+        _ => invalid_token_response(),
+    }
+}
 
-    match auth_header {
-        Some(value) if value.strip_prefix("Bearer ") == Some(expected_token.as_str()) => {
-            next.run(request).await
-        }
-        _ => {
-            let body = serde_json::json!({
-                "error": {
-                    "message": "Invalid or missing bearer token",
-                    "type": "authentication_error",
-                    "code": "invalid_api_key"
-                }
-            });
-            Response::builder()
-                .status(axum::http::StatusCode::UNAUTHORIZED)
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap()
+/// Middleware for the analytics endpoints in vault mode when no
+/// `operator_token` is configured: refuse, and say how to enable them.
+async fn operator_token_required(
+    _request: axum::http::Request<axum::body::Body>,
+    _next: middleware::Next,
+) -> Response {
+    json_error(
+        StatusCode::UNAUTHORIZED,
+        serde_json::json!({
+            "message": "This endpoint needs [server] operator_token, which is required when [vault] is configured",
+            "type": "authentication_error",
+            "code": "operator_token_not_configured"
+        }),
+    )
+}
+
+/// Middleware for cost-free proxy endpoints in vault mode: the bearer token
+/// must be an agent token vault recognizes. Nothing is reserved.
+async fn agent_token_middleware(
+    State(state): State<AppState>,
+    request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Response {
+    let Some(vault) = state.vault.as_ref() else {
+        return next.run(request).await;
+    };
+    let Some(token) = bearer_token(&request) else {
+        return json_error(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({
+                "message": "Authorization: Bearer <token> required",
+                "type": "authentication_error",
+                "code": "invalid_api_key"
+            }),
+        );
+    };
+    match vault.verify_agent(token).await {
+        Ok(()) => next.run(request).await,
+        Err(e) => {
+            let status = e.status_code();
+            tracing::warn!(error = %e, status, "Vault agent verify failed");
+            json_error(
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                serde_json::json!({
+                    "message": e.to_string(),
+                    "type": "billing_error",
+                    "code": format!("vault_{}", status)
+                }),
+            )
         }
     }
 }
@@ -94,35 +165,55 @@ async fn inject_request_id(
 /// Create the axum router with all endpoints.
 pub fn create_router(state: AppState) -> Router {
     let rate_limit_rps = state.config.server.rate_limit_rps;
-    let auth_token = state.config.server.auth_token.clone();
+    let auth_token = state.config.server.auth_token.clone().map(Arc::new);
+    let operator_token = state.config.server.operator_token.clone().map(Arc::new);
     let has_vault = state.vault.is_some();
 
-    // Proxy endpoints that require auth (when configured)
-    let proxy_routes = Router::new()
-        .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models", get(handlers::list_models))
-        .route("/v1/cost", post(handlers::cost_estimate));
-
-    // Apply auth middleware only if a token is configured AND vault is not handling auth.
-    // When vault is configured, the vault's reserve call validates the agent token.
-    let proxy_routes = if !has_vault {
-        if let Some(token) = auth_token {
-            let token = Arc::new(token);
-            proxy_routes.layer(middleware::from_fn(move |req, next| {
-                let token = token.clone();
-                auth_middleware(token, req, next)
-            }))
-        } else {
-            proxy_routes
-        }
-    } else {
-        proxy_routes
+    let require = |token: Arc<String>| {
+        middleware::from_fn(move |req, next| auth_middleware(token.clone(), req, next))
     };
 
-    let mut app = proxy_routes
-        // arbstr extensions (no auth required)
+    // Chat completions: in vault mode the reserve call authenticates the agent.
+    let mut chat_routes =
+        Router::new().route("/v1/chat/completions", post(handlers::chat_completions));
+    // Cost-free proxy endpoints: in vault mode, a vault-verified agent token.
+    let mut client_routes = Router::new()
+        .route("/v1/models", get(handlers::list_models))
+        .route("/v1/cost", post(handlers::cost_estimate));
+    // Analytics over every agent's traffic: the operator's token.
+    let mut operator_routes = Router::new()
         .route("/v1/stats", get(handlers::stats))
-        .route("/v1/requests", get(handlers::logs))
+        .route("/v1/requests", get(handlers::logs));
+
+    if has_vault {
+        client_routes = client_routes.layer(middleware::from_fn_with_state(
+            state.clone(),
+            agent_token_middleware,
+        ));
+        operator_routes = match operator_token {
+            Some(token) => operator_routes.layer(require(token)),
+            None => {
+                tracing::warn!(
+                    "[server] operator_token is not set: /v1/stats and /v1/requests will refuse all requests"
+                );
+                operator_routes.layer(middleware::from_fn(operator_token_required))
+            }
+        };
+    } else {
+        if let Some(token) = auth_token.clone() {
+            chat_routes = chat_routes.layer(require(token.clone()));
+            client_routes = client_routes.layer(require(token));
+        }
+        // operator_token, else auth_token, else open (local free proxy)
+        if let Some(token) = operator_token.or(auth_token) {
+            operator_routes = operator_routes.layer(require(token));
+        }
+    }
+
+    let mut app = chat_routes
+        .merge(client_routes)
+        .merge(operator_routes)
+        // Always open: liveness and the public provider/rate list
         .route("/health", get(handlers::health))
         .route("/providers", get(handlers::list_providers))
         // State and middleware
