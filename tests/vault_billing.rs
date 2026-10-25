@@ -667,6 +667,80 @@ async fn test_missing_usage_settles_at_reservation() {
     assert!(settle_call.1["metadata"]["tokens_out"].is_null());
 }
 
+/// Start a mock provider that streams a completion the way Anthropic's
+/// OpenAI-compatible endpoint does: usage in the final `finish_reason` chunk,
+/// then `[DONE]`.
+async fn start_mock_streaming_provider() -> String {
+    let body = concat!(
+        "data: {\"id\":\"m1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+        "data: {\"id\":\"m1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi!\"}}]}\n\n",
+        "data: {\"id\":\"m1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":17,\"prompt_tokens\":13,\"total_tokens\":30}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || async move {
+            axum::response::Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(axum::body::Body::from(body))
+                .unwrap()
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{}", addr)
+}
+
+#[tokio::test]
+async fn test_streaming_request_settles_at_reported_usage() {
+    let (vault_url, vault_log) = start_mock_vault(None).await;
+    let provider_url = start_mock_streaming_provider().await;
+    let app = common::setup_vault_test_app(&vault_url, &provider_url);
+
+    let request = Request::post("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer agent-token-abc")
+        .body(axum::body::Body::from(
+            serde_json::json!({
+                "model": "gpt-4o",
+                "stream": true,
+                "messages": [{"role": "user", "content": "hello world test message"}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
+        .await
+        .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        !text.contains("\"cost_sats\":null"),
+        "trailing event should carry the cost: {text}"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let vault_calls = vault_log.lock().unwrap();
+    assert!(
+        !vault_calls.iter().any(|(op, _, _)| op == "release"),
+        "a completed stream must not be released"
+    );
+    let settle_call = vault_calls
+        .iter()
+        .find(|(op, _, _)| op == "settle")
+        .expect("a completed stream should settle");
+    assert_eq!(settle_call.1["metadata"]["tokens_in"], 13);
+    assert_eq!(settle_call.1["metadata"]["tokens_out"], 17);
+    assert!(settle_call.1["actual_msats"].as_u64().unwrap() > 0);
+}
+
 // ============================================================================
 // Test g: Release on provider failure
 // ============================================================================
