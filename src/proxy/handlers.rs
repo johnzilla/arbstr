@@ -158,6 +158,8 @@ struct RequestContext {
     start: std::time::Instant,
     /// Vault reservation ID, present when vault billing is active.
     reservation_id: Option<String>,
+    /// Amount reserved for `reservation_id`, in msats.
+    reserve_msats: u64,
 }
 
 /// Result of candidate resolution and circuit breaker filtering.
@@ -439,6 +441,32 @@ async fn resolve_candidates(
     }
 }
 
+/// Amount to settle for a request the provider completed.
+///
+/// Without provider-reported usage the real cost is unknown, so this charges
+/// the full reservation (the ceiling the agent's policy already approved)
+/// instead of nothing, and logs it so the operator can see which provider
+/// omitted usage.
+fn settle_msats(
+    cost_sats: Option<f64>,
+    reserve_msats: u64,
+    reservation_id: &str,
+    provider: &str,
+) -> u64 {
+    match cost_sats {
+        Some(cost) => (cost * 1000.0) as u64,
+        None => {
+            tracing::warn!(
+                reservation_id = %reservation_id,
+                provider = %provider,
+                reserve_msats,
+                "Provider returned no usage; settling at the reservation"
+            );
+            reserve_msats
+        }
+    }
+}
+
 /// Fire-and-forget vault settle in a background task.
 ///
 /// On failure after vault retries, writes to pending_settlements via direct sqlx.
@@ -577,6 +605,7 @@ pub async fn chat_completions(
         is_streaming,
         start,
         reservation_id: None,
+        reserve_msats: 0,
     };
 
     // Parse complexity header override
@@ -708,6 +737,7 @@ pub async fn chat_completions(
                     "Vault reserve successful"
                 );
                 ctx.reservation_id = Some(reservation.id);
+                ctx.reserve_msats = reserve_msats;
             }
             Err(e) => {
                 let latency_ms = ctx.start.elapsed().as_millis() as i64;
@@ -785,6 +815,7 @@ async fn handle_streaming_path(
         &ctx.correlation_id,
         true,
         ctx.reservation_id.clone(),
+        ctx.reserve_msats,
         resolved.complexity_score,
         Some(resolved.tier.to_string()),
     )
@@ -952,6 +983,7 @@ async fn handle_non_streaming_path(
                 &ctx.correlation_id,
                 false,
                 None, // reservation_id not needed for non-streaming (settled in handler)
+                0,
                 resolved.complexity_score,
                 Some(resolved.tier.to_string()),
             ))
@@ -1070,7 +1102,12 @@ async fn handle_non_streaming_path(
 
                 // Vault: async settle on success
                 if let (Some(vault), Some(rid)) = (&state.vault, &ctx.reservation_id) {
-                    let actual_msats = outcome.cost_sats.map(|c| (c * 1000.0) as u64).unwrap_or(0);
+                    let actual_msats = settle_msats(
+                        outcome.cost_sats,
+                        ctx.reserve_msats,
+                        rid,
+                        &outcome.provider_name,
+                    );
                     spawn_vault_settle(
                         vault.clone(),
                         rid.clone(),
@@ -1164,6 +1201,7 @@ async fn send_to_provider(
     correlation_id: &str,
     is_streaming: bool,
     reservation_id: Option<String>,
+    reserve_msats: u64,
     complexity_score: Option<f64>,
     tier: Option<String>,
 ) -> std::result::Result<RequestOutcome, RequestError> {
@@ -1238,6 +1276,7 @@ async fn send_to_provider(
             state.db_writer.clone(),
             state.vault.clone(),
             reservation_id,
+            reserve_msats,
             state.db.clone(),
             stream_start,
             complexity_score,
@@ -1350,6 +1389,7 @@ async fn handle_streaming_response(
     db_writer: Option<crate::storage::DbWriter>,
     vault: Option<VaultClient>,
     reservation_id: Option<String>,
+    reserve_msats: u64,
     db_pool: Option<sqlx::SqlitePool>,
     stream_start: std::time::Instant,
     complexity_score: Option<f64>,
@@ -1479,7 +1519,8 @@ async fn handle_streaming_response(
         if let (Some(vault), Some(rid)) = (vault, reservation_id) {
             if success || cost_sats.is_some() {
                 // Stream completed OR usage data available: settle at actual cost
-                let actual_msats = cost_sats.map(|c| (c * 1000.0) as u64).unwrap_or(0);
+                let actual_msats =
+                    settle_msats(cost_sats, reserve_msats, &rid, &provider_name_for_vault);
                 match vault
                     .settle(
                         &rid,
@@ -1824,6 +1865,16 @@ pub async fn list_providers(State(state): State<AppState>) -> impl IntoResponse 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_settle_msats_uses_reported_cost() {
+        assert_eq!(settle_msats(Some(1.58), 2_400, "res", "p"), 1_580);
+    }
+
+    #[test]
+    fn test_settle_msats_without_usage_charges_reservation() {
+        assert_eq!(settle_msats(None, 2_400, "res", "p"), 2_400);
+    }
 
     #[test]
     fn test_extract_usage_present() {

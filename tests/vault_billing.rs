@@ -608,6 +608,65 @@ async fn test_full_reserve_route_settle_path() {
     }
 }
 
+/// Start a mock provider that answers 200 with a completion but no `usage`.
+async fn start_mock_provider_without_usage() -> String {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            let mut body = valid_completion_response();
+            body.as_object_mut().unwrap().remove("usage");
+            axum::Json(body)
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{}", addr)
+}
+
+#[tokio::test]
+async fn test_missing_usage_settles_at_reservation() {
+    let (vault_url, vault_log) = start_mock_vault(None).await;
+    let provider_url = start_mock_provider_without_usage().await;
+    let app = common::setup_vault_test_app(&vault_url, &provider_url);
+
+    let request = Request::post("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer agent-token-abc")
+        .body(axum::body::Body::from(chat_request_body()))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let vault_calls = vault_log.lock().unwrap();
+    let reserved = vault_calls
+        .iter()
+        .find(|(op, _, _)| op == "reserve")
+        .expect("should have a reserve call")
+        .1["amount_msats"]
+        .as_u64()
+        .unwrap();
+    let settle_call = vault_calls
+        .iter()
+        .find(|(op, _, _)| op == "settle")
+        .expect("a completed request without usage should still settle");
+
+    assert!(reserved > 0);
+    assert_eq!(
+        settle_call.1["actual_msats"].as_u64(),
+        Some(reserved),
+        "without usage, settle should charge the reservation, not 0"
+    );
+    assert!(settle_call.1["metadata"]["tokens_in"].is_null());
+    assert!(settle_call.1["metadata"]["tokens_out"].is_null());
+}
+
 // ============================================================================
 // Test g: Release on provider failure
 // ============================================================================
