@@ -101,10 +101,12 @@ listen = "127.0.0.1:8080"
 # default_reserve_tokens = 4096   # max output tokens for reserve ceiling
 # pending_threshold = 100         # max pending settlements before rejecting
 
-# tokenstats market feed (optional) — live quotes from all sources
+# tokenstats market feed (optional) — live chat-model quotes for the sources
+# you hold keys for (OpenRouter, OrcaRouter, Routstr nodes)
 # [tokenstats]
 # url = "https://tokenstats.ai"
 # poll_interval_secs = 60
+# allowed_hosts = ["openrouter.ai"]
 # [tokenstats.keys]
 # openrouter = "${OPENROUTER_API_KEY}"
 # # "routstr-provider-id" = "${CASHU_TOKEN}"

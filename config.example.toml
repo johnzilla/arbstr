@@ -42,23 +42,30 @@ path = "./arbstr.db"
 # pending_threshold = 100
 
 # tokenstats market feed (optional)
-# Polls live quotes (all sources: openrouter, routstr, …) and merges routable
-# providers. Rates are sats per 1M tokens (RIP-05). Market sources without a key
-# appear under GET /providers → market.skipped with hints.
+# Polls live quotes and merges routable providers. Rates are sats per 1M tokens
+# (RIP-05). Only chat models, fresher than stale_after_secs and not price
+# outliers are fetched, and only for the sources you can route: those in
+# [tokenstats.keys] plus reference catalogs your static providers point at
+# (set `source` to override). Skipped sources appear under GET /providers →
+# market.skipped with hints; tokenstats' own feed status is market.feed_status.
 # [tokenstats]
 # url = "https://tokenstats.ai"
 # # url = "http://127.0.0.1:8081"  # local tokenstats (use different port than arbstr)
 # poll_interval_secs = 60
-# min_reliability = 0.5
+# min_reliability = 0.5          # 24h success rate; nodes with no track record wait
 # stale_after_secs = 600
 # blend_ratio = 3.0
-# # source = "routstr"   # optional filter; omit = all sources
+# # source = "openrouter,routstr"   # override which sources are fetched
 # # Market endpoints come from the feed and receive your keys, so they must be
 # # https on one of these hosts (or a subdomain). Empty = no market endpoints.
-# allowed_hosts = ["openrouter.ai"]
+# allowed_hosts = ["openrouter.ai"]   # add "api.orcarouter.ai" to route OrcaRouter
 # max_price_sats_per_1m = 1000000   # drop quotes priced above this (bounds reserves)
+# # Only route to Routstr nodes whose npub matches their Nostr announcement
+# # (tokenstats identity_verified). Cashu tokens go to these nodes.
+# require_verified_identity = false
 # [tokenstats.keys]
 # openrouter = "${OPENROUTER_API_KEY}"
+# # orcarouter = "${ORCAROUTER_API_KEY}"
 # # "node-provider-id" = "${CASHU_TOKEN_FOR_NODE}"
 
 # Provider configuration
