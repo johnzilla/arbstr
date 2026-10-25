@@ -317,6 +317,17 @@ pub struct TokenstatsConfig {
     /// Values may use ${ENV} expansion.
     #[serde(default)]
     pub keys: std::collections::HashMap<String, String>,
+    /// Hosts that market endpoints from the feed may use (exact host or a
+    /// subdomain of it, e.g. "openrouter.ai"). A new market endpoint receives
+    /// one of `keys` only if it is https and its host is listed here. Empty
+    /// (the default) = no new market endpoints; static providers are unaffected.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    /// Quotes priced above this (sats per 1M tokens, input or output) are
+    /// dropped, which also bounds how far the feed can raise reserves
+    /// (default 1,000,000)
+    #[serde(default = "default_max_price")]
+    pub max_price_sats_per_1m: f64,
 }
 
 fn default_tokenstats_poll() -> u64 {
@@ -330,6 +341,9 @@ fn default_stale_after() -> u64 {
 }
 fn default_blend_ratio() -> f64 {
     3.0
+}
+fn default_max_price() -> f64 {
+    1_000_000.0
 }
 
 /// Provider configuration.

@@ -47,6 +47,10 @@ path = "./arbstr.db"
 # stale_after_secs = 600
 # blend_ratio = 3.0
 # # source = "routstr"   # optional filter; omit = all sources
+# # Market endpoints come from the feed and receive your keys, so they must be
+# # https on one of these hosts (or a subdomain). Empty = no market endpoints.
+# allowed_hosts = ["openrouter.ai"]
+# max_price_sats_per_1m = 1000000   # drop quotes priced above this (bounds reserves)
 # [tokenstats.keys]
 # openrouter = "${OPENROUTER_API_KEY}"
 # # "node-provider-id" = "${CASHU_TOKEN_FOR_NODE}"
