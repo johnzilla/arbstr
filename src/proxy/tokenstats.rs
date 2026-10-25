@@ -139,6 +139,47 @@ pub fn normalize_endpoint(url: &str) -> String {
     }
 }
 
+/// Why a feed-advertised endpoint may not receive a key, or None if it may.
+///
+/// The feed decides market endpoint URLs, and routing a request there sends
+/// the resolved key as a bearer token. So new market endpoints must be https
+/// and on an operator-approved host (`[tokenstats] allowed_hosts`).
+fn endpoint_refusal(endpoint: &str, allowed_hosts: &[String]) -> Option<(&'static str, String)> {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return Some((
+            "insecure_endpoint",
+            format!("Endpoint {endpoint} is not a valid URL"),
+        ));
+    };
+    if url.scheme() != "https" {
+        return Some((
+            "insecure_endpoint",
+            format!("Endpoint {endpoint} is not https; keys are never sent in cleartext"),
+        ));
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let allowed = allowed_hosts.iter().any(|h| {
+        let h = h.trim().trim_start_matches("*.").to_ascii_lowercase();
+        !h.is_empty() && (host == h || host.ends_with(&format!(".{h}")))
+    });
+    if allowed {
+        None
+    } else {
+        Some((
+            "endpoint_not_allowed",
+            format!(
+                "Host {host} is not in [tokenstats] allowed_hosts; add it to route here \
+                 with your configured key"
+            ),
+        ))
+    }
+}
+
+/// A usable quote price: present, finite, non-negative and within the cap.
+fn valid_price(price: Option<f64>, cap: f64) -> Option<f64> {
+    price.filter(|p| p.is_finite() && *p >= 0.0 && *p <= cap)
+}
+
 /// Resolve API key for a market provider from tokenstats.keys.
 ///
 /// Lookup order: `provider_id`, source name (e.g. `openrouter`), `source:provider_id`.
@@ -202,9 +243,10 @@ fn build_groups(
     reliability: &HashMap<&str, f64>,
     cfg: &TokenstatsConfig,
     now: DateTime<Utc>,
-) -> (Vec<QuoteGroup>, usize) {
+) -> (Vec<QuoteGroup>, usize, usize) {
     let mut map: HashMap<(String, String, String), QuoteGroup> = HashMap::new();
     let mut stale_count = 0usize;
+    let mut invalid_price_count = 0usize;
 
     for q in quotes {
         if let Some(filter) = &cfg.source {
@@ -236,11 +278,16 @@ fn build_groups(
             rel.map(|r| r < cfg.min_reliability).unwrap_or(false)
         };
 
-        let rates = ModelRates::new(
-            q.price_in_sats.unwrap_or(0.0),
-            q.price_out_sats.unwrap_or(0.0),
-            0.0,
-        );
+        // A missing, negative or absurd price is dropped, not read as free:
+        // the cheapest quote wins routing, and the highest sets reserves
+        let (Some(price_in), Some(price_out)) = (
+            valid_price(q.price_in_sats, cfg.max_price_sats_per_1m),
+            valid_price(q.price_out_sats, cfg.max_price_sats_per_1m),
+        ) else {
+            invalid_price_count += 1;
+            continue;
+        };
+        let rates = ModelRates::new(price_in, price_out, 0.0);
 
         let key = (q.source.clone(), q.provider_id.clone(), endpoint.clone());
         let g = map.entry(key).or_insert_with(|| QuoteGroup {
@@ -261,7 +308,11 @@ fn build_groups(
         }
     }
 
-    (map.into_values().collect(), stale_count)
+    (
+        map.into_values().collect(),
+        stale_count,
+        invalid_price_count,
+    )
 }
 
 /// Group quotes into providers; split routable vs skipped by key resolution.
@@ -280,7 +331,7 @@ pub fn merge_quotes_into_providers(
         .map(|n| (n.provider_id.as_str(), n.reliability.unwrap_or(1.0)))
         .collect();
 
-    let (groups, stale_count) = build_groups(quotes, &reliability, cfg, now);
+    let (groups, stale_count, invalid_price_count) = build_groups(quotes, &reliability, cfg, now);
 
     let mut static_out: Vec<ProviderConfig> = static_providers.to_vec();
     // Index static_out by normalized URL for overlay
@@ -340,7 +391,23 @@ pub fn merge_quotes_into_providers(
             continue;
         }
 
-        // New market endpoint — require key
+        // New market endpoint: must be https on an allowed host before any key
+        // is attached to it
+        if let Some((reason, hint)) = endpoint_refusal(&group.endpoint, &cfg.allowed_hosts) {
+            skipped.push(SkipEntry {
+                source: group.source.clone(),
+                provider: group.provider.clone(),
+                provider_id: group.provider_id.clone(),
+                endpoint: Some(group.endpoint.clone()),
+                models_count: group.models.len(),
+                reason: reason.to_string(),
+                hint,
+                reliability: group.reliability,
+            });
+            continue;
+        }
+
+        // ...and require a key
         let api_key = resolve_market_key(&cfg.keys, &group.source, &group.provider_id);
         if api_key.is_none() {
             skipped.push(SkipEntry {
@@ -395,6 +462,23 @@ pub fn merge_quotes_into_providers(
             hint: format!(
                 "{stale_count} quote(s) older than stale_after_secs={} were ignored",
                 cfg.stale_after_secs
+            ),
+            reliability: None,
+        });
+    }
+
+    if invalid_price_count > 0 {
+        skipped.push(SkipEntry {
+            source: "*".to_string(),
+            provider: "*".to_string(),
+            provider_id: "*".to_string(),
+            endpoint: None,
+            models_count: invalid_price_count,
+            reason: "invalid_price".to_string(),
+            hint: format!(
+                "{invalid_price_count} quote(s) had a missing, negative or non-finite price, \
+                 or one above max_price_sats_per_1m={}",
+                cfg.max_price_sats_per_1m
             ),
             reliability: None,
         });
@@ -596,6 +680,8 @@ mod tests {
             blend_ratio: 3.0,
             source: None,
             keys,
+            allowed_hosts: vec!["openrouter.ai".to_string(), "node.example.com".to_string()],
+            max_price_sats_per_1m: 1_000_000.0,
         }
     }
 
@@ -706,5 +792,159 @@ mod tests {
         assert_eq!(market, 0);
         assert!(providers.is_empty());
         assert_eq!(skipped[0].reason, "low_reliability");
+    }
+
+    fn openrouter_cfg() -> TokenstatsConfig {
+        let mut keys = HashMap::new();
+        keys.insert("openrouter".to_string(), "sk-or-secret".to_string());
+        cfg_with_keys(keys)
+    }
+
+    fn merge(
+        cfg: &TokenstatsConfig,
+        quotes: Vec<Quote>,
+    ) -> (Vec<ProviderConfig>, Vec<SkipEntry>, usize) {
+        merge_quotes_into_providers(&[], &quotes, &[], cfg, Utc::now())
+    }
+
+    #[test]
+    fn source_key_not_sent_to_unlisted_host() {
+        // A feed advertising an "openrouter" quote at an attacker host must not
+        // get the openrouter key attached
+        let quotes = vec![sample_quote(
+            "openrouter",
+            "openrouter",
+            "gpt-4o",
+            "https://attacker.example/v1",
+            1.0,
+        )];
+        let (providers, skipped, market) = merge(&openrouter_cfg(), quotes);
+        assert_eq!(market, 0);
+        assert!(providers.is_empty());
+        assert_eq!(skipped[0].reason, "endpoint_not_allowed");
+        assert!(skipped[0].hint.contains("allowed_hosts"));
+    }
+
+    #[test]
+    fn host_match_is_exact_or_subdomain() {
+        let cfg = openrouter_cfg();
+        for (endpoint, ok) in [
+            ("https://openrouter.ai/api/v1", true),
+            ("https://api.openrouter.ai/v1", true),
+            ("https://OpenRouter.AI/api/v1", true),
+            ("https://openrouter.ai.evil.com/v1", false),
+            ("https://evilopenrouter.ai/v1", false),
+            ("https://openrouter.ai@evil.com/v1", false),
+        ] {
+            let (_, skipped, market) = merge(
+                &cfg,
+                vec![sample_quote(
+                    "openrouter",
+                    "openrouter",
+                    "gpt-4o",
+                    endpoint,
+                    10.0,
+                )],
+            );
+            assert_eq!(market == 1, ok, "{endpoint}: {skipped:?}");
+        }
+    }
+
+    #[test]
+    fn http_endpoint_never_gets_a_key() {
+        let quotes = vec![sample_quote(
+            "openrouter",
+            "openrouter",
+            "gpt-4o",
+            "http://openrouter.ai/api/v1",
+            10.0,
+        )];
+        let (providers, skipped, _) = merge(&openrouter_cfg(), quotes);
+        assert!(providers.is_empty());
+        assert_eq!(skipped[0].reason, "insecure_endpoint");
+    }
+
+    #[test]
+    fn empty_allowlist_admits_no_market_endpoints() {
+        let mut cfg = openrouter_cfg();
+        cfg.allowed_hosts.clear();
+        let quotes = vec![sample_quote(
+            "openrouter",
+            "openrouter",
+            "gpt-4o",
+            "https://openrouter.ai/api/v1",
+            10.0,
+        )];
+        let (_, skipped, market) = merge(&cfg, quotes);
+        assert_eq!(market, 0);
+        assert_eq!(skipped[0].reason, "endpoint_not_allowed");
+    }
+
+    #[test]
+    fn bad_prices_are_dropped_not_free() {
+        let cfg = openrouter_cfg();
+        let ep = "https://openrouter.ai/api/v1";
+        let mut missing = sample_quote("openrouter", "openrouter", "m-missing", ep, 10.0);
+        missing.price_out_sats = None;
+        let mut negative = sample_quote("openrouter", "openrouter", "m-negative", ep, 10.0);
+        negative.price_in_sats = Some(-5.0);
+        let nan = sample_quote("openrouter", "openrouter", "m-nan", ep, f64::NAN);
+        let huge = sample_quote("openrouter", "openrouter", "m-huge", ep, 5_000_000.0);
+        let ok = sample_quote("openrouter", "openrouter", "m-ok", ep, 10.0);
+
+        let (providers, skipped, market) = merge(&cfg, vec![missing, negative, nan, huge, ok]);
+        assert_eq!(market, 1);
+        assert_eq!(providers[0].models, vec!["m-ok".to_string()]);
+        let invalid = skipped
+            .iter()
+            .find(|s| s.reason == "invalid_price")
+            .unwrap();
+        assert_eq!(invalid.models_count, 4);
+    }
+
+    #[test]
+    fn zero_price_is_valid() {
+        let mut q = sample_quote(
+            "openrouter",
+            "openrouter",
+            "free-model",
+            "https://openrouter.ai/api/v1",
+            0.0,
+        );
+        q.price_in_sats = Some(0.0);
+        let (providers, _, market) = merge(&openrouter_cfg(), vec![q]);
+        assert_eq!(market, 1);
+        assert_eq!(providers[0].rates_for("free-model").output_rate, 0.0);
+    }
+
+    #[test]
+    fn price_cap_bounds_overlay_on_static_provider() {
+        // The feed can't push a static provider's rates past the cap either
+        // (those rates feed frontier_rates, i.e. every reserve)
+        let static_p = vec![ProviderConfig {
+            name: "or".to_string(),
+            url: "https://openrouter.ai/api/v1".to_string(),
+            api_key: None,
+            models: vec!["gpt-4o".to_string()],
+            input_rate: 100.0,
+            output_rate: 300.0,
+            base_fee: 0.0,
+            model_rates: HashMap::new(),
+            tier: Tier::Standard,
+            auto_discover: false,
+            source: None,
+            provider_id: None,
+        }];
+        let quotes = vec![sample_quote(
+            "openrouter",
+            "openrouter",
+            "gpt-4o",
+            "https://openrouter.ai/api/v1",
+            9e12,
+        )];
+        let (providers, skipped, _) =
+            merge_quotes_into_providers(&static_p, &quotes, &[], &openrouter_cfg(), Utc::now());
+        assert_eq!(providers[0].output_rate, 300.0);
+        assert!(skipped.iter().any(|s| s.reason == "invalid_price"));
     }
 }

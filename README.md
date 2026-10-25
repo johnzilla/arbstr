@@ -164,13 +164,17 @@ When `[tokenstats]` is configured, arbstr polls [tokenstats](https://tokenstats.
 [tokenstats]
 url = "https://tokenstats.ai"
 poll_interval_secs = 60
+allowed_hosts = ["openrouter.ai"]   # hosts market endpoints may use (and receive your keys)
+# max_price_sats_per_1m = 1000000   # quotes priced above this are dropped
 
 [tokenstats.keys]
 openrouter = "${OPENROUTER_API_KEY}"          # shared for all openrouter quotes
 # "a4b35f561ea0" = "${CASHU_FOR_THAT_NODE}"   # by provider_id
 ```
 
-`GET /providers` includes a `market` object explaining skipped sources (`missing_api_key`, `low_reliability`, `stale_quotes`) so you can see why expected providers are not routable.
+**The feed is trusted with your keys, so arbstr limits what it can do with them.** The feed chooses each market endpoint's URL, and routing there sends your key as a bearer token. A new market endpoint is used only if it is `https` and its host is in `allowed_hosts` (exact match or a subdomain); otherwise no key is attached and it is skipped. Quotes with a missing, negative or non-finite price, or one above `max_price_sats_per_1m`, are dropped rather than treated as free, which also bounds how far a feed can raise reserves. Static `[[providers]]` are never affected, though the feed can still update their rates within that cap when it quotes the same URL.
+
+`GET /providers` includes a `market` object explaining skipped sources (`missing_api_key`, `low_reliability`, `stale_quotes`, `insecure_endpoint`, `endpoint_not_allowed`, `invalid_price`) so you can see why expected providers are not routable.
 
 ### API Key Management
 
