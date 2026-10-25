@@ -257,6 +257,24 @@ A misconfigured `internal_token` returns `500`, since that's an operator error, 
 | `x-arbstr-retries` | Retries/fallbacks used, when any |
 | `x-arbstr-complexity-score`, `x-arbstr-tier` | Complexity score and the tier it selected |
 
+### Streaming cost event
+
+A streamed response's cost isn't known when headers are sent, so arbstr adds one event after the provider's last chunk, followed by the stream's only `[DONE]`:
+
+```
+data: {"arbstr":{"cost_sats":1.52,"latency_ms":777,"complexity_score":1.0,"tier":"frontier"}}
+
+data: [DONE]
+```
+
+| Field | Value |
+|-------|-------|
+| `cost_sats` | Cost from the provider's reported usage at the route's rates; `null` if the provider reported no usage |
+| `latency_ms` | Full stream duration |
+| `complexity_score`, `tier` | As in the headers above |
+
+The event has no `id` or `choices`, so client code that reads `chunk.choices[0]` should skip chunks without choices. arbstr requests usage from the provider (`stream_options.include_usage`) so the cost can be computed.
+
 ## CLI
 
 ```
