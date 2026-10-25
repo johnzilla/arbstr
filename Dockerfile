@@ -1,5 +1,8 @@
 # Stage 1: Build
-FROM rust:1.86-slim AS builder
+# Keep in step with CI's toolchain (.github/workflows/ci.yml). Use the -bookworm
+# variant: the runtime stage is debian:bookworm-slim, and a binary built on a
+# newer Debian links against a newer glibc than bookworm has.
+FROM rust:1.99.1-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./

@@ -28,8 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Pinned so a new stable release can't add lint failures overnight.
-      # Bump deliberately, together with any fixes the new clippy asks for.
-      - uses: dtolnay/rust-toolchain@1.95.0
+      # Bump deliberately, together with any fixes the new clippy asks for, and
+      # keep the Dockerfile's rust:<version>-slim-bookworm builder in step.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2

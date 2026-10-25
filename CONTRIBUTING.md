@@ -10,7 +10,7 @@ Thanks for your interest in contributing to arbstr! This document covers everyth
    cd arbstr
    ```
 
-2. Install the Rust toolchain: [rustup.rs](https://rustup.rs). CI uses Rust 1.95.0; `rustup toolchain install 1.95.0` matches it exactly (newer clippy versions report lints CI doesn't).
+2. Install the Rust toolchain: [rustup.rs](https://rustup.rs). CI uses Rust 1.99.1; `rustup toolchain install 1.99.1` matches it exactly (other clippy versions can report different lints).
 
 3. Build:
    ```bash
