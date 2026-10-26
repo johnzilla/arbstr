@@ -340,6 +340,7 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D wa
 | **v2.2.1** | Billing fixes -- requests without provider usage settle at the reservation instead of free; images no longer inflate the reserve estimate; server tokens redacted in logs | Shipped |
 | **v2.3.0** | Per-client rate limiting (`client_rate_limit_rps`, opt-in); warnings on implausible provider usage; provider error bodies and key prefixes no longer exposed; one `[DONE]` per stream | Shipped |
 | **v2.3.1** | Streaming billing fix -- streamed requests settle at reported usage instead of being released | Shipped |
+| **v2.4.0** | tokenstats feed quality -- fetches only routable sources with chat/fresh/no-outlier filters, gates on the feed's `/health` status, trusts 24h reliability (unknown = not routable), optional `require_verified_identity`; streaming cost event documented | Shipped |
 
 ## Deployment
 
