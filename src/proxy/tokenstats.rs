@@ -142,6 +142,10 @@ pub struct Quote {
     /// Node's `/v1/info` npub matches its announcing Nostr key.
     #[serde(default)]
     pub identity_verified: Option<bool>,
+    /// tokenstats' routable-now verdict for the endpoint (≥ Oct 2026; absent
+    /// on older feeds).
+    #[serde(default)]
+    pub healthy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -160,6 +164,7 @@ struct QuoteGroup {
     reliability: Option<f64>,
     low_reliability: bool,
     unverified_identity: bool,
+    unhealthy: bool,
 }
 
 /// Normalize an OpenAI-compatible base URL to end with `/v1`.
@@ -323,6 +328,7 @@ fn build_groups(
         let unverified = cfg.require_verified_identity
             && !is_reference_source(&q.source)
             && q.identity_verified != Some(true);
+        let unhealthy = cfg.require_healthy && q.healthy == Some(false);
 
         // A missing, negative or absurd price is dropped, not read as free:
         // the cheapest quote wins routing, and the highest sets reserves
@@ -345,6 +351,7 @@ fn build_groups(
             reliability: rel,
             low_reliability: low_rel,
             unverified_identity: unverified,
+            unhealthy,
         });
         g.models.insert(q.model.clone(), rates);
         if low_rel {
@@ -352,6 +359,9 @@ fn build_groups(
         }
         if unverified {
             g.unverified_identity = true;
+        }
+        if unhealthy {
+            g.unhealthy = true;
         }
         if g.reliability.is_none() {
             g.reliability = rel;
@@ -431,6 +441,23 @@ pub fn merge_quotes_into_providers(
                 reason: "unverified_identity".to_string(),
                 hint: "require_verified_identity is on and tokenstats could not confirm \
                        this node's npub matches its Nostr announcement."
+                    .to_string(),
+                reliability: group.reliability,
+            });
+            continue;
+        }
+
+        if group.unhealthy {
+            skipped.push(SkipEntry {
+                source: group.source.clone(),
+                provider: group.provider.clone(),
+                provider_id: group.provider_id.clone(),
+                endpoint: Some(group.endpoint.clone()),
+                models_count: group.models.len(),
+                reason: "unhealthy".to_string(),
+                hint: "require_healthy is on and tokenstats does not mark this endpoint \
+                       healthy (last fetch failed, < 90% reliable over 24h, or its probe \
+                       is failing). See tokenstats /api/nodes for the failure."
                     .to_string(),
                 reliability: group.reliability,
             });
@@ -862,6 +889,7 @@ mod tests {
             observed_at: Some(Utc::now()),
             reliability_24h: None,
             identity_verified: None,
+            healthy: None,
         }
     }
 
@@ -877,6 +905,7 @@ mod tests {
             allowed_hosts: vec!["openrouter.ai".to_string(), "node.example.com".to_string()],
             max_price_sats_per_1m: 1_000_000.0,
             require_verified_identity: false,
+            require_healthy: false,
         }
     }
 
@@ -1078,6 +1107,33 @@ mod tests {
             5.0,
         );
         assert_eq!(merge(&cfg, vec![q]).2, 1);
+    }
+
+    #[test]
+    fn require_healthy_skips_only_endpoints_marked_unhealthy() {
+        let mut cfg = node_cfg();
+        for (healthy, on, routable) in [
+            (Some(false), false, 1),
+            (Some(false), true, 0),
+            (Some(true), true, 1),
+            // Older tokenstats: no verdict, nothing to enforce.
+            (None, true, 1),
+        ] {
+            cfg.require_healthy = on;
+            let mut q = node_quote(Some(1.0), None);
+            q.healthy = healthy;
+            let (_, skipped, market) =
+                merge_quotes_into_providers(&[], &[q], &[], &cfg, Utc::now());
+            assert_eq!(market, routable, "{healthy:?} require_healthy={on}");
+            if routable == 0 {
+                assert_eq!(skipped[0].reason, "unhealthy");
+            }
+        }
+        let q: Quote = serde_json::from_str(
+            r#"{"source":"routstr","provider":"p","provider_id":"x","model":"m","healthy":false}"#,
+        )
+        .unwrap();
+        assert_eq!(q.healthy, Some(false));
     }
 
     fn static_provider(url: &str) -> ProviderConfig {

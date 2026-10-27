@@ -285,11 +285,11 @@ mod tests {
              ```rust\nfn b() {}\n```\n\
              ```rust\nfn c() {}\n```");
         let weights_normal = default_weights();
-        let score_normal = score_complexity(&[with_code.clone()], &weights_normal);
+        let score_normal = score_complexity(std::slice::from_ref(&with_code), &weights_normal);
 
         let mut weights_zero = default_weights();
         weights_zero.code_blocks = 0.0;
-        let score_zero = score_complexity(&[with_code.clone()], &weights_zero);
+        let score_zero = score_complexity(std::slice::from_ref(&with_code), &weights_zero);
 
         // With code_blocks weight at 0, the code block signal shouldn't contribute
         // The scores should differ if code blocks had any effect
@@ -305,11 +305,11 @@ mod tests {
         let with_keywords =
             msg("Please architect a solution and evaluate the tradeoff step by step carefully");
         let weights_normal = default_weights();
-        let score_normal = score_complexity(&[with_keywords.clone()], &weights_normal);
+        let score_normal = score_complexity(std::slice::from_ref(&with_keywords), &weights_normal);
 
         let mut weights_high = default_weights();
         weights_high.reasoning_keywords = 10.0;
-        let score_high = score_complexity(&[with_keywords.clone()], &weights_high);
+        let score_high = score_complexity(std::slice::from_ref(&with_keywords), &weights_high);
 
         assert!(
             score_high > score_normal,
@@ -321,10 +321,10 @@ mod tests {
     fn test_extra_keywords_matched() {
         let text = msg("Please frobulate the entire system with care and precision");
         let mut weights = default_weights();
-        let score_without = score_complexity(&[text.clone()], &weights);
+        let score_without = score_complexity(std::slice::from_ref(&text), &weights);
 
         weights.extra_keywords = vec!["frobulate".to_string()];
-        let score_with = score_complexity(&[text.clone()], &weights);
+        let score_with = score_complexity(std::slice::from_ref(&text), &weights);
 
         assert!(
             score_with > score_without,

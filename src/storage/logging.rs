@@ -240,6 +240,16 @@ pub fn spawn_stream_completion_update(
 mod tests {
     use super::*;
 
+    /// Columns `update_stream_completion` sets, as read back.
+    type CompletionRow = (
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<i64>,
+        bool,
+        Option<String>,
+    );
+
     /// Helper: create an in-memory SQLite pool with migrations applied.
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -354,7 +364,7 @@ mod tests {
         assert_eq!(rows, 1);
 
         // Verify all 6 columns were set correctly
-        let row: (Option<i64>, Option<i64>, Option<f64>, Option<i64>, bool, Option<String>) =
+        let row: CompletionRow =
             sqlx::query_as(
                 "SELECT input_tokens, output_tokens, cost_sats, stream_duration_ms, success, error_message FROM requests WHERE correlation_id = ?",
             )
@@ -393,7 +403,7 @@ mod tests {
         .unwrap();
         assert_eq!(rows, 1);
 
-        let row: (Option<i64>, Option<i64>, Option<f64>, Option<i64>, bool, Option<String>) =
+        let row: CompletionRow =
             sqlx::query_as(
                 "SELECT input_tokens, output_tokens, cost_sats, stream_duration_ms, success, error_message FROM requests WHERE correlation_id = ?",
             )

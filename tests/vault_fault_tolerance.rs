@@ -76,7 +76,7 @@ async fn start_mock_vault_for_reconciliation(
                             Instant::now(),
                         ));
                         let status_code = axum::http::StatusCode::from_u16(status).unwrap();
-                        if status >= 200 && status < 300 {
+                        if (200..300).contains(&status) {
                             (
                                 status_code,
                                 axum::Json(
@@ -107,7 +107,7 @@ async fn start_mock_vault_for_reconciliation(
                             Instant::now(),
                         ));
                         let status_code = axum::http::StatusCode::from_u16(status).unwrap();
-                        if status >= 200 && status < 300 {
+                        if (200..300).contains(&status) {
                             (
                                 status_code,
                                 axum::Json(serde_json::json!({"released": true})),

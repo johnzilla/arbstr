@@ -35,10 +35,10 @@ cargo run -- providers -c config.toml
 cargo fmt
 
 # Lint
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on Rust 1.99.1 for every PR, and publishes `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` (amd64 + arm64) on merge to main. Run all three locally before pushing. The toolchain is pinned in `ci.yml` and the Dockerfile's builder image; bump both together, along with any fixes the newer clippy asks for.
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` on Rust 1.99.1 for every PR, and publishes `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` (amd64 + arm64) on merge to main. Run all three locally before pushing. The toolchain is pinned in `ci.yml` and the Dockerfile's builder image; bump both together, along with any fixes the newer clippy asks for.
 
 ## Architecture
 
@@ -109,7 +109,7 @@ Vault reserve uses frontier rates and the request's `max_tokens` (or `default_re
 
 - **Proxy Server** (`src/proxy/`): OpenAI-compatible HTTP server using axum, retry with backoff and provider fallback, SSE stream interception for usage extraction, graceful shutdown on SIGINT/SIGTERM
 - **Circuit Breaker** (`src/proxy/circuit_breaker.rs`): Per-provider Closed/Open/Half-Open state machine with DashMap registry, watch-based probe signaling, and RAII ProbeGuard
-- **tokenstats client** (`src/proxy/tokenstats.rs`): Optional market feed — gates on `/health` `status` (`down`/`starting` keep the last provider set), fetches `/api/quotes` scoped to routable sources with `kind=chat`, `max_age_secs` and `exclude_outliers`, trusts quote `reliability_24h` (unknown = not routable), optional `require_verified_identity`; per-model rates (sats/1M), auth-gated routable providers, `GET /providers` market.skipped + feed_status visibility
+- **tokenstats client** (`src/proxy/tokenstats.rs`): Optional market feed — gates on `/health` `status` (`down`/`starting` keep the last provider set), fetches `/api/quotes` scoped to routable sources with `kind=chat`, `max_age_secs` and `exclude_outliers`, trusts quote `reliability_24h` (unknown = not routable), optional `require_verified_identity` and `require_healthy` (tokenstats `healthy` verdict); per-model rates (sats/1M), auth-gated routable providers, `GET /providers` market.skipped + feed_status visibility
 - **Complexity Scorer** (`src/router/complexity.rs`): Heuristic complexity analysis with 5 configurable weighted signals, maps requests to provider tiers (local/standard/frontier)
 - **Router** (`src/router/`): Provider selection with hot-swappable list, blended cost ranking, per-model rates, tier-aware filtering
 - **Config** (`src/config.rs`): TOML configuration parsing, env var expansion, SecretString key management, optional `[tokenstats]`

@@ -338,6 +338,12 @@ pub struct TokenstatsConfig {
     /// tokenstats `identity_verified = true`. Default false.
     #[serde(default)]
     pub require_verified_identity: bool,
+    /// Only route to endpoints tokenstats marks `healthy` (last catalog fetch
+    /// OK, ≥ 90% 24h reliability, `/v1/info` probe not failing, quote fresh).
+    /// Stricter than the default `min_reliability`. Quotes from a tokenstats
+    /// that doesn't report `healthy` are unaffected. Default false.
+    #[serde(default)]
+    pub require_healthy: bool,
 }
 
 fn default_tokenstats_poll() -> u64 {
