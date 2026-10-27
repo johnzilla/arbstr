@@ -24,6 +24,7 @@ fn rfc3339z(dt: &DateTime<Utc>) -> String {
 static CORRELATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Insert a request row into the database.
+#[allow(clippy::too_many_arguments)]
 async fn seed_request(
     pool: &SqlitePool,
     timestamp: &str,

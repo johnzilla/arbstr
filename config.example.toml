@@ -63,6 +63,9 @@ path = "./arbstr.db"
 # # Only route to Routstr nodes whose npub matches their Nostr announcement
 # # (tokenstats identity_verified). Cashu tokens go to these nodes.
 # require_verified_identity = false
+# # Only route to endpoints tokenstats marks healthy: last fetch OK, >= 90% 24h
+# # reliability, probe not failing, fresh. Stricter than min_reliability.
+# require_healthy = false
 # [tokenstats.keys]
 # openrouter = "${OPENROUTER_API_KEY}"
 # # orcarouter = "${ORCAROUTER_API_KEY}"
