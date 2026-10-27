@@ -317,10 +317,10 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full development guide including 
 ```bash
 cargo test                    # Run all tests
 cargo run -- serve --mock     # Run with the built-in mock config
-cargo fmt && cargo clippy -- -D warnings  # Format and lint
+cargo fmt && cargo clippy --all-targets -- -D warnings  # Format and lint
 ```
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on every PR, on Rust 1.99.1. Merges to main also publish `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` for amd64 and arm64.
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` on every PR, on Rust 1.99.1. Merges to main also publish `ghcr.io/johnzilla/arbstr:latest` and `:<short-sha>` for amd64 and arm64.
 
 ## Roadmap
 
@@ -341,6 +341,7 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -- -D wa
 | **v2.3.0** | Per-client rate limiting (`client_rate_limit_rps`, opt-in); warnings on implausible provider usage; provider error bodies and key prefixes no longer exposed; one `[DONE]` per stream | Shipped |
 | **v2.3.1** | Streaming billing fix -- streamed requests settle at reported usage instead of being released | Shipped |
 | **v2.4.0** | tokenstats feed quality -- fetches only routable sources with chat/fresh/no-outlier filters, gates on the feed's `/health` status, trusts 24h reliability (unknown = not routable), optional `require_verified_identity`; streaming cost event documented | Shipped |
+| **v2.5.0** | Optional `require_healthy` -- route only to endpoints tokenstats marks healthy (last fetch OK, 90%+ 24h reliability, probe OK, fresh); clippy now covers tests | Shipped |
 
 ## Deployment
 
